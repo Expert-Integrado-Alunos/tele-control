@@ -4,7 +4,8 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { criarCanalTelegram, tgNovo, completarTg } from '../canal-telegram.mjs';
-import { montarChamado, montarSistema, montarPainel, montarSituacao } from '../lib/formato-tg.mjs';
+import { montarChamado, montarSistema, montarPainel, montarSituacao, montarChamadoComOk, esc } from '../lib/formato-tg.mjs';
+import { montarBlocoOk, montarBlocoOkFechado } from '../lib/ok-tg.mjs'; // T26b1
 
 const DONO = 700100200;
 const T0 = Date.parse('2026-09-29T15:00:00.000Z'); // 12:00 em Brasilia
@@ -422,6 +423,41 @@ describe('4. reconciliacao', () => {
     assert.deepEqual(passos(tg), [['enviar', false], ['editarBotoes', 501], ['editar', 501]]);
     const encerrado = montarChamado({ estado: 'encerrado', titulo: 'Aba', hora: iso(T0 + 10 * MIN), final: 'Feito, subiu.', motivo: 'whatsapp' });
     assert.deepEqual(tg.chamadas[2].args[1], { ...encerrado, formato: 'rich' });
+  });
+
+  // T27 (PLANO-TELEGRAM.md, "T27", contrato 3; caso real 18/10: a resposta virou edicao calada da mensagem antiga)
+  test('T27 1. encerrar "pc" de resposta que nao saiu = nada muda: a resposta sai como mensagem nova, com notificacao', async () => {
+    const { canal, tg, e, logs } = novo();
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e); // 501
+    canal.falaRecebida(e, { sessionId: 'aba-1', fala: 'vai', hora: iso(T0 + MIN) });
+    await canal.drenar(e);
+    canal.entregue(e, 'aba-1', iso(T0 + 2 * MIN));
+    await canal.drenar(e);
+    canal.resposta(e, parou('aba-1', 'Feito, subiu.', iso(T0 + 9 * MIN)), 'Aba');
+    const antes = JSON.stringify(e.tg);
+    canal.encerrar(e, 'aba-1', iso(T0 + 10 * MIN), 'pc');
+    assert.equal(JSON.stringify(e.tg), antes, 'nada muda no estado');
+    assert.ok(logs.some((l) => l.includes('aba-1') && l.includes('resposta') && l.includes('encerrar')), logs.join('\n'));
+    const c = e.tg.chamados['aba-1'];
+    assert.deepEqual([c.versao.estado, c.descer], ['resposta', true]);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['editarBotoes', 501], ['enviar', false], ['apagar', 501]]);
+    assert.deepEqual(tg.chamadas[2].args[0], { ...montarChamado(c.versao), silencioso: false });
+    // a resposta ja na tela: o encerrar "pc" segue o de hoje (edicao, sem botoes)
+    canal.encerrar(e, 'aba-1', iso(T0 + 11 * MIN), 'pc');
+    assert.deepEqual([e.tg.chamados['aba-1'].versao.estado, e.tg.chamados['aba-1'].descer], ['encerrado', false]);
+  });
+
+  test('T27 1b. resposta que ja saiu e perdeu a tela (tela torta que a leitura tira; sem descer): o encerrar "pc" segue o de hoje (o chamado sai sem mensagem)', async () => {
+    const { canal, tg, e } = novo();
+    canal.resposta(e, parou('aba-1', 'Feito, subiu.', iso(T0 + 9 * MIN)), 'Aba');
+    await canal.drenar(e); // 501
+    e.tg.chamados['aba-1'].mensagem = { messageId: 'torta' };
+    canal.encerrar(e, 'aba-1', iso(T0 + 10 * MIN), 'pc');
+    assert.deepEqual(e.tg.chamados, {});
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false]]);
   });
 
   test('entregue fora de enviando/contexto e encerrar fora de aviso/resposta = nada', async () => {
@@ -2244,12 +2280,14 @@ describe('T10 3. situacao da aba: mensagem propria em cima do citar, a anterior 
     // 2a situacao (outra aba): nova em cima do citar novo; a 502 sai depois; o painel fica
     canal.situacao(e, 'S2', { ...DS, titulo: 'Site' }, { citar: 78 });
     await canal.drenar(e);
-    assert.deepEqual(passos(tg).slice(2), [['enviar', true], ['apagar', 502]]);
+    // T26d (regra 3): a S1 nao tem chamado com tela: a 502 fica no chat sem os botoes, como mensagem da S1
+    assert.deepEqual(passos(tg).slice(2), [['enviar', true], ['editarBotoes', 502]]);
     assert.equal(tg.chamadas[2].args[0].responderA, 78);
     assert.equal(e.tg.painel.mensagem.messageId, 501);
     assert.equal(e.tg.situacao.mensagem.messageId, 503);
     assert.equal(canal.sessaoDaMensagem(e, 503), 'S2');
-    assert.deepEqual(Object.keys(e.tg.mensagens).sort(), ['501', '503']);
+    assert.deepEqual(Object.keys(e.tg.mensagens).sort(), ['501', '502', '503']); // T26d: a 502 e da S1
+    assert.equal(canal.sessaoDaMensagem(e, 502), 'S1');
     assert.deepEqual(e.tg.saida, []);
   });
 
@@ -3260,5 +3298,1145 @@ describe('T23b. modo "manter": nada da conversa e apagado; a mensagem do robo so
         'telegram aba-1: mensagem 70 do dono fica no chat (F1); sai da lista sem apagar',
       ]);
     }
+  });
+});
+
+// ---------- T26b1: o OK dentro do chamado da aba ----------
+
+describe('T26b1 — o OK dentro do chamado da aba (c.ok)', () => {
+  const COD = 'ABC234';
+  const COD2 = 'DEF567';
+  const pedidoOk = (codigo = COD, extra = {}) => ({
+    v: 1,
+    codigo,
+    sessionId: 'aba-1',
+    titulo: 'Aba',
+    tipo: 'publicacao',
+    acao: 'subir o site <pid> & X em produção',
+    destinatarios: null,
+    criadoEm: iso(T0),
+    expiraEm: iso(T0 + 30 * MIN),
+    status: 'pendente',
+    ...extra,
+  });
+  const blocoDe = (p) => ({ compacto: montarBlocoOk(p), completo: montarBlocoOk({ ...p, completo: true }) });
+  const okDe = (codigo = COD) => ({ cod: codigo, bloco: blocoDe(pedidoOk(codigo)), titulo: 'Aba', nome: 'aba' });
+  // o telegram.mjs real: sem html = sai no classico
+  const soClassico = () => {
+    let n = 600;
+    return { enviar: (p) => (p.html ? undefined : { ok: true, messageId: ++n, formato: 'classico' }) };
+  };
+  const cabecalho = montarChamado({ estado: 'ok', titulo: 'Aba' }).classico;
+  const aberto = (ok, extra = {}) => ({ bloco: ok.bloco, completo: false, toque: null, fechado: null, ...extra });
+
+  test('okAbriu sem chamado: 1 enviar classico (cabecalho + bloco compacto), com notificacao, no COMECO da fila; mesmo cod = nada muda; outro cod = substituido', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.aviso(e, parou('aba-2'), 'Outra');
+    const ok = okDe();
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', ok), { aceito: true, substituido: null });
+    const c = e.tg.chamados['aba-1'];
+    assert.equal(c.versao.estado, 'ok');
+    assert.equal(c.versao.titulo, 'Aba');
+    assert.equal(c.versao.nome, 'aba');
+    assert.equal(c.versao.hora, iso(T0));
+    assert.deepEqual(
+      { cod: c.ok.cod, completo: c.ok.completo, toque: c.ok.toque, fechado: c.ok.fechado, notificar: c.ok.notificar, em: c.ok.em, naTelaEm: c.ok.naTelaEm },
+      { cod: COD, completo: false, toque: null, fechado: null, notificar: true, em: iso(T0), naTelaEm: null },
+    );
+    assert.equal(c.descer, true);
+    assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['aba-1', 'aba-2']); // a aba do OK vai pro comeco
+    assert.equal(tg.chamadas.length, 0);
+
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['enviar', false]]);
+    const p = tg.chamadas[0].args[0];
+    assert.equal(p.html, undefined); // sem html: sai sempre no classico
+    assert.equal(p.classico, `${cabecalho}\n\n${esc(ok.bloco.compacto.texto)}`);
+    assert.deepEqual(p.botoes, ok.bloco.compacto.botoes);
+    assert.equal(p.responderA, undefined);
+    assert.deepEqual(c.mensagem, { messageId: 601, formato: 'classico', versaoId: c.versao.id, ok: COD });
+    assert.equal(c.ok.notificar, false);
+    assert.equal(c.ok.naTelaEm, iso(T0));
+    assert.equal(canal.okNaMensagem(e, 601), COD);
+    assert.equal(canal.okNaMensagem(e, 502), null); // a tela de outra aba (sem OK)
+
+    // mesmo cod = aceito, nada muda
+    const antes = JSON.stringify(e.tg);
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', ok), { aceito: true, substituido: null });
+    assert.equal(JSON.stringify(e.tg), antes);
+
+    // outro OK aberto sem toque = substituido; mensagem nova com o bloco novo e a antiga apagada
+    const ok2 = okDe(COD2);
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', ok2), { aceito: true, substituido: COD });
+    assert.equal(c.ok.cod, COD2);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(2), [['enviar', false], ['apagar', 601]]);
+    assert.equal(tg.chamadas[2].args[0].classico, `${cabecalho}\n\n${esc(ok2.bloco.compacto.texto)}`);
+    assert.deepEqual(c.mensagem, { messageId: 602, formato: 'classico', versaoId: c.versao.id, ok: COD2 });
+    assert.equal(canal.okNaMensagem(e, 601), null); // tela velha
+    assert.equal(canal.okNaMensagem(e, 602), COD2);
+    assert.deepEqual(e.tg.saida, []);
+  });
+
+  test('okAbriu com resposta na tela: mensagem NOVA (resposta sem os botoes das opcoes + bloco) em cima do citar, a antiga apagada depois; com a fala em voo (enviando): so cabecalho + bloco, com notificacao, em cima do citar; o entregue nao edita', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.resposta(e, parou('aba-1'), 'Aba', { citar: 77 });
+    await canal.drenar(e); // 501 rich
+    const c = e.tg.chamados['aba-1'];
+    const vAntes = c.versao.id;
+    const ok = okDe();
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', ok), { aceito: true, substituido: null });
+    assert.equal(c.versao.estado, 'resposta');
+    assert.notEqual(c.versao.id, vAntes);
+    assert.equal(c.descer, true);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['enviar', false], ['apagar', 501]]); // nova antes do apagar; nunca edicao
+    const p = tg.chamadas[1].args[0];
+    assert.equal(p.html, undefined);
+    assert.equal(p.responderA, 77);
+    const esperado = montarChamadoComOk(c.versao, aberto(ok));
+    assert.equal(p.classico, esperado.classico);
+    assert.ok(p.classico.endsWith(`\n\n${esc(ok.bloco.compacto.texto)}`));
+    assert.ok(p.classico.includes('Só as correções')); // as opcoes em texto
+    assert.deepEqual(p.botoes, ok.bloco.compacto.botoes); // sem os botoes das opcoes
+    assert.deepEqual(c.mensagem, { messageId: 601, formato: 'classico', versaoId: c.versao.id, ok: COD });
+    assert.deepEqual(c.apagar, []);
+
+    // a fala dele em voo (enviando): a mensagem sai mesmo assim (nao vai pro passoSemTela)
+    const b = novo({ roteiro: soClassico() });
+    b.canal.aviso(b.e, parou('aba-1'), 'Aba');
+    await b.canal.drenar(b.e); // 501 rich
+    b.canal.falaRecebida(b.e, { sessionId: 'aba-1', fala: 'faz', audio: false, hora: iso(T0), messageIdDono: 88 });
+    await b.canal.drenar(b.e); // editarBotoes 501
+    const cb = b.e.tg.chamados['aba-1'];
+    assert.equal(cb.versao.estado, 'enviando');
+    assert.deepEqual(b.canal.okAbriu(b.e, 'aba-1', ok), { aceito: true, substituido: null });
+    await b.canal.drenar(b.e);
+    assert.deepEqual(passos(b.tg), [['enviar', false], ['editarBotoes', 501], ['enviar', false], ['apagar', 501]]);
+    const pb = b.tg.chamadas[2].args[0];
+    assert.equal(pb.html, undefined);
+    assert.equal(pb.silencioso, false); // o enviando e silencioso; o OK notifica
+    assert.equal(pb.responderA, 88);
+    assert.equal(pb.classico, `${cabecalho}\n\n${esc(ok.bloco.compacto.texto)}`);
+    assert.deepEqual(cb.mensagem, { messageId: 601, formato: 'classico', versaoId: cb.versao.id, ok: COD });
+    b.canal.entregue(b.e, 'aba-1', iso(T0 + MIN));
+    await b.canal.drenar(b.e);
+    assert.equal(b.tg.chamadas.length, 4); // o entregue nao mexe na tela do OK
+    assert.deepEqual(b.e.tg.saida, []);
+  });
+
+  test('juncao: resposta ate 60 s depois do naTelaEm = 1 editar da mesma mensagem (resposta + bloco), nenhum enviar; a 61 s = enviar novo com notificacao e a antiga apagada', async () => {
+    const { canal, tg, e, relogio } = novo({ roteiro: soClassico() });
+    const ok = okDe();
+    canal.okAbriu(e, 'aba-1', ok);
+    await canal.drenar(e); // 601
+    const c = e.tg.chamados['aba-1'];
+    relogio.t = T0 + 60 * 1000;
+    canal.resposta(e, parou('aba-1'), 'Aba');
+    assert.equal(c.descer, false);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['editar', 601]]);
+    const [id, pe] = tg.chamadas[1].args;
+    assert.equal(id, 601);
+    const esperado = montarChamadoComOk(c.versao, aberto(ok));
+    assert.deepEqual(pe, { html: undefined, classico: esperado.classico, botoes: ok.bloco.compacto.botoes, formato: 'classico' });
+    assert.ok(pe.classico.includes('Só as correções'));
+    assert.deepEqual(c.mensagem, { messageId: 601, formato: 'classico', versaoId: c.versao.id, ok: COD });
+
+    relogio.t = T0 + 61 * 1000;
+    canal.resposta(e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    assert.equal(c.descer, true);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(2), [['enviar', false], ['apagar', 601]]);
+    const pn = tg.chamadas[2].args[0];
+    assert.equal(pn.html, undefined);
+    assert.equal(pn.classico, montarChamadoComOk(c.versao, aberto(ok)).classico);
+    assert.ok(pn.classico.includes('Outra pergunta?'));
+    assert.deepEqual(pn.botoes, ok.bloco.compacto.botoes);
+    assert.deepEqual(c.mensagem, { messageId: 602, formato: 'classico', versaoId: c.versao.id, ok: COD });
+    assert.equal(c.ok.naTelaEm, iso(T0)); // so a 1a vez
+  });
+
+  test('okInfo = 1 editar pro bloco completo (de novo = false); okToque sim = so editarBotoes(tela, null); okToque null = 1 editar com o mesmo texto e os botoes do bloco', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.resposta(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e); // 501 rich
+    const ok = okDe();
+    canal.okAbriu(e, 'aba-1', ok);
+    await canal.drenar(e); // 601 classico, apagar 501
+    const c = e.tg.chamados['aba-1'];
+    assert.equal(canal.okInfo(e, COD2), false);
+    assert.equal(canal.okInfo(e, COD), true);
+    assert.equal(c.ok.completo, true);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(3), [['editar', 601]]);
+    const completo = montarChamadoComOk(c.versao, aberto(ok, { completo: true }));
+    assert.deepEqual(tg.chamadas[3].args[1], { html: undefined, classico: completo.classico, botoes: ok.bloco.completo.botoes, formato: 'classico' });
+    assert.ok(completo.classico.endsWith(`\n\n${esc(ok.bloco.completo.texto)}`));
+    assert.notEqual(completo.classico, montarChamadoComOk(c.versao, aberto(ok)).classico); // a parte aberta
+    assert.equal(canal.okInfo(e, COD), false);
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, 4);
+
+    assert.equal(canal.okToque(e, COD2, 'sim'), false);
+    assert.equal(canal.okToque(e, COD, 'sim'), true);
+    assert.equal(c.ok.toque.acao, 'sim');
+    assert.equal(c.ok.toque.em, iso(T0));
+    await canal.drenar(e);
+    assert.deepEqual(tg.chamadas.slice(4), [{ metodo: 'editarBotoes', args: [601, null] }]); // nenhum editar de texto
+    assert.equal(canal.okNaMensagem(e, 601), COD); // aberto (com toque) e na tela
+    assert.equal(canal.okInfo(e, COD), false);
+
+    assert.equal(canal.okToque(e, COD, null), true);
+    assert.equal(c.ok.toque, null);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(5), [['editar', 601]]);
+    assert.deepEqual(tg.chamadas[5].args[1], { html: undefined, classico: completo.classico, botoes: ok.bloco.completo.botoes, formato: 'classico' });
+    assert.deepEqual(e.tg.saida, []);
+  });
+
+  test('okFechou some: com resposta = editar sem o bloco e com os botoes do chamado; so OK = apagar e o chamado sai; enviando = apagar com manterConversa e o chamado fica', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.resposta(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e); // 501 rich
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601 classico, apagar 501
+    const c = e.tg.chamados['aba-1'];
+    assert.equal(canal.okFechou(e, COD2, { texto: 'x', some: true }), false);
+    assert.equal(canal.okFechou(e, COD, { texto: 'x', some: true }), true);
+    assert.equal(c.ok, undefined);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(3), [['editar', 601]]);
+    const m = montarChamado(c.versao);
+    assert.ok(m.botoes.length >= 3); // A, B e Mais informações
+    assert.deepEqual(tg.chamadas[3].args[1], { html: m.html, classico: m.classico, botoes: m.botoes, formato: 'classico' });
+    assert.deepEqual(c.mensagem, { messageId: 601, formato: 'classico', versaoId: c.versao.id });
+    assert.equal(canal.okNaMensagem(e, 601), null);
+
+    // so OK (versao 'ok'): a tela e apagada e o chamado sai (como o calado)
+    const s = novo({ roteiro: soClassico() });
+    s.canal.okAbriu(s.e, 'aba-1', okDe());
+    await s.canal.drenar(s.e); // 601
+    assert.equal(s.canal.okFechou(s.e, COD, { texto: 'x', some: true }), true);
+    await s.canal.drenar(s.e);
+    assert.deepEqual(passos(s.tg), [['enviar', false], ['apagar', 601]]);
+    assert.equal(s.e.tg.chamados['aba-1'], undefined);
+    assert.deepEqual(s.e.tg.saida, []);
+
+    // versao enviando (a fala dele em voo): a tela vai pro apagar com manterConversa e o chamado fica
+    const v = novo({ roteiro: soClassico() });
+    v.canal.aviso(v.e, parou('aba-1'), 'Aba');
+    await v.canal.drenar(v.e); // 501
+    v.canal.falaRecebida(v.e, { sessionId: 'aba-1', fala: 'faz', audio: false, hora: iso(T0), messageIdDono: 88 });
+    v.canal.okAbriu(v.e, 'aba-1', okDe());
+    await v.canal.drenar(v.e); // 601, apagar 501
+    const cv = v.e.tg.chamados['aba-1'];
+    const n = v.tg.chamadas.length;
+    assert.equal(v.canal.okFechou(v.e, COD, { texto: 'x', some: true }), true);
+    assert.equal(cv.ok, undefined);
+    assert.equal(cv.mensagem, null);
+    assert.deepEqual(cv.apagar, [{ messageId: 601, doBot: true, formato: 'classico', manterConversa: true }]);
+    await v.canal.drenar(v.e);
+    assert.deepEqual(passos(v.tg).slice(n), [['apagar', 601]]);
+    assert.equal(v.e.tg.chamados['aba-1'], cv); // o chamado fica
+    assert.equal(cv.versao.estado, 'enviando');
+    assert.deepEqual(v.e.tg.saida, []);
+  });
+
+  test('okFechou fecho (some false; some true no manter) = editar com o bloco fechado e sem botoes; a proxima mensagem nova nao leva o bloco fechado; OK que nunca chegou na tela sai sem mensagem', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601
+    const c = e.tg.chamados['aba-1'];
+    const fechado = montarBlocoOkFechado({ ...pedidoOk(), linha: 'Aprovado às 12:01.' });
+    assert.equal(canal.okFechou(e, COD, { texto: fechado, some: false }), true);
+    assert.equal(c.ok.fechado, fechado);
+    assert.equal(canal.okFechou(e, COD, { texto: fechado, some: false }), false); // ja fechado
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['editar', 601]]);
+    assert.deepEqual(tg.chamadas[1].args[1], { html: undefined, classico: `${cabecalho}\n\n${esc(fechado)}`, botoes: null, formato: 'classico' });
+    assert.equal(c.mensagem.ok, COD);
+    assert.equal(canal.okNaMensagem(e, 601), null); // fechado
+    assert.equal(canal.okInfo(e, COD), false);
+    assert.equal(canal.okToque(e, COD, 'sim'), false);
+
+    // a proxima mensagem NOVA da aba nao leva o bloco fechado
+    canal.resposta(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(2), [['enviar', false], ['apagar', 601]]);
+    const esperado = montarChamado(c.versao);
+    assert.deepEqual(tg.chamadas[2].args[0], { ...esperado, silencioso: false });
+    assert.equal(c.ok, undefined);
+    assert.deepEqual(c.mensagem, { messageId: 502, formato: 'rich', versaoId: c.versao.id });
+
+    // modo 'manter': o some vira fecho
+    const k = novo({ roteiro: soClassico(), resolvidas: 'manter' });
+    k.canal.okAbriu(k.e, 'aba-1', okDe());
+    await k.canal.drenar(k.e); // 601
+    assert.equal(k.canal.okFechou(k.e, COD, { texto: fechado, some: true }), true);
+    assert.equal(k.e.tg.chamados['aba-1'].ok.fechado, fechado);
+    await k.canal.drenar(k.e);
+    assert.deepEqual(passos(k.tg), [['enviar', false], ['editar', 601]]);
+    assert.equal(k.tg.chamadas[1].args[1].botoes, null);
+
+    // nunca chegou na tela (ainda na fila): sai sem mensagem nenhuma
+    const f = novo({ roteiro: soClassico() });
+    f.canal.okAbriu(f.e, 'aba-1', okDe());
+    assert.equal(f.canal.okFechou(f.e, COD, { texto: fechado, some: false }), true);
+    assert.equal(f.e.tg.chamados['aba-1'], undefined);
+    assert.deepEqual(f.e.tg.saida, []);
+    await f.canal.drenar(f.e);
+    assert.equal(f.tg.chamadas.length, 0);
+    // com uma resposta na tela: o c.ok sai e a tela fica como estava
+    f.canal.resposta(f.e, parou('aba-1'), 'Aba');
+    await f.canal.drenar(f.e); // 501
+    f.canal.okAbriu(f.e, 'aba-1', okDe());
+    assert.equal(f.canal.okFechou(f.e, COD, { texto: 'x', some: true }), true);
+    await f.canal.drenar(f.e);
+    assert.equal(f.tg.chamadas.length, 1);
+    const cf = f.e.tg.chamados['aba-1'];
+    assert.equal(cf.ok, undefined);
+    assert.equal(cf.descer, false);
+    assert.equal(cf.mensagem.versaoId, cf.versao.id);
+  });
+});
+
+// ---------- T26b2 (PLANO-TELEGRAM.md, "T26b2"): a tela trancada e as guardas ----------
+
+describe('T26b2 — a tela trancada e as guardas do OK no canal', () => {
+  const COD = 'ABC234';
+  const COD2 = 'DEF567';
+  const pedidoOk = (codigo = COD) => ({
+    v: 1,
+    codigo,
+    sessionId: 'aba-1',
+    titulo: 'Aba',
+    tipo: 'publicacao',
+    acao: 'subir o site <pid> & X em produção',
+    destinatarios: null,
+    criadoEm: iso(T0),
+    expiraEm: iso(T0 + 30 * MIN),
+    status: 'pendente',
+  });
+  const blocoDe = (p) => ({ compacto: montarBlocoOk(p), completo: montarBlocoOk({ ...p, completo: true }) });
+  const okDe = (codigo = COD) => ({ cod: codigo, bloco: blocoDe(pedidoOk(codigo)), titulo: 'Aba', nome: 'aba' });
+  const fechadoDe = (codigo = COD) => montarBlocoOkFechado({ ...pedidoOk(codigo), linha: 'Aprovado às 12:01.' });
+  const aberto = (ok, extra = {}) => ({ bloco: ok.bloco, completo: false, toque: null, fechado: null, ...extra });
+  // o telegram.mjs real: sem html = sai no classico. `gancho.f` (opcional) roda 1 vez DENTRO do proximo enviar (em voo)
+  const soClassico = (gancho = null) => {
+    let n = 600;
+    return {
+      enviar: (p) => {
+        if (gancho && typeof gancho.f === 'function') {
+          const f = gancho.f;
+          gancho.f = null;
+          f();
+        }
+        return p.html ? undefined : { ok: true, messageId: ++n, formato: 'classico' };
+      },
+    };
+  };
+  // resposta na tela (501 rich) e o OK por cima (601 classico: resposta + bloco; a 501 apagada)
+  async function comOkNaTela({ gancho = null, resolvidas } = {}) {
+    const x = novo({ roteiro: soClassico(gancho), resolvidas });
+    x.canal.resposta(x.e, parou('aba-1'), 'Aba');
+    await x.canal.drenar(x.e);
+    x.ok = okDe();
+    x.canal.okAbriu(x.e, 'aba-1', x.ok);
+    await x.canal.drenar(x.e);
+    x.c = x.e.tg.chamados['aba-1'];
+    return x;
+  }
+
+  test('trancada: com a resposta nova esperando, o drenar so tira os botoes e apaga o que esta no apagar (nunca editar nem apagar a tela) e o item sai com 1 log; okAbriu = recusa sem mudar nada; depois do fecho a resposta sai', async () => {
+    const { canal, tg, e, c, logs, relogio } = await comOkNaTela();
+    assert.equal(canal.okToque(e, COD, 'sim'), true);
+    relogio.t = T0 + 2 * MIN;
+    canal.resposta(e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    assert.equal(c.descer, true);
+    c.apagar.push({ messageId: 450, doBot: true, formato: 'rich' });
+    const n = tg.chamadas.length;
+    const nLogs = logs.length;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['editarBotoes', 601], ['apagar', 450]]);
+    assert.deepEqual(tg.chamadas[n].args, [601, null]);
+    assert.deepEqual(e.tg.saida, []);
+    assert.equal(logs.slice(nLogs).filter((l) => l.includes('trancada')).length, 1);
+    assert.equal(c.mensagem.messageId, 601);
+    assert.equal(c.mensagem.ok, COD);
+    assert.equal(canal.okNaMensagem(e, 601), COD);
+    // outra resposta: continua esperando, nenhuma chamada
+    canal.resposta(e, parou('aba-1', 'Mais uma?'), 'Aba');
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, n + 2);
+    assert.deepEqual(e.tg.saida, []);
+    // okAbriu de outro pedido com a tela trancada = recusa, nada muda
+    const antes = JSON.stringify(e.tg);
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', okDe(COD2)), { aceito: false, motivo: 'trancada' });
+    assert.equal(JSON.stringify(e.tg), antes);
+    // o fecho poe a aba de volta na fila: a resposta sai (sem o bloco) e a tela trancada e apagada depois
+    assert.equal(canal.okFechou(e, COD, { texto: fechadoDe(), some: false }), true);
+    assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['aba-1']);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n + 2), [['enviar', false], ['apagar', 601]]);
+    assert.deepEqual(tg.chamadas[n + 2].args[0], { ...montarChamado(c.versao), silencioso: false });
+    assert.equal(c.ok, undefined);
+    assert.equal(c.mensagem.ok, undefined);
+    assert.deepEqual(e.tg.saida, []);
+  });
+
+  test('trancada: okToque(null) poe a aba de volta na fila e a resposta que esperava sai com o bloco aberto e os botoes do OK', async () => {
+    const { canal, tg, e, c, ok, relogio } = await comOkNaTela();
+    canal.okToque(e, COD, 'sim');
+    await canal.drenar(e); // editarBotoes 601
+    relogio.t = T0 + 2 * MIN;
+    canal.resposta(e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    await canal.drenar(e); // trancada: nada
+    const n = tg.chamadas.length;
+    assert.equal(canal.okToque(e, COD, null), true);
+    assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['aba-1']);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['enviar', false], ['apagar', 601]]);
+    const p = tg.chamadas[n].args[0];
+    assert.equal(p.html, undefined);
+    assert.equal(p.classico, montarChamadoComOk(c.versao, aberto(ok)).classico);
+    assert.ok(p.classico.includes('Outra pergunta?'));
+    assert.deepEqual(p.botoes, ok.bloco.compacto.botoes);
+    assert.deepEqual(c.mensagem, { messageId: 602, formato: 'classico', versaoId: c.versao.id, ok: COD });
+  });
+
+  test('telaComBotoes = false com a tela mostrando o OK: a falaRecebida (texto ou toque) nao tira os botoes do OK nem apaga a tela', async () => {
+    const { canal, tg, e, c } = await comOkNaTela();
+    const n = tg.chamadas.length;
+    canal.falaRecebida(e, { sessionId: 'aba-1', fala: 'faz', audio: false, hora: iso(T0), messageIdDono: 88 });
+    assert.equal(c.versao.estado, 'enviando');
+    assert.equal(c.tirarBotoes, undefined);
+    assert.equal(c.apagarJa, undefined);
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, n);
+    canal.falaRecebida(e, { sessionId: 'aba-1', fala: 'A', audio: false, hora: iso(T0), toque: true });
+    assert.equal(c.apagarJa, undefined);
+    assert.equal(c.tirarBotoes, undefined);
+    assert.equal(c.mensagem.messageId, 601);
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, n);
+    assert.equal(canal.okNaMensagem(e, 601), COD);
+  });
+
+  test('encerrar e calar com o OK aberto = nada muda (1 log cada); com o OK fechado ele sai e o resto e o de hoje, byte a byte', async () => {
+    const { canal, e, logs } = await comOkNaTela();
+    const antes = JSON.stringify(e.tg);
+    const nLogs = logs.length;
+    canal.encerrar(e, 'aba-1', iso(T0), 'pc');
+    canal.calar(e, 'aba-1');
+    // T26d (conserto): o encerrar com o OK aberto fica guardado no chamado (o resto nao muda; o calar segue igual)
+    assert.deepEqual(e.tg.chamados['aba-1'].encerrarDepois, { hora: iso(T0), motivo: 'pc' });
+    delete e.tg.chamados['aba-1'].encerrarDepois;
+    assert.equal(JSON.stringify(e.tg), antes);
+    assert.equal(logs.length, nLogs + 2);
+    assert.ok(logs.slice(nLogs).every((l) => l.includes('aba-1') && l.includes(COD)));
+    // fechado na tela
+    canal.okFechou(e, COD, { texto: fechadoDe(), some: false });
+    await canal.drenar(e); // editar 601 com o bloco fechado
+    for (const acao of ['encerrar', 'calar']) {
+      const a = novo();
+      a.e.tg = JSON.parse(JSON.stringify(e.tg));
+      const b = novo();
+      b.e.tg = JSON.parse(JSON.stringify(e.tg));
+      delete b.e.tg.chamados['aba-1'].ok;
+      delete b.e.tg.chamados['aba-1'].mensagem.ok;
+      if (acao === 'encerrar') {
+        a.canal.encerrar(a.e, 'aba-1', iso(T0), 'pc');
+        b.canal.encerrar(b.e, 'aba-1', iso(T0), 'pc');
+      } else {
+        a.canal.calar(a.e, 'aba-1');
+        b.canal.calar(b.e, 'aba-1');
+      }
+      assert.equal(a.e.tg.chamados['aba-1'].ok, undefined, acao);
+      await a.canal.drenar(a.e);
+      await b.canal.drenar(b.e);
+      assert.ok(a.tg.chamadas.length > 0, acao);
+      assert.deepEqual(a.tg.chamadas, b.tg.chamadas, acao);
+      assert.equal(JSON.stringify(a.e.tg), JSON.stringify(b.e.tg), acao);
+    }
+  });
+
+  test('herdar: a aba que fechou leva o OK embora; a tela dela vai pro apagar da nova (sem tirarBotoes nem apagarJa) e a nova nao herda OK', async () => {
+    for (const toque of [false, true]) {
+      const { canal, e } = await comOkNaTela();
+      canal.falaRecebida(e, { sessionId: 'aba-2', fala: 'faz', audio: false, hora: iso(T0), messageIdDono: 90, herdarDe: 'aba-1', toque });
+      assert.equal(e.tg.chamados['aba-1'], undefined);
+      const c2 = e.tg.chamados['aba-2'];
+      assert.equal(c2.ok, undefined);
+      assert.deepEqual(c2.apagar, [{ messageId: 601, doBot: true, formato: 'classico' }]);
+      assert.equal(c2.tirarBotoes, undefined);
+      assert.equal(c2.apagarJa, undefined);
+      assert.equal(canal.okNaMensagem(e, 601), null);
+      assert.equal(canal.okToque(e, COD, 'sim'), false);
+      assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['aba-2']);
+    }
+  });
+
+  test('okSemTela: o OK aberto fora da tela (ou descendo) e fora da fila volta pro COMECO da fila, no maximo 1 vez por minuto por aba; na fila, na tela ou trancado = 0', async () => {
+    const { canal, tg, e, relogio } = novo({ roteiro: soClassico() });
+    canal.okAbriu(e, 'aba-1', okDe());
+    assert.equal(canal.okSemTela(e), 0); // na fila
+    await canal.drenar(e, { travado: true }); // sai sem enviar
+    assert.deepEqual(e.tg.saida, []);
+    canal.aviso(e, parou('aba-2'), 'Outra');
+    assert.equal(canal.okSemTela(e), 1);
+    assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['aba-1', 'aba-2']);
+    assert.equal(canal.okSemTela(e), 0); // ja na fila
+    await canal.drenar(e, { travado: true });
+    assert.deepEqual(e.tg.saida, []);
+    relogio.t = T0 + 59 * 1000;
+    assert.equal(canal.okSemTela(e), 0); // menos de 1 minuto
+    relogio.t = T0 + 60 * 1000;
+    assert.equal(canal.okSemTela(e), 1);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false]]);
+    relogio.t = T0 + 2 * MIN;
+    assert.equal(canal.okSemTela(e), 0); // na tela
+    // descendo (resposta nova sem a juncao) e fora da fila = volta
+    relogio.t = T0 + 4 * MIN;
+    canal.resposta(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e, { travado: true });
+    assert.equal(canal.okSemTela(e), 1);
+    // trancada = 0
+    canal.okToque(e, COD, 'sim');
+    await canal.drenar(e); // editarBotoes; a resposta espera
+    assert.deepEqual(passos(tg).slice(1), [['editarBotoes', 601]]);
+    relogio.t = T0 + 10 * MIN;
+    assert.equal(canal.okSemTela(e), 0);
+    assert.deepEqual(e.tg.saida, []);
+  });
+
+  test('conversaResolvida pula a entrada com manterConversa: o OK que some com a fala dele em voo apaga so a tela (a fala dele fica)', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e); // 501
+    e.tg.idsDoDono = [88];
+    canal.falaRecebida(e, { sessionId: 'aba-1', fala: 'faz', audio: false, hora: iso(T0), messageIdDono: 88 });
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601 em cima da 88, apagar 501
+    assert.equal(e.tg.mensagens[601].citar, 88);
+    const n = tg.chamadas.length;
+    assert.equal(canal.okFechou(e, COD, { texto: 'x', some: true }), true);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['apagar', 601]]);
+    assert.equal(e.tg.chamados['aba-1'].limpar, undefined);
+    assert.deepEqual(e.tg.saida, []);
+  });
+
+  test('completarTg: c.ok torto sai (o resto do chamado fica); versaoId e antes tortos saem sozinhos; c.mensagem.ok que nao e texto sai; sem ok = igual a hoje', async () => {
+    const { e } = await comOkNaTela();
+    const bom = JSON.parse(JSON.stringify(e.tg));
+    assert.equal(typeof bom.chamados['aba-1'].ok.versaoId, 'number');
+    assert.equal(typeof bom.chamados['aba-1'].ok.antes, 'object');
+    assert.deepEqual(completarTg(JSON.parse(JSON.stringify(bom))).chamados, bom.chamados);
+    const com = (f) => {
+      const x = JSON.parse(JSON.stringify(bom));
+      f(x.chamados['aba-1']);
+      return completarTg(x).chamados['aba-1'];
+    };
+    const { ok, ...resto } = bom.chamados['aba-1'];
+    const tortos = [
+      (c) => { c.ok.cod = 'abc234'; },
+      (c) => { c.ok.cod = 'ABC1O0'; },
+      (c) => { delete c.ok.cod; },
+      (c) => { delete c.ok.bloco.completo; },
+      (c) => { c.ok.bloco.compacto.texto = ''; },
+      (c) => { c.ok.bloco = 'x'; },
+      (c) => { c.ok.completo = 'sim'; },
+      (c) => { c.ok.notificar = 1; },
+      (c) => { c.ok.toque = { acao: 'talvez', em: iso(T0) }; },
+      (c) => { c.ok.fechado = 5; },
+      (c) => { c.ok.em = null; },
+      (c) => { c.ok.naTelaEm = 7; },
+      (c) => { c.ok = 'x'; },
+    ];
+    for (const [i, f] of tortos.entries()) assert.deepEqual(com(f), resto, `torto ${i}`);
+    assert.deepEqual(com((c) => { c.ok.toque = { acao: 'sim', em: iso(T0) }; }).ok.toque, { acao: 'sim', em: iso(T0) });
+    const semVersao = com((c) => { c.ok.versaoId = 'x'; });
+    assert.equal('versaoId' in semVersao.ok, false);
+    assert.deepEqual(semVersao.ok.antes, ok.antes);
+    for (const antes of [{ versaoId: 1.5, descer: false }, { versaoId: 3, descer: 'nao' }, 'x']) {
+      const c = com((x) => { x.ok.antes = antes; });
+      assert.equal('antes' in c.ok, false);
+      assert.equal(c.ok.versaoId, ok.versaoId);
+    }
+    const semOkNaTela = com((c) => { c.mensagem.ok = 5; });
+    assert.deepEqual(semOkNaTela.mensagem, { messageId: 601, formato: 'classico', versaoId: resto.mensagem.versaoId });
+    assert.equal(semOkNaTela.ok.cod, COD);
+    // sem ok nenhum: igual a hoje
+    const s = novo();
+    s.canal.resposta(s.e, parou('aba-1'), 'Aba');
+    await s.canal.drenar(s.e);
+    const semOk = JSON.parse(JSON.stringify(s.e.tg));
+    assert.deepEqual(completarTg(JSON.parse(JSON.stringify(semOk))), semOk);
+  });
+
+  test('conserto 1: OK substituido que fecha sem chegar na tela = a tela sai do OK antigo (editar sem bloco nenhum, com os botoes do chamado); versao ok = a tela apagada', async () => {
+    const { canal, tg, e, c } = await comOkNaTela();
+    const n = tg.chamadas.length;
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', okDe(COD2)), { aceito: true, substituido: COD });
+    assert.equal(canal.okFechou(e, COD2, { texto: 'x', some: true }), true);
+    assert.equal(c.ok, undefined);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['editar', 601]]);
+    const m = montarChamado(c.versao);
+    assert.ok(m.botoes.length >= 3);
+    assert.deepEqual(tg.chamadas[n].args[1], { html: m.html, classico: m.classico, botoes: m.botoes, formato: 'classico' });
+    assert.deepEqual(c.mensagem, { messageId: 601, formato: 'classico', versaoId: c.versao.id });
+    assert.equal(c.descer, false);
+    assert.deepEqual(e.tg.saida, []);
+    // versao 'ok' (sem parte da aba): a tela do OK antigo e apagada e o chamado sai
+    const s = novo({ roteiro: soClassico() });
+    s.canal.okAbriu(s.e, 'aba-1', okDe());
+    await s.canal.drenar(s.e); // 601
+    s.canal.okAbriu(s.e, 'aba-1', okDe(COD2));
+    assert.equal(s.canal.okFechou(s.e, COD2, { texto: 'x', some: false }), true);
+    await s.canal.drenar(s.e);
+    assert.deepEqual(passos(s.tg), [['enviar', false], ['apagar', 601]]);
+    assert.equal(s.e.tg.chamados['aba-1'], undefined);
+    assert.deepEqual(s.e.tg.saida, []);
+  });
+
+  test('conserto 2: o OK fecha com a mensagem dele em voo = a tela nunca fica com o bloco aberto sem dono', async () => {
+    // (a) OK sem chamado (versao 'ok') que fecha durante o 1o enviar: a tela e apagada e o chamado sai
+    const gancho = { f: null };
+    const a = novo({ roteiro: soClassico(gancho) });
+    a.canal.okAbriu(a.e, 'aba-1', okDe());
+    let fechou = null;
+    gancho.f = () => { fechou = a.canal.okFechou(a.e, COD, { texto: fechadoDe(), some: false }); };
+    await a.canal.drenar(a.e);
+    assert.equal(fechou, true);
+    assert.deepEqual(passos(a.tg), [['enviar', false], ['apagar', 601]]);
+    assert.equal(a.e.tg.chamados['aba-1'], undefined);
+    assert.deepEqual(a.e.tg.saida, []);
+    assert.equal(a.canal.okNaMensagem(a.e, 601), null);
+
+    // (b) a resposta nova desce com o OK (depois dos 60 s) e o OK fecha durante o enviar: a mensagem nova e EDITADA pro
+    // bloco fechado (nenhuma outra mensagem nova) e a antiga e apagada
+    const g2 = { f: null };
+    const b = await comOkNaTela({ gancho: g2 });
+    b.relogio.t = T0 + 2 * MIN;
+    b.canal.resposta(b.e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    const n = b.tg.chamadas.length;
+    const fechado = fechadoDe();
+    g2.f = () => { fechou = b.canal.okFechou(b.e, COD, { texto: fechado, some: false }); };
+    fechou = null;
+    await b.canal.drenar(b.e);
+    assert.equal(fechou, true);
+    assert.deepEqual(passos(b.tg).slice(n), [['enviar', false], ['editar', 602], ['apagar', 601]]);
+    const esperado = montarChamadoComOk(b.c.versao, aberto(b.ok, { fechado }));
+    assert.ok(esperado.classico.includes('Outra pergunta?'));
+    assert.deepEqual(b.tg.chamadas[n + 1].args[1], { html: undefined, classico: esperado.classico, botoes: null, formato: 'classico' });
+    assert.deepEqual(b.c.mensagem, { messageId: 602, formato: 'classico', versaoId: b.c.versao.id, ok: COD });
+    assert.equal(b.c.descer, false);
+    assert.deepEqual(b.e.tg.saida, []);
+  });
+
+  test('conserto 3 (manter): o fecho com a mensagem nova pendente EDITA a tela antiga pro bloco fechado (com a parte dela, sem botoes) antes da nova sair; ela fica no chat sem o tirar-botoes', async () => {
+    const { canal, tg, e, c, ok, relogio } = await comOkNaTela({ resolvidas: 'manter' });
+    const vTela = c.versao;
+    canal.okToque(e, COD, 'sim');
+    await canal.drenar(e); // editarBotoes 601
+    relogio.t = T0 + 2 * MIN;
+    canal.resposta(e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    await canal.drenar(e); // trancada: nada
+    const n = tg.chamadas.length;
+    const fechado = fechadoDe();
+    assert.equal(canal.okFechou(e, COD, { texto: fechado, some: true }), true); // no manter o some vira fecho
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['editar', 601], ['enviar', false]]);
+    const esperado = montarChamadoComOk(vTela, aberto(ok, { fechado }));
+    assert.ok(!esperado.classico.includes('Outra pergunta?'));
+    assert.deepEqual(tg.chamadas[n].args[1], { html: undefined, classico: esperado.classico, botoes: null, formato: 'classico' });
+    assert.equal(tg.chamadas[n + 1].args[0].classico, montarChamado(c.versao).classico);
+    assert.equal(e.tg.mensagens[601].fica, true);
+    assert.equal(c.ok, undefined);
+    assert.notEqual(c.mensagem.messageId, 601);
+    assert.deepEqual(e.tg.saida, []);
+  });
+
+  // T26s (as sabotagens da T26 que passavam): 1 teste minimo por regra
+  test('T26s: a resposta em 60 s com o OK TOCADO na tela nao junta (espera o fecho como mensagem nova)', async () => {
+    const { canal, e, c } = await comOkNaTela();
+    assert.equal(canal.okToque(e, COD, 'sim'), true);
+    canal.resposta(e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    assert.equal(c.descer, true);
+  });
+
+  test('T26s: okInfo com o OK tocado = false e o completo fica false', async () => {
+    const { canal, e, c } = await comOkNaTela();
+    assert.equal(canal.okToque(e, COD, 'sim'), true);
+    assert.equal(canal.okInfo(e, COD), false);
+    assert.equal(c.ok.completo, false);
+  });
+
+  test('T26s: a montagem com OK (sem html) nunca edita uma tela rich: vira mensagem nova', async () => {
+    const x = novo({ roteiro: soClassico() });
+    x.canal.resposta(x.e, parou('aba-1'), 'Aba');
+    await x.canal.drenar(x.e);
+    const c = x.e.tg.chamados['aba-1'];
+    const tela = c.mensagem.messageId;
+    assert.equal(c.mensagem.formato, 'rich');
+    x.canal.okAbriu(x.e, 'aba-1', okDe());
+    c.descer = false; // estado forcado: sem o descer, a montagem com OK cairia na edicao da tela rich
+    const n = x.tg.chamadas.length;
+    await x.canal.drenar(x.e);
+    const p = passos(x.tg).slice(n);
+    assert.equal(p.filter(([m, id]) => m === 'editar' && id === tela).length, 0, JSON.stringify(p));
+    assert.equal(p.filter(([m]) => m === 'enviar').length, 1, JSON.stringify(p));
+  });
+
+  test('T26s: a tela trancada que aparece no apagar sai da lista sem ser apagada', async () => {
+    const { canal, tg, e, c } = await comOkNaTela();
+    assert.equal(canal.okToque(e, COD, 'sim'), true);
+    const tela = c.mensagem.messageId;
+    c.apagar.push({ messageId: tela, doBot: true, formato: 'classico' });
+    const n = tg.chamadas.length;
+    await canal.drenar(e);
+    assert.equal(passos(tg).slice(n).filter(([m, id]) => m === 'apagar' && id === tela).length, 0);
+    assert.equal(c.apagar.some((a) => a.messageId === tela), false);
+    assert.equal(c.mensagem.messageId, tela);
+  });
+
+  test('T26s: okSemTela devolve pra fila o OK aberto que a tela nao mostra (sem mensagem pendente)', async () => {
+    const { canal, e, c } = await comOkNaTela();
+    delete c.mensagem.ok; // estado forcado: a tela atual nao mostra o OK e nada desce
+    c.descer = false;
+    e.tg.saida.length = 0;
+    assert.equal(canal.okSemTela(e), 1);
+    assert.equal(e.tg.saida[0]?.sessionId, 'aba-1');
+  });
+});
+// ---------- T26d: a situacao conta como a mensagem da aba (PLANO-TELEGRAM.md, "T26d") ----------
+
+describe('T26d — a situacao da aba conta como a mensagem da aba (1 mensagem viva por aba)', () => {
+  const DSX = { titulo: 'Aba', situacao: 'Esperando você desde 12:00.', final: FINAL };
+  const COD = 'ABC234';
+  const pedidoOk = (codigo = COD) => ({
+    v: 1,
+    codigo,
+    sessionId: 'aba-1',
+    titulo: 'Aba',
+    tipo: 'publicacao',
+    acao: 'subir o site <pid> & X em produção',
+    destinatarios: null,
+    criadoEm: iso(T0),
+    expiraEm: iso(T0 + 30 * MIN),
+    status: 'pendente',
+  });
+  const blocoDe = (p) => ({ compacto: montarBlocoOk(p), completo: montarBlocoOk({ ...p, completo: true }) });
+  const okDe = (codigo = COD) => ({ cod: codigo, bloco: blocoDe(pedidoOk(codigo)), titulo: 'Aba', nome: 'aba' });
+  const fechadoDe = (codigo = COD) => montarBlocoOkFechado({ ...pedidoOk(codigo), linha: 'Aprovado às 12:01.' });
+  // o telegram.mjs real: sem html = sai no classico
+  const soClassico = () => {
+    let n = 600;
+    return { enviar: (p) => (p.html ? undefined : { ok: true, messageId: ++n, formato: 'classico' }) };
+  };
+  // a resposta da aba-1 na tela (501, em cima da fala 88 do dono, que esta no anel) e a situacao dela por cima (502):
+  // a regra 1 ja rodou
+  async function regra1({ resolvidas } = {}) {
+    const x = novo({ resolvidas });
+    x.canal.mensagemDoDono(x.e, 88);
+    x.canal.resposta(x.e, parou('aba-1'), 'Aba', { citar: 88 });
+    await x.canal.drenar(x.e); // 501
+    x.c = x.e.tg.chamados['aba-1'];
+    x.canal.situacao(x.e, 'aba-1', DSX, { citar: 501 });
+    await x.canal.drenar(x.e); // 502 e a 501 sai
+    return x;
+  }
+  // resposta (501 rich) e o OK aberto por cima (601 classico; a 501 apagada)
+  async function comOkNaTela() {
+    const x = novo({ roteiro: soClassico() });
+    x.canal.resposta(x.e, parou('aba-1'), 'Aba');
+    await x.canal.drenar(x.e);
+    x.canal.okAbriu(x.e, 'aba-1', okDe());
+    await x.canal.drenar(x.e);
+    x.c = x.e.tg.chamados['aba-1'];
+    return x;
+  }
+
+  test('regra 1: a situacao sai SEM citar e DEPOIS a tela do chamado sai (manterConversa: a fala dele fica); o chamado fica em dia sem tela e nao volta', async () => {
+    const { canal, tg, e, c } = await regra1();
+    assert.deepEqual(passos(tg), [['enviar', false], ['enviar', true], ['apagar', 501]]);
+    assert.equal(tg.chamadas[0].args[0].responderA, 88);
+    assert.deepEqual(tg.chamadas[1].args[0], { ...montarSituacao({ ...DSX, chamadoId: 'JKMNPQRS' }), silencioso: true });
+    assert.equal('responderA' in tg.chamadas[1].args[0], false, 'sem reply: a citacao apontaria pra mensagem que some');
+    assert.deepEqual(e.tg.mensagens[502], { sessionId: 'situacao', aba: 'aba-1', at: iso(T0), formato: 'rich' });
+    assert.equal(e.tg.mensagens[501], undefined);
+    assert.equal(c.mensagem, null);
+    assert.equal(c.versao.estado, 'resposta');
+    assert.deepEqual(c.apagar, []);
+    assert.equal(c.limpar, undefined, 'a fala 88 do dono nao vai pro limpar');
+    assert.equal(canal.telaDaAba(e, 'aba-1'), null);
+    assert.equal(canal.sessaoDaMensagem(e, 502), 'aba-1');
+    assert.equal(e.tg.situacao.mensagem.messageId, 502);
+    assert.deepEqual(e.tg.saida, []);
+    // nenhum enviar do chamado depois: nem no drenar seguinte, nem com a aba de volta na fila
+    await canal.drenar(e);
+    e.tg.saida.push({ sessionId: 'aba-1', entrouEm: iso(T0), falhas: 0 });
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, 3);
+    assert.deepEqual(e.tg.saida, []);
+    // volta do disco igual; a marca torta sai
+    const lido = completarTg(JSON.parse(JSON.stringify(e.tg)));
+    assert.deepEqual(lido.chamados['aba-1'], c);
+    assert.equal(completarTg({ chamados: { 'aba-1': { ...JSON.parse(JSON.stringify(c)), naSituacao: 'x' } } }).chamados['aba-1'].naSituacao, undefined);
+  });
+
+  test('regra 1 no "manter": nada e apagado; a tela do chamado so perde os botoes (editarBotoes(tela, null)) e fica', async () => {
+    const { canal, tg, e, c } = await regra1({ resolvidas: 'manter' });
+    assert.deepEqual(passos(tg), [['enviar', false], ['enviar', true], ['editarBotoes', 501]]);
+    assert.deepEqual(tg.chamadas[2].args, [501, null]);
+    assert.equal('responderA' in tg.chamadas[1].args[0], false);
+    assert.equal(e.tg.mensagens[501].fica, true);
+    assert.equal(c.mensagem, null);
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, 3);
+    assert.ok(!tg.chamadas.some((x) => x.metodo === 'apagar'));
+  });
+
+  test('regra 1, as excecoes: chamado com OK aberto = a situacao sai com o citar e a tela do OK fica; chamado de OUTRA aba na tela = nada muda nele', async () => {
+    const { canal, tg, e, c } = await comOkNaTela();
+    const n = tg.chamadas.length;
+    canal.situacao(e, 'aba-1', DSX, { citar: 601 });
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['enviar', true]]);
+    assert.equal(tg.chamadas[n].args[0].responderA, 601);
+    assert.equal(c.mensagem.messageId, 601);
+    assert.equal(c.ok.cod, COD);
+    assert.equal(canal.okNaMensagem(e, 601), COD);
+    assert.deepEqual(c.apagar, []);
+    // outra aba
+    const o = novo();
+    o.canal.aviso(o.e, parou('aba-2'), 'Outra');
+    await o.canal.drenar(o.e); // 501
+    o.canal.situacao(o.e, 'aba-1', DSX, { citar: 77 });
+    await o.canal.drenar(o.e);
+    assert.deepEqual(passos(o.tg), [['enviar', false], ['enviar', true]]);
+    assert.equal(o.tg.chamadas[1].args[0].responderA, 77);
+    assert.equal(o.e.tg.chamados['aba-2'].mensagem.messageId, 501);
+    assert.deepEqual(o.e.tg.chamados['aba-2'].apagar, []);
+    await o.canal.drenar(o.e);
+    assert.equal(o.tg.chamadas.length, 2);
+  });
+
+  test('regra 2: a fala dele (enviando/entregue) nao tira a situacao; a resposta nova = 1 enviar com notificacao e DEPOIS o apagar da situacao (vazia); no "manter" ela so perde os botoes', async () => {
+    for (const resolvidas of ['apagar', 'manter']) {
+      const { canal, tg, e, c } = await regra1({ resolvidas });
+      canal.mensagemDoDono(e, 89);
+      canal.falaRecebida(e, { sessionId: canal.sessaoDaMensagem(e, 502), fala: 'faz', audio: false, hora: iso(T0), messageIdDono: 89 });
+      canal.entregue(e, 'aba-1', iso(T0));
+      await canal.drenar(e);
+      assert.equal(tg.chamadas.length, 3, resolvidas);
+      assert.equal(e.tg.situacao.mensagem.messageId, 502, resolvidas);
+      canal.resposta(e, parou('aba-1', 'Feito.'), 'Aba', { citar: 89 });
+      await canal.drenar(e);
+      const fim = resolvidas === 'apagar' ? ['apagar', 502] : ['editarBotoes', 502];
+      assert.deepEqual(passos(tg).slice(3), [['enviar', false], fim], resolvidas);
+      assert.equal(tg.chamadas[3].args[0].responderA, 89);
+      assert.equal(c.mensagem.messageId, 503);
+      const s = e.tg.situacao;
+      assert.deepEqual([s.aba, s.dados, s.mensagem, s.descer], [null, null, null, false], resolvidas);
+      assert.deepEqual(canal.lerToque(e, 'o:JKMNPQRS:0', 502), { obsoleto: true });
+      if (resolvidas === 'apagar') assert.equal(e.tg.mensagens[502], undefined);
+      else assert.equal(e.tg.mensagens[502].fica, true);
+      assert.deepEqual(e.tg.saida, []);
+      await canal.drenar(e);
+      assert.equal(tg.chamadas.length, 5, resolvidas);
+    }
+  });
+
+  test('regra 2: a situacao da aba ainda na fila quando a resposta chega = cancelada (nao sai); depois da regra 1, o encerrado e o OK sao mensagem nova e a situacao sai depois', async () => {
+    const { canal, tg, e } = novo();
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e); // 501
+    canal.situacao(e, 'aba-1', DSX, { citar: 501 });
+    canal.resposta(e, parou('aba-1', 'Feito.'), 'Aba');
+    assert.equal(e.tg.situacao.dados, null);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['enviar', false], ['apagar', 501]]);
+    assert.equal(tg.chamadas[1].args[0].classico, montarChamado(e.tg.chamados['aba-1'].versao).classico);
+    assert.equal(e.tg.situacao.mensagem, null);
+    assert.deepEqual(e.tg.saida, []);
+    // encerrar depois da regra 1: mensagem nova (silenciosa, sem botoes) e a situacao sai depois
+    const a = await regra1();
+    a.canal.encerrar(a.e, 'aba-1', iso(T0 + MIN), 'pc');
+    await a.canal.drenar(a.e);
+    assert.deepEqual(passos(a.tg).slice(3), [['enviar', true], ['apagar', 502]]);
+    assert.equal(a.c.versao.estado, 'encerrado');
+    assert.equal(a.c.mensagem.messageId, 503);
+    assert.equal(a.tg.chamadas[3].args[0].botoes, null);
+    assert.equal(a.e.tg.situacao.mensagem, null);
+    // o OK depois da regra 1: mensagem nova com notificacao e a situacao sai depois
+    const b = await regra1();
+    assert.deepEqual(b.canal.okAbriu(b.e, 'aba-1', okDe()), { aceito: true, substituido: null });
+    await b.canal.drenar(b.e);
+    assert.deepEqual(passos(b.tg).slice(3), [['enviar', false], ['apagar', 502]]);
+    assert.equal(b.c.mensagem.ok, COD);
+    assert.equal(b.e.tg.situacao.mensagem, null);
+  });
+
+  test('regra 3: a situacao de X substituida pela de Y, X sem chamado com tela = perde os botoes, vira mensagem de X (resposta em cima = X) e sai depois da proxima mensagem nova de X', async () => {
+    const { canal, tg, e } = novo();
+    canal.situacao(e, 'S1', DSX, { citar: 77 });
+    await canal.drenar(e); // 501
+    canal.situacao(e, 'S2', { ...DSX, titulo: 'Site' }, { citar: 78 });
+    await canal.drenar(e); // 502
+    assert.deepEqual(passos(tg), [['enviar', true], ['enviar', true], ['editarBotoes', 501]]);
+    assert.deepEqual(tg.chamadas[2].args, [501, null]);
+    assert.deepEqual(e.tg.mensagens[501], { sessionId: 'S1', at: iso(T0), formato: 'rich', citar: 77, exSituacao: true });
+    assert.equal(canal.sessaoDaMensagem(e, 501), 'S1');
+    assert.deepEqual(canal.lerToque(e, 'o:ABCDEFGH:0', 501), { obsoleto: true });
+    assert.equal(e.tg.situacao.mensagem.messageId, 502);
+    assert.equal(e.tg.situacao.aba, 'S2');
+    assert.deepEqual(e.tg.saida, []);
+    // a proxima mensagem nova de S1 (o chamado) apaga a 501 depois de sair; a situacao de S2 fica
+    canal.aviso(e, parou('S1'), 'Faro');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(3), [['enviar', false], ['apagar', 501]]);
+    assert.equal(e.tg.mensagens[501], undefined);
+    assert.equal(e.tg.situacao.mensagem.messageId, 502);
+    // a proxima mensagem nova de X pode ser a situacao dela: a 502 vira mensagem de S2 e a 501 (de S1) sai depois
+    const k = novo();
+    k.canal.situacao(k.e, 'S1', DSX, { citar: 77 });
+    await k.canal.drenar(k.e); // 501
+    k.canal.situacao(k.e, 'S2', DSX, { citar: 78 });
+    await k.canal.drenar(k.e); // 502; a 501 vira de S1
+    k.canal.situacao(k.e, 'S1', DSX, { citar: 79 });
+    await k.canal.drenar(k.e); // 503; a 502 vira de S2; a 501 sai
+    assert.deepEqual(passos(k.tg).slice(3), [['enviar', true], ['editarBotoes', 502], ['apagar', 501]]);
+    assert.equal(k.e.tg.mensagens[502].sessionId, 'S2');
+    assert.equal(k.canal.sessaoDaMensagem(k.e, 503), 'S1');
+  });
+
+  test('regra 3: X com o chamado em dia sem tela (regra 1) tambem vira mensagem de X; no "manter" fica pra sempre; X com chamado na tela = apagada como hoje', async () => {
+    const { canal, tg, e } = await regra1();
+    canal.situacao(e, 'S2', DSX, { citar: 78 });
+    await canal.drenar(e); // 503
+    assert.deepEqual(passos(tg).slice(3), [['enviar', true], ['editarBotoes', 502]]);
+    assert.equal(canal.sessaoDaMensagem(e, 502), 'aba-1');
+    canal.resposta(e, parou('aba-1', 'Feito.'), 'Aba');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(5), [['enviar', false], ['apagar', 502]]);
+    // manter
+    const m = novo({ resolvidas: 'manter' });
+    m.canal.situacao(m.e, 'S1', DSX, { citar: 77 });
+    await m.canal.drenar(m.e);
+    m.canal.situacao(m.e, 'S2', DSX, { citar: 78 });
+    await m.canal.drenar(m.e);
+    assert.deepEqual(passos(m.tg), [['enviar', true], ['enviar', true], ['editarBotoes', 501]]);
+    assert.equal(m.e.tg.mensagens[501].fica, true);
+    assert.equal(m.e.tg.mensagens[501].sessionId, 'S1');
+    m.canal.aviso(m.e, parou('S1'), 'Faro');
+    await m.canal.drenar(m.e);
+    assert.deepEqual(passos(m.tg).slice(3), [['enviar', false]]);
+    // X com chamado na tela (o OK aberto) = a situacao dela e apagada como hoje
+    const o = await comOkNaTela();
+    o.canal.situacao(o.e, 'aba-1', DSX, { citar: 601 });
+    await o.canal.drenar(o.e);
+    const sit = o.e.tg.situacao.mensagem.messageId;
+    const n = o.tg.chamadas.length;
+    o.canal.situacao(o.e, 'S2', DSX, { citar: 78 });
+    await o.canal.drenar(o.e);
+    assert.deepEqual(passos(o.tg).slice(n), [['enviar', true], ['apagar', sit]]);
+    assert.equal(o.e.tg.mensagens[sit], undefined);
+  });
+
+  test('conserto da T26b2: o encerrar com o OK aberto fica guardado (c.encerrarDepois, 1 log) e o okFechou (some ou fecho) aplica o encerrar de sempre; a resposta nova descarta; completarTg tira o torto', async () => {
+    for (const some of [true, false]) {
+      const { canal, tg, e, c, logs } = await comOkNaTela();
+      const nLogs = logs.length;
+      canal.encerrar(e, 'aba-1', iso(T0 + MIN), 'pc');
+      assert.deepEqual(c.encerrarDepois, { hora: iso(T0 + MIN), motivo: 'pc' });
+      assert.equal(c.versao.estado, 'resposta');
+      assert.equal(logs.length, nLogs + 1);
+      assert.ok(logs.at(-1).includes('aba-1') && logs.at(-1).includes(COD));
+      const lido = completarTg(JSON.parse(JSON.stringify(e.tg)));
+      assert.deepEqual(lido.chamados['aba-1'].encerrarDepois, c.encerrarDepois);
+      const n = tg.chamadas.length;
+      await canal.drenar(e);
+      assert.equal(tg.chamadas.length, n, 'nada sai antes do fecho');
+      assert.equal(canal.okFechou(e, COD, { texto: fechadoDe(), some }), true);
+      assert.equal(c.ok, undefined, 'o OK fechado sai com o encerrar');
+      assert.equal(c.encerrarDepois, undefined);
+      assert.equal(c.versao.estado, 'encerrado');
+      assert.equal(c.versao.motivo, 'pc');
+      assert.equal(c.versao.hora, iso(T0 + MIN));
+      await canal.drenar(e);
+      assert.deepEqual(passos(tg).slice(n), [['editar', 601]], String(some));
+      assert.equal(tg.chamadas[n].args[1].classico, montarChamado(c.versao).classico);
+      assert.equal(tg.chamadas[n].args[1].botoes, null);
+      assert.deepEqual(e.tg.saida, []);
+    }
+    // a resposta nova da aba com o OK aberto descarta o encerrar guardado
+    const r = await comOkNaTela();
+    r.canal.encerrar(r.e, 'aba-1', iso(T0), 'whatsapp');
+    r.canal.resposta(r.e, parou('aba-1', 'Outra?'), 'Aba');
+    assert.equal(r.c.encerrarDepois, undefined);
+    r.canal.okFechou(r.e, COD, { some: true });
+    assert.equal(r.c.versao.estado, 'resposta');
+    // completarTg: o valido fica, o torto sai
+    const base = JSON.parse(JSON.stringify(r.c));
+    const com = (v) => completarTg({ chamados: { 'aba-1': { ...base, encerrarDepois: v } } }).chamados['aba-1'].encerrarDepois;
+    assert.deepEqual(com({ hora: iso(T0), motivo: 'whatsapp' }), { hora: iso(T0), motivo: 'whatsapp' });
+    for (const torto of ['x', null, { hora: iso(T0), motivo: 'outro' }, { hora: 5, motivo: 'pc' }, []]) assert.equal(com(torto), undefined, JSON.stringify(torto));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// T28 (PLANO-TELEGRAM.md, "T28"; pedido do dono 16/10/2026 08:29 e 18/10 15:36; troca do 18/10 15:49: sem X vermelho, so
+// negrito, botao com 🔄): o OK fechado de vencido fica na tela com a linha em negrito e o botao "🔄 Tentar novamente"; o
+// encerrar (o guardado da T26d e o que vier depois) NAO tira esse bloco (a tela mostra a linha do encerrado e o bloco); o
+// okDeNovo tira o botao e poe a 2a linha. Por que existe: o OK que expirava sumia sem rastro quando a aba encerrava.
+describe('T28 — o OK vencido fica na tela com o botao Tentar novamente', () => {
+  const COD = 'ABC234';
+  const COD2 = 'DEF567';
+  const pedidoOk = (codigo = COD) => ({
+    v: 1, codigo, sessionId: 'aba-1', titulo: 'Aba', tipo: 'publicacao', acao: 'subir o site <pid> & X em produção', destinatarios: null,
+    criadoEm: iso(T0), expiraEm: iso(T0 + 30 * MIN), status: 'pendente',
+  });
+  const blocoDe = (p) => ({ compacto: montarBlocoOk(p), completo: montarBlocoOk({ ...p, completo: true }) });
+  const okDe = (codigo = COD) => ({ cod: codigo, bloco: blocoDe(pedidoOk(codigo)), titulo: 'Aba', nome: 'aba' });
+  const LINHA = 'Expirou às 12:30 sem resposta.';
+  const FECHADO = montarBlocoOkFechado({ ...pedidoOk(), linha: LINHA });
+  const BOTAO = [[{ texto: '🔄 Tentar novamente', dados: `r:${COD}` }]];
+  const VENCIDO = { texto: FECHADO, some: false, forte: LINHA, botoes: BOTAO };
+  const soClassico = () => {
+    let n = 600;
+    return { enviar: (p) => (p.html ? undefined : { ok: true, messageId: ++n, formato: 'classico' }) };
+  };
+  const cabecalho = montarChamado({ estado: 'ok', titulo: 'Aba' }).classico;
+  const blocoForte = `${esc(FECHADO.slice(0, -LINHA.length))}<b>${esc(LINHA)}</b>`;
+
+  test('T28 c1: fecho de vencido = 1 editar com a linha em negrito e o botao; okDeNovo tira o botao e poe a 2a linha (troca na 2a vez); outro cod ou OK aberto = false', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601
+    const c = e.tg.chamados['aba-1'];
+    assert.equal(canal.okDeNovo(e, COD, 'x'), false, 'OK aberto: nada');
+    assert.equal(canal.okFechou(e, COD, VENCIDO), true);
+    assert.equal(c.ok.fechado, FECHADO);
+    assert.equal(c.ok.forte, LINHA);
+    assert.deepEqual(c.ok.botoesFechado, BOTAO);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', false], ['editar', 601]]);
+    assert.deepEqual(tg.chamadas[1].args[1], { html: undefined, classico: `${cabecalho}\n\n${blocoForte}`, botoes: BOTAO, formato: 'classico' });
+    assert.ok(!tg.chamadas[1].args[1].classico.includes('❌'));
+    assert.equal(c.mensagem.ok, COD);
+    assert.equal(canal.okNaMensagem(e, 601), null, 'fechado: o toque de OK nao confere nele');
+
+    assert.equal(canal.okDeNovo(e, COD2, 'x'), false, 'outro cod');
+    assert.equal(canal.okDeNovo(e, COD, 'Pedi de novo à aba às 12:40.'), true);
+    assert.equal(c.ok.botoesFechado, undefined);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(2), [['editar', 601]]);
+    assert.deepEqual(tg.chamadas[2].args[1], { html: undefined, classico: `${cabecalho}\n\n${blocoForte}\nPedi de novo à aba às 12:40.`, botoes: null, formato: 'classico' });
+    assert.equal(canal.okDeNovo(e, COD, 'Não consegui pedir de novo à aba: Não achei a sessão Aba aberta no PC.'), true);
+    await canal.drenar(e);
+    assert.equal(tg.chamadas[3].args[1].classico, `${cabecalho}\n\n${blocoForte}\nNão consegui pedir de novo à aba: Não achei a sessão Aba aberta no PC.`);
+    assert.equal(tg.chamadas[3].args[1].botoes, null, 'o botao nao volta');
+  });
+
+  // T28s (sabotagem #30 da t28.mjs): o okDeNovo so no fechado de vencido (com o forte)
+  test('T28s: okDeNovo num OK fechado sem o forte (os outros fechos) = false; o fechado fica como esta', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601
+    assert.equal(canal.okFechou(e, COD, { texto: FECHADO, some: false }), true);
+    await canal.drenar(e);
+    const c = e.tg.chamados['aba-1'];
+    const n = tg.chamadas.length;
+    assert.equal(canal.okDeNovo(e, COD, 'Pedi de novo à aba às 12:40.'), false);
+    assert.equal(c.ok.depois, undefined);
+    await canal.drenar(e);
+    assert.equal(tg.chamadas.length, n, 'nada editado');
+  });
+
+  test('T28 c2: OK aberto + encerrar guardado + vence = a tela do encerrado com a linha dele e o bloco com o botao (1 editar, nada novo nem apagado); os outros fechos no encerrar = como hoje (sem o bloco)', async () => {
+    for (const vencido of [true, false]) {
+      const { canal, tg, e } = novo({ roteiro: soClassico() });
+      canal.resposta(e, parou('aba-1'), 'Aba');
+      await canal.drenar(e); // 501 rich
+      canal.okAbriu(e, 'aba-1', okDe());
+      await canal.drenar(e); // 601 + apagar 501
+      const c = e.tg.chamados['aba-1'];
+      canal.encerrar(e, 'aba-1', iso(T0 + 31 * MIN), 'pc');
+      assert.ok(c.encerrarDepois, 'guardado');
+      const n = tg.chamadas.length;
+      const fecho = vencido ? VENCIDO : { texto: montarBlocoOkFechado({ ...pedidoOk(), linha: 'Respondido pelo WhatsApp às 12:20.' }), some: false };
+      assert.equal(canal.okFechou(e, COD, fecho), true);
+      assert.equal(c.versao.estado, 'encerrado');
+      await canal.drenar(e);
+      assert.deepEqual(passos(tg).slice(n), [['editar', 601]], JSON.stringify(passos(tg).slice(n)));
+      const ed = tg.chamadas[n].args[1];
+      if (vencido) {
+        assert.equal(ed.classico, `${cabecalho}\n<i>Encerrada às 12:31: a aba seguiu no PC.</i>\n\n${blocoForte}`);
+        assert.deepEqual(ed.botoes, BOTAO);
+        assert.equal(c.ok.cod, COD, 'o bloco fica no chamado');
+      } else {
+        assert.equal(ed.classico, montarChamado(c.versao).classico, 'como hoje: o encerrado sem o bloco');
+        assert.equal(c.ok, undefined);
+      }
+    }
+  });
+
+  test('T28 c3: o encerrar que chega DEPOIS do vencido tambem mantem o bloco; aviso novo da aba = mensagem nova sem o bloco e a antiga apagada (regra de hoje)', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.resposta(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601
+    canal.okFechou(e, COD, VENCIDO);
+    await canal.drenar(e);
+    const c = e.tg.chamados['aba-1'];
+    canal.encerrar(e, 'aba-1', iso(T0 + 40 * MIN), 'pc');
+    await canal.drenar(e);
+    const ult = tg.chamadas.at(-1);
+    assert.deepEqual([ult.metodo, ult.args[0]], ['editar', 601]);
+    assert.equal(ult.args[1].classico, `${cabecalho}\n<i>Encerrada às 12:40: a aba seguiu no PC.</i>\n\n${blocoForte}`);
+    assert.deepEqual(ult.args[1].botoes, BOTAO);
+    const n = tg.chamadas.length;
+    canal.aviso(e, parou('aba-1', 'Outra pergunta?'), 'Aba');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['enviar', false], ['apagar', 601]]);
+    assert.ok(!JSON.stringify(tg.chamadas[n].args[0]).includes('r:ABC234'), 'a mensagem nova sem o botao');
+    assert.equal(c.ok, undefined);
+  });
+
+  test('T28 c4: o pedido novo da aba (okAbriu) com o fechado de vencido na tela substitui: mensagem nova com o bloco novo, a antiga apagada', async () => {
+    const { canal, tg, e } = novo({ roteiro: soClassico() });
+    canal.okAbriu(e, 'aba-1', okDe());
+    await canal.drenar(e); // 601
+    canal.okFechou(e, COD, VENCIDO);
+    await canal.drenar(e);
+    canal.okDeNovo(e, COD, 'Pedi de novo à aba às 12:40.');
+    await canal.drenar(e);
+    const ok2 = okDe(COD2);
+    assert.deepEqual(canal.okAbriu(e, 'aba-1', ok2), { aceito: true, substituido: null });
+    const n = tg.chamadas.length;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).slice(n), [['enviar', false], ['apagar', 601]]);
+    assert.equal(tg.chamadas[n].args[0].classico, `${cabecalho}\n\n${esc(ok2.bloco.compacto.texto)}`);
+    assert.deepEqual(tg.chamadas[n].args[0].botoes, ok2.bloco.compacto.botoes);
+    assert.equal(e.tg.chamados['aba-1'].ok.cod, COD2);
+  });
+
+  test('T28 c5: completarTg guarda forte, botoesFechado e depois validos e tira os tortos (o c.ok fica)', () => {
+    const ok = { cod: COD, bloco: blocoDe(pedidoOk()), completo: false, toque: null, fechado: FECHADO, notificar: false, em: iso(T0), naTelaEm: iso(T0) };
+    const com = (extra) => completarTg({ chamados: { 'aba-1': { versao: { id: 1, estado: 'ok', titulo: 'Aba' }, descer: false, mensagem: null, apagar: [], ok: { ...ok, ...extra } } } }).chamados['aba-1'].ok;
+    const bom = com({ forte: LINHA, botoesFechado: BOTAO, depois: 'Pedi de novo à aba às 12:40.' });
+    assert.equal(bom.forte, LINHA);
+    assert.deepEqual(bom.botoesFechado, BOTAO);
+    assert.equal(bom.depois, 'Pedi de novo à aba às 12:40.');
+    const torto = com({ forte: 5, botoesFechado: 'x', depois: {} });
+    assert.equal(torto.cod, COD);
+    assert.equal(torto.forte, undefined);
+    assert.equal(torto.botoesFechado, undefined);
+    assert.equal(torto.depois, undefined);
   });
 });

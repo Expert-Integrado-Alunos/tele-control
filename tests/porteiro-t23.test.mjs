@@ -118,7 +118,7 @@ function montar({ ok = false, resolvidasTg, transcrever, falar, canalPrincipal }
     SESSOES_WPP_LOG: path.join(raiz, 'porteiro.log'),
   };
   for (const d of [env.SESSOES_WPP_DIR, env.CLAUDE_SESSIONS_DIR, env.CLAUDE_PROJECTS_DIR]) fs.mkdirSync(d, { recursive: true });
-  if (ok) fs.writeFileSync(path.join(env.SESSOES_WPP_DIR, 'config.json'), JSON.stringify({ telegram: { ligado: true, ok: { ligado: true } } }));
+  if (ok) fs.writeFileSync(path.join(env.SESSOES_WPP_DIR, 'config.json'), JSON.stringify({ telegram: { ligado: true, ok: { ligado: true, naAba: false } } }));
   const h = { raiz, env, t: T0, idle: 0, grupo: [], enviados: [], entregas: [], nReg: 0, nUpd: 100, nMid: 7000, nAux: 0 };
   let seq = 0;
   h.wpp = {

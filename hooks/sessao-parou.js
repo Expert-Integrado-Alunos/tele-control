@@ -140,6 +140,9 @@ async function processar(bruto) {
   // (ORCA_AGENT_HOOK_TOKEN e segredo). Sem a variavel, o evento sai como antes (sem a chave `app`).
   const orca = process.env.ORCA_TERMINAL_HANDLE;
   if (typeof orca === 'string' && orca !== '') ev.app = 'orca';
+  // T27 (PLANO-TELEGRAM.md, "T27", contrato 1): a aba continuou por um hook de Stop (nao por ele) = a mesma vez da parada
+  // anterior; o porteiro nao encerra o chamado por causa desta. Sem o campo true, o evento sai como antes.
+  if (entrada.stop_hook_active === true) ev.continuacao = true;
   lib.anexarEvento(cam.estadoDir, ev);
 }
 

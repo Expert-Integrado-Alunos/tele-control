@@ -7,7 +7,7 @@
 // pasta temporaria (prefixo "t7b1b-"); wpp, espiar, porteiroVivo e dormir dublados. Nada de rede, chave real, config.json
 // real nem porteiro rodando.
 // Rodar: node --test --test-reporter=tap "tests/ok-wpp-tg.test.mjs"
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1534,4 +1534,105 @@ test('A1 11d. tgOkPreguicoso com o chatId e a chave no config: sem telegram.ok.l
   assert.deepEqual(chamadas, [VAR]);
   assert.equal(t.botId, 7);
   assert.equal(t.chatDono, DONO);
+});
+
+// ---------- T26a (PLANO-TELEGRAM.md, "T26a"): o Sim tocado na mensagem da aba (o bloco do OK no fim) ----------
+
+// T28 (PLANO-TELEGRAM.md, "T28", contrato 2; caso (i) da prova): o toque no botao "🔄 Tentar novamente" (dados r:<COD>)
+// nunca vira Sim no verificar: no prazo o pedido continua pendente (o toque e ignorado); vencido = expirou.
+describe('T28 o toque r: no lote do verificar', () => {
+  test('T28 i: toque r:<COD> do dono, na mensagem do bot = pendente (ignorado, sem efeito); depois do prazo = expirou', async () => {
+    {
+      const h = montar();
+      const { ok, cod } = await pedidoCom(h);
+      h.t = T0 + MIN;
+      h.tg = [toque(h, cod, 'sim', { updateId: 601, dados: `r:${cod}` })];
+      const r = await ok.verificar(cod);
+      // o verificar nem conta o toque fora do k: (ignorado calado): continua pendente
+      assert.deepEqual(r, { status: 'pendente', motivo: 'sem resposta do dono ainda', ignoradas: [] });
+      semEfeito(h, cod, 'toque r:');
+    }
+    {
+      const h = montar();
+      const { ok, cod } = await pedidoCom(h);
+      h.tg = [toque(h, cod, 'sim', { updateId: 602, dados: `r:${cod}` })];
+      h.t = T0 + 30 * MIN + 1;
+      assert.deepEqual(await ok.verificar(cod), { status: 'invalido', motivo: 'expirou' });
+      assert.equal(h.pedido(cod).status, 'pendente');
+    }
+  });
+});
+
+describe('T26a o verificar aceita o Sim tocado na mensagem da aba', () => {
+  // O texto que o Telegram devolve da mensagem mandada em HTML: sem tags, entidades desfeitas (a conta do semTags do
+  // telegram.mjs)
+  const semTags = (html) => String(html ?? '').replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  // A mensagem da aba com o OK dentro, montada do ARQUIVO do pedido (como o canal fara na T26b)
+  const daAba = async (p, { completo = false, final = 'Terminei o `<pid>.json` & o resto.\n\n**Posso publicar?** A) Sim / B) Não' } = {}) => {
+    const { montarBlocoOk } = await import('../lib/ok-tg.mjs');
+    const { montarChamadoComOk } = await import('../lib/formato-tg.mjs');
+    const bloco = { compacto: montarBlocoOk({ ...p, completo: false }), completo: montarBlocoOk({ ...p, completo: true }) };
+    const r = montarChamadoComOk({ estado: 'resposta', titulo: 'repos-f3', final, chamadoId: 'ABCDEFGH' }, { bloco, completo });
+    return { texto: semTags(r.classico), botoes: r.botoes, bloco: completo ? bloco.completo : bloco.compacto };
+  };
+
+  test('T26a 1: Sim no compacto e no completo da mensagem da aba = ok pelo Telegram (usado, verificadoPor), igual ao de hoje', async () => {
+    for (const completo of [false, true]) {
+      const h = montar();
+      const { ok, cod } = await pedidoCom(h);
+      h.t = T0 + MIN;
+      const aba = await daAba(h.pedido(cod), { completo });
+      assert.ok(aba.texto.endsWith(`\n${aba.bloco.texto}`), 'o bloco no fim');
+      assert.ok(aba.texto.includes('<pid>.json & o resto'), 'a parte da aba em cima');
+      // o teclado do helper e o do montarOkTg da mesma versao: o mesmo do bloco
+      assert.deepEqual(aba.botoes, montarOkTg({ ...h.pedido(cod), completo }).botoes);
+      h.tg = [toque(h, cod, 'sim', { updateId: 501, messageId: 77, completo, texto: aba.texto })];
+      const r = await ok.verificar(cod);
+      assert.deepEqual(r, { status: 'ok', canal: 'telegram', codigo: cod, tipo: 'publicacao', acao: ACAO, destinatarios: null, hora: '16:01' }, `completo=${completo}`);
+      const p = h.pedido(cod);
+      assert.equal(p.status, 'usado');
+      assert.deepEqual(p.verificadoPor, { canal: 'telegram', updateId: 501, messageId: 77, texto: 'Sim', conferidoEm: iso(T0 + MIN) });
+      assert.deepEqual(h.markers(), { [SID]: { at: T0 + MIN, k: 'telegram', trecho: `${cod} pelo Telegram: ${ACAO}`, usos: 0 } });
+    }
+  });
+
+  test('T26a 2: o Nao tocado na mensagem da aba cancela; bloco no meio ou de outro pedido = ignorada, sem efeito', async () => {
+    {
+      const h = montar();
+      const { ok, cod } = await pedidoCom(h);
+      h.t = T0 + MIN;
+      const aba = await daAba(h.pedido(cod));
+      h.tg = [toque(h, cod, 'nao', { updateId: 501, texto: aba.texto })];
+      const r = await ok.verificar(cod);
+      assert.deepEqual(r, { status: 'recusado', motivo: 'o dono tocou em Nao no Telegram', codigo: cod, hora: '16:01' });
+      assert.equal(h.pedido(cod).status, 'recusado');
+      assert.equal(h.markers(), null);
+    }
+    {
+      const h = montar();
+      const a = await pedidoCom(h, 'publicacao', 'Publicar o site A');
+      const b = await pedidoCom(h, 'publicacao', 'Publicar o site B');
+      h.t = T0 + MIN;
+      const abaA = await daAba(h.pedido(a.cod));
+      const abaB = await daAba(h.pedido(b.cod));
+      const forjados = [
+        ['bloco no meio (texto depois dele)', `${abaA.texto}\nPS: e mais isso`],
+        ['bloco do B com os dados do A', abaB.texto],
+        ['bloco do A colado sem quebra', abaA.texto.replace(`\n\n${abaA.bloco.texto}`, abaA.bloco.texto)],
+      ];
+      let id = 510;
+      for (const [nome, texto] of forjados) {
+        id += 1;
+        h.tg = [toque(h, a.cod, 'sim', { updateId: id, texto })];
+        const r = await a.ok.verificar(a.cod);
+        assert.deepEqual(r, {
+          status: 'pendente', motivo: 'sem resposta do dono ainda',
+          ignoradas: [{ canal: 'telegram', updateId: id, motivo: 'toque do Telegram nao confere: texto da mensagem nao confere com o pedido' }],
+        }, nome);
+        assert.doesNotMatch(JSON.stringify(r), /site A/, nome);
+        semEfeito(h, a.cod, nome);
+      }
+    }
+  });
 });

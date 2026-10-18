@@ -1347,3 +1347,278 @@ describe('T24 2. montarPainel: o classico longo corta as Fechadas, as Paradas, o
     assert.match(c2, /\n\(e mais \d+\)<\/blockquote>\n<blockquote expandable><b>🔵 Aguardando \(30\)<\/b>/);
   });
 });
+
+// ---------- T26a (PLANO-TELEGRAM.md, "T26a"): o estado 'ok' e o chamado com o OK dentro ----------
+
+describe('T26a montarChamadoComOk e o estado ok', () => {
+  // as funcoes novas pelo modulo inteiro: sem elas, so estes testes falham
+  const COD = 'ABC234';
+  const BOT_T = 700900800;
+  const DONO_T = 700100200;
+  const CRIADO = '2026-10-02T13:00:00.700Z'; // 10:00 em Brasilia
+  const pedidoOk = (extra = {}) => ({
+    v: 1, codigo: COD, titulo: 'Nome', tipo: 'publicacao', acao: 'subir o site X em produção', destinatarios: null,
+    criadoEm: CRIADO, expiraEm: '2026-10-02T13:30:00.700Z', status: 'pendente', ...extra,
+  });
+  const blocosDe = (p) => ({ compacto: okTg.montarBlocoOk({ ...p, completo: false }), completo: okTg.montarBlocoOk({ ...p, completo: true }) });
+  const SIM_NAO = [[{ texto: 'Sim', dados: `k:${COD}:s`, estilo: 'success' }, { texto: 'Não', dados: `k:${COD}:n`, estilo: 'danger' }]];
+  const COMPACTO = [...SIM_NAO, [{ texto: 'Mais informações', dados: `k:${COD}:i` }]];
+  // A parte da aba do FINAL (resposta/aviso nas 2 linhas, opcoes em texto, sem botao)
+  const PARTE = '<b>ℹ️ Nome</b>\nTerminei a revisão do <code>&lt;pid&gt;.json</code>.\n\n<b>Faço X?</b>\nA) Sim, tudo hoje (recomendado) / B) Só as correções';
+  const PARTE_ABERTA = '<b>ℹ️ Nome</b>\n\nTerminei a revisão do &lt;pid&gt;.json.\n\n━━━━━━━━━━\n🔴 DECISÃO: Faço X? A) Sim, tudo hoje (recomendado) / B) Só as correções';
+  // O toque como o getUpdates devolve, na mensagem que o porteiro mandou (texto = o visivel do classico)
+  const toqueNa = (classico, botoes, p, letra = 's') => ({
+    update_id: 900,
+    callback_query: {
+      id: 'cbq-1', from: { id: DONO_T, is_bot: false, first_name: 'Davi' }, chat_instance: '-1', data: `k:${p.codigo}:${letra}`,
+      message: {
+        message_id: 77, from: { id: BOT_T, is_bot: true, first_name: 'Bot' }, chat: { id: DONO_T, type: 'private' },
+        date: Math.floor(Date.parse(p.criadoEm) / 1000) + 2, text: visivel(classico),
+        ...(botoes ? { reply_markup: { inline_keyboard: botoes.map((l) => l.map((b) => ({ text: b.texto, callback_data: b.dados, ...(b.estilo ? { style: b.estilo } : {}) }))) } } : {}),
+      },
+    },
+  });
+  const conferir = (classico, botoes, p, letra) => okTg.conferirToque(toqueNa(classico, botoes, p, letra), { pedido: p, botId: BOT_T, chatDono: DONO_T });
+
+  test('T26a 1: montarChamado estado ok = so o cabecalho (h2 / b), sem botao, mesmo com final e chamadoId', () => {
+    assert.deepEqual(montarChamado({ estado: 'ok', titulo: 'Nome' }), { html: '<h2>ℹ️ Nome</h2>', classico: '<b>ℹ️ Nome</b>', botoes: null });
+    assert.deepEqual(montarChamado({ estado: 'ok', titulo: 'A <b> & B', final: FINAL, chamadoId: ID, completo: true }), {
+      html: '<h2>ℹ️ A &lt;b&gt; &amp; B</h2>', classico: '<b>ℹ️ A &lt;b&gt; &amp; B</b>', botoes: null,
+    });
+    assert.deepEqual(montarChamado({ estado: 'ok', titulo: 'Nome', icone: '🎛️' }).classico, '<b>🎛️ Nome</b>');
+    assert.throws(() => montarChamado({ estado: 'OK', titulo: 'Nome' }), TypeError);
+  });
+
+  test('T26a 2: o chamado de hoje (sem reserva) sai byte a byte igual (golden da base 684232d)', () => {
+    const LONGO = `${Array.from({ length: 300 }, (_, i) => `linha ${i} & <tag> ${'x'.repeat(40)} 🔴`).join('\n')}\n\n**Posso seguir?** A) Sim / B) Não`;
+    const saidas = [];
+    for (const estado of ['aviso', 'resposta']) {
+      for (const final of [FINAL, LONGO, '', 'Feito.']) {
+        for (const completo of [false, true]) {
+          saidas.push(montarChamado({ estado, titulo: 'Nome <b>', final, completo, chamadoId: 'ABCDEFGH' }));
+          saidas.push(montarSituacao({ titulo: 'Nome', final, completo, situacao: 'Esperando você desde 10:00.', chamadoId: 'ABCDEFGH' }));
+          saidas.push(montarSituacao({ titulo: 'Nome', final, completo, trabalhando: true }));
+        }
+      }
+    }
+    assert.equal(crypto.createHash('sha256').update(JSON.stringify(saidas)).digest('hex'), '5f2a7c3b0a8d4701e30d280aac65b9d9d16f21022633d172ce22172b20b2f50e');
+  });
+
+  test('T26a 3: resposta/aviso + bloco compacto: a parte da aba (opcoes em texto, sem botao de opcao) + o bloco escapado no fim, botoes do bloco', () => {
+    const p = pedidoOk();
+    const bloco = blocosDe(p);
+    const ok = { bloco };
+    for (const estado of ['resposta', 'aviso']) {
+      const r = formatoTg.montarChamadoComOk({ estado, titulo: 'Nome', final: FINAL, chamadoId: ID }, ok);
+      assert.deepEqual(Object.keys(r).sort(), ['botoes', 'classico'], 'sem html: sai sempre no classico');
+      assert.equal(r.classico, `${PARTE}\n\n${esc(bloco.compacto.texto)}`, estado);
+      assert.deepEqual(r.botoes, COMPACTO, estado);
+      assert.ok(r.botoes.flat().every((b) => b.dados.startsWith('k:')), 'nenhum botao de opcao nem Mais informacoes do chamado');
+    }
+    // a parte da aba e a mesma da situacao sem botao
+    assert.equal(formatoTg.montarChamadoComOk({ estado: 'resposta', titulo: 'Nome', final: FINAL }, ok).classico,
+      `${montarSituacao({ titulo: 'Nome', final: FINAL }).classico}\n\n${esc(bloco.compacto.texto)}`);
+    // sem texto: a frase de sempre de cada estado
+    assert.equal(formatoTg.montarChamadoComOk({ estado: 'aviso', titulo: 'Nome', final: '' }, ok).classico, `<b>ℹ️ Nome</b>\nParou esperando você.\n\n${esc(bloco.compacto.texto)}`);
+    assert.equal(formatoTg.montarChamadoComOk({ estado: 'resposta', titulo: 'Nome', final: ' ' }, ok).classico, `<b>ℹ️ Nome</b>\nRespondeu sem texto.\n\n${esc(bloco.compacto.texto)}`);
+    assert.equal(formatoTg.montarChamadoComOk({ estado: 'resposta', titulo: 'Nome', final: 'Feito.' }, ok).classico, `<b>ℹ️ Nome</b>\nFeito.\n\n${esc(bloco.compacto.texto)}`);
+  });
+
+  test('T26a 4: qualquer outro estado = so o cabecalho + o bloco', () => {
+    const p = pedidoOk();
+    const bloco = blocosDe(p);
+    // T28: o encerrado com o bloco ganha a linha dele (describe "T28 montarChamadoComOk", f4)
+    for (const estado of ['enviando', 'entregue', 'contexto', 'problema', 'movido', 'ok', undefined, 'xyz']) {
+      const r = formatoTg.montarChamadoComOk({ estado, titulo: 'Nome', final: FINAL, fala: 'oi', frase: 'algo', hora: '10:00', chamadoId: ID }, { bloco });
+      assert.equal(r.classico, `<b>ℹ️ Nome</b>\n\n${esc(bloco.compacto.texto)}`, String(estado));
+      assert.deepEqual(r.botoes, COMPACTO, String(estado));
+    }
+    assert.equal(formatoTg.montarChamadoComOk({ estado: 'ok', titulo: 'X', icone: '🎛️' }, { bloco }).classico, `<b>🎛️ X</b>\n\n${esc(bloco.compacto.texto)}`);
+  });
+
+  test('T26a 5: completo: ok.completo = bloco completo [[Sim, Nao]] e a parte aberta; versao.completo abre so a parte', () => {
+    const p = pedidoOk();
+    const bloco = blocosDe(p);
+    const v = { estado: 'resposta', titulo: 'Nome', final: FINAL, chamadoId: ID };
+    const k = formatoTg.montarChamadoComOk(v, { bloco, completo: true });
+    assert.equal(k.classico, `${PARTE_ABERTA}\n\n${esc(bloco.completo.texto)}`);
+    assert.deepEqual(k.botoes, SIM_NAO);
+    const a = formatoTg.montarChamadoComOk({ ...v, completo: true }, { bloco });
+    assert.equal(a.classico, `${PARTE_ABERTA}\n\n${esc(bloco.compacto.texto)}`);
+    assert.deepEqual(a.botoes, COMPACTO);
+    // so o cabecalho continua so o cabecalho
+    assert.equal(formatoTg.montarChamadoComOk({ estado: 'entregue', titulo: 'Nome', final: FINAL }, { bloco, completo: true }).classico,
+      `<b>ℹ️ Nome</b>\n\n${esc(bloco.completo.texto)}`);
+  });
+
+  test('T26a 6: fechado = o texto do ok.fechado, sem botoes; toque = o bloco aberto sem botoes', () => {
+    const p = pedidoOk();
+    const bloco = blocosDe(p);
+    const v = { estado: 'resposta', titulo: 'Nome', final: FINAL, chamadoId: ID };
+    const fechado = okTg.montarBlocoOkFechado({ ...p, linha: 'Você tocou em Sim às 10:05. A aba conferiu às 10:06.' });
+    for (const completo of [false, true]) {
+      const f = formatoTg.montarChamadoComOk(v, { bloco, completo, fechado });
+      assert.equal(f.classico, `${completo ? PARTE_ABERTA : PARTE}\n\n${esc(fechado)}`);
+      assert.equal(f.botoes, null);
+      const t = formatoTg.montarChamadoComOk(v, { bloco, completo, toque: true });
+      assert.equal(t.classico, `${completo ? PARTE_ABERTA : PARTE}\n\n${esc(completo ? bloco.completo.texto : bloco.compacto.texto)}`);
+      assert.equal(t.botoes, null);
+      // a mensagem fechada nao se toca; a tocada (sem teclado) ainda confere (T7i)
+      assert.equal(conferir(f.classico, null, p).valido, false);
+      assert.deepEqual(conferir(t.classico, null, p), { valido: true, acao: 'sim', completo, updateId: 900, toqueId: 'cbq-1', messageId: 77 });
+    }
+  });
+
+  test('T26a 7: <pid> e & na acao: escapados no classico; o texto visivel confere no conferirToque com o teclado devolvido', () => {
+    const acoes = ['subir o site X em produção', 'apagar <pid>.json & "x" &amp; y &lt;z&gt; <b>negrito</b>', 'R&D <script>alert(1)</script>'];
+    for (const acao of acoes) {
+      for (const tipo of ['publicacao', 'mensagem', 'disparo']) {
+        const p = pedidoOk({ acao, tipo, destinatarios: tipo === 'publicacao' ? null : ['Ana & <Bia>'] });
+        const bloco = blocosDe(p);
+        for (const estado of ['resposta', 'aviso', 'entregue', 'ok']) {
+          for (const completo of [false, true]) {
+            for (const aberta of [false, true]) {
+              const nome = JSON.stringify([acao, tipo, estado, completo, aberta]);
+              const r = formatoTg.montarChamadoComOk({ estado, titulo: 'Nome & <x>', final: FINAL, completo: aberta, chamadoId: ID }, { bloco, completo });
+              const b = completo ? bloco.completo : bloco.compacto;
+              assert.ok(r.classico.endsWith(`\n\n${esc(b.texto)}`), nome);
+              assert.ok(visivel(r.classico).endsWith(`\n${b.texto}`), nome);
+              assert.deepEqual(r.botoes, b.botoes, nome);
+              for (const letra of completo ? ['s', 'n'] : ['s', 'n', 'i']) {
+                const c = conferir(r.classico, r.botoes, p, letra);
+                assert.equal(c.valido, true, `${nome} ${letra}: ${c.motivo}`);
+                assert.equal(c.completo, completo, nome);
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  test('T26a 8: corte de 4096: so na parte da aba, nunca no bloco (acao de 1500 com resposta aberta longa)', () => {
+    const LONGO = Array.from({ length: 400 }, (_, i) => `linha ${i} & <tag> ${'x'.repeat(40)}`).join('\n');
+    const acao = `${'ação <b>&amp; '.repeat(107)}fim!`.slice(0, 1500);
+    const p = pedidoOk({ acao, titulo: 'x'.repeat(200), tipo: 'outro', destinatarios: ['Ana', 'Bia'] });
+    const bloco = blocosDe(p);
+    for (const [completo, aberta, estado] of [[true, true, 'resposta'], [false, true, 'resposta'], [true, false, 'aviso'], [false, false, 'resposta'], [true, true, 'entregue']]) {
+      const nome = JSON.stringify([completo, aberta, estado]);
+      const r = formatoTg.montarChamadoComOk({ estado, titulo: 'y'.repeat(200), final: LONGO, completo: aberta }, { bloco, completo });
+      const b = completo ? bloco.completo : bloco.compacto;
+      const vis = visivel(r.classico);
+      assert.ok(vis.length <= 4096, `${nome}: ${vis.length}`);
+      assert.ok(r.classico.endsWith(`\n\n${esc(b.texto)}`), `${nome}: o bloco inteiro no fim`);
+      assert.ok(vis.includes(limparAcao(acao)), nome);
+      assert.equal(conferir(r.classico, r.botoes, p).valido, true, nome);
+      if (aberta && estado !== 'entregue') {
+        // a parte aberta foi cortada no miolo e usa a sobra inteira
+        assert.ok(vis.includes('\n(...)\n'), nome);
+        assert.ok(vis.length >= 4090, `${nome}: ${vis.length}`);
+        assert.ok(vis.includes('linha 0 '), `${nome}: cabeca`);
+        assert.ok(vis.includes('linha 399 '), `${nome}: cauda`);
+      }
+    }
+    // sem o OK, o mesmo chamado aberto continua com a sobra de sempre (4096)
+    const sem = montarChamado({ estado: 'resposta', titulo: 'y'.repeat(200), final: LONGO, completo: true, chamadoId: ID });
+    assert.equal(visivel(sem.classico).length, 4096);
+    // bloco que quase enche a mensagem: o aberto ainda corta no miolo enquanto houver sobra (total = 4096)...
+    const grande = `Pedido de OK (CRM): ${'a & <b> '.repeat(520)}`;
+    const apertado = grande.slice(0, 4050);
+    const ra = formatoTg.montarChamadoComOk({ estado: 'resposta', titulo: 'Nome', final: LONGO, completo: true }, { bloco, fechado: apertado });
+    assert.ok(ra.classico.endsWith(`\n\n${esc(apertado)}`));
+    assert.ok(ra.classico.includes('\n(...)\n'));
+    assert.equal(visivel(ra.classico).length, 4096);
+    // ... e a parte da aba que nao cabe vira so o cabecalho (o bloco fica inteiro)
+    const enorme = grande.slice(0, 4080);
+    for (const [estado, aberta] of [['resposta', true], ['resposta', false], ['aviso', true], ['aviso', false]]) {
+      const r = formatoTg.montarChamadoComOk({ estado, titulo: 'Nome', final: LONGO, completo: aberta }, { bloco, fechado: enorme });
+      assert.equal(r.classico, `<b>ℹ️ Nome</b>\n\n${esc(enorme)}`, `${estado} ${aberta}`);
+      assert.ok(visivel(r.classico).length <= 4096);
+    }
+  });
+
+  test('T26a 9: ok sem o bloco do que vai mostrar = TypeError', () => {
+    const p = pedidoOk();
+    const bloco = blocosDe(p);
+    const v = { estado: 'resposta', titulo: 'Nome', final: FINAL };
+    assert.throws(() => formatoTg.montarChamadoComOk(v, undefined), TypeError);
+    assert.throws(() => formatoTg.montarChamadoComOk(v, {}), TypeError);
+    assert.throws(() => formatoTg.montarChamadoComOk(v, { bloco: { compacto: bloco.compacto } , completo: true }), TypeError);
+    assert.throws(() => formatoTg.montarChamadoComOk(v, { bloco: { completo: bloco.completo } }), TypeError);
+    // fechado nao precisa do bloco
+    assert.equal(formatoTg.montarChamadoComOk(v, { fechado: 'Pedido de OK (CRM): a\n\nfim' }).botoes, null);
+  });
+});
+
+// A acao como o bloco mostra (a mesma limpeza do grupo)
+function limparAcao(acao) {
+  return limparParaWhatsApp(acao);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// T28 (PLANO-TELEGRAM.md, "T28"; pedido do dono 16/10/2026 08:29; troca do 18/10 15:49: «Deixa sem os X vermelhos, só em
+// negrito»): o bloco fechado de vencido sai com a linha do fecho em NEGRITO (vinda de um campo estruturado, `forte`: o
+// texto do pedido continua escapado), o botao "🔄 Tentar novamente" (`botoesFechado`) e, depois do toque, a 2a linha
+// (`depois`); o encerrado com o bloco mostra a linha dele. Por que existe: o negrito nunca pode vir de HTML dentro do texto
+// do pedido (seria injecao de marcacao) e o vencido sumia sem rastro no encerrar.
+describe('T28 montarChamadoComOk: o fechado de vencido', () => {
+  const COD = 'ABC234';
+  const p = {
+    codigo: COD, tipo: 'publicacao', acao: 'subir <b>X</b> & Y', destinatarios: null,
+    criadoEm: '2026-10-02T13:00:00.700Z', expiraEm: '2026-10-02T13:30:00.700Z',
+  };
+  const LINHA = 'Expirou às 10:30 sem resposta.';
+  const FECHADO = okTg.montarBlocoOkFechado({ ...p, linha: LINHA });
+  const BOTAO = [[{ texto: '🔄 Tentar novamente', dados: `r:${COD}` }]];
+  const visivel = (html) => String(html).replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  const v = { estado: 'ok', titulo: 'Nome' };
+
+  test('T28 f1: forte no fim do fechado = a linha em <b>, o resto escapado (sem <b> vindo do pedido), sem ❌; botoesFechado = os botoes', () => {
+    const r = formatoTg.montarChamadoComOk(v, { fechado: FECHADO, forte: LINHA, botoesFechado: BOTAO });
+    assert.equal(r.classico, `<b>ℹ️ Nome</b>\n\nPedido de OK (publicação): subir &lt;b&gt;X&lt;/b&gt; &amp; Y\n\n<b>${LINHA}</b>`);
+    assert.deepEqual(r.botoes, BOTAO);
+    assert.ok(!r.classico.includes('❌'));
+    assert.ok(visivel(r.classico).endsWith(`\n${FECHADO}`), 'o texto visivel termina no bloco fechado');
+  });
+
+  // T28s (sabotagem #17 da t28.mjs): o forte tambem sai escapado
+  test('T28s: o forte com < e & sai escapado dentro do <b>', () => {
+    const forte = 'Expirou às 10:30 <sem> & resposta.';
+    const r = formatoTg.montarChamadoComOk(v, { fechado: `Pedido de OK (publicação): x\n\n${forte}`, forte });
+    assert.ok(r.classico.endsWith('\n\n<b>Expirou às 10:30 &lt;sem&gt; &amp; resposta.</b>'), r.classico);
+  });
+
+  test('T28 f2: sem forte (ou forte que nao fecha o texto) = sem negrito; sem botoesFechado (ou vazio) = sem botoes (os outros fechos, como hoje)', () => {
+    const sem = formatoTg.montarChamadoComOk(v, { fechado: FECHADO });
+    assert.equal(sem.classico, '<b>ℹ️ Nome</b>\n\nPedido de OK (publicação): subir &lt;b&gt;X&lt;/b&gt; &amp; Y\n\nExpirou às 10:30 sem resposta.');
+    assert.equal(sem.botoes, null);
+    const torto = formatoTg.montarChamadoComOk(v, { fechado: FECHADO, forte: 'outra linha', botoesFechado: [] });
+    assert.equal(torto.classico, sem.classico);
+    assert.equal(torto.botoes, null);
+    const injetado = formatoTg.montarChamadoComOk(v, { fechado: FECHADO, forte: '<i>x</i>' });
+    assert.ok(!injetado.classico.includes('<i>x</i>'));
+  });
+
+  test('T28 f3: depois = a 2a linha embaixo do fecho (escapada, sem negrito); com o botao fora', () => {
+    const r = formatoTg.montarChamadoComOk(v, { fechado: FECHADO, forte: LINHA, depois: 'Pedi de novo à aba às 11:02.' });
+    assert.ok(r.classico.endsWith(`\n\n<b>${LINHA}</b>\nPedi de novo à aba às 11:02.`), r.classico);
+    assert.equal(r.botoes, null);
+    const x = formatoTg.montarChamadoComOk(v, { fechado: FECHADO, forte: LINHA, depois: 'Não consegui pedir de novo à aba: a <tag> & "x".' });
+    assert.ok(x.classico.endsWith('\nNão consegui pedir de novo à aba: a &lt;tag&gt; &amp; "x".'), x.classico);
+  });
+
+  test('T28 f4: o encerrado com o bloco = cabecalho, a linha do encerrado em italico e o bloco com o botao (pc e whatsapp)', () => {
+    const pc = formatoTg.montarChamadoComOk({ estado: 'encerrado', titulo: 'Nome', hora: '2026-10-02T13:40:00.000Z', motivo: 'pc', final: 'Fiz.' },
+      { fechado: FECHADO, forte: LINHA, botoesFechado: BOTAO });
+    assert.equal(pc.classico, `<b>ℹ️ Nome</b>\n<i>Encerrada às 10:40: a aba seguiu no PC.</i>\n\nPedido de OK (publicação): subir &lt;b&gt;X&lt;/b&gt; &amp; Y\n\n<b>${LINHA}</b>`);
+    assert.deepEqual(pc.botoes, BOTAO);
+    const wpp = formatoTg.montarChamadoComOk({ estado: 'encerrado', titulo: 'Nome', hora: '2026-10-02T13:40:00.000Z', motivo: 'whatsapp' }, { fechado: FECHADO });
+    assert.ok(wpp.classico.startsWith('<b>ℹ️ Nome</b>\n<i>Encerrada às 10:40: você respondeu pelo WhatsApp.</i>\n\n'), wpp.classico);
+    // a linha do encerrado e a mesma do montarChamado
+    assert.ok(montarChamado({ estado: 'encerrado', titulo: 'Nome', hora: '2026-10-02T13:40:00.000Z', motivo: 'pc' }).classico.includes('<i>Encerrada às 10:40: a aba seguiu no PC.</i>'));
+  });
+});
+import crypto from 'node:crypto';
+import * as formatoTg from '../lib/formato-tg.mjs';
+import * as okTg from '../lib/ok-tg.mjs';
+import { limparParaWhatsApp } from '../lib/formato.mjs';

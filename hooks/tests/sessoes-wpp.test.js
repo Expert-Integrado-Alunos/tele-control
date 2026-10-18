@@ -213,6 +213,29 @@ test('1. Stop de claude-vscode com custom-title e DECISAO -> 1 evento "parou" co
   } finally { limpar(amb); }
 });
 
+// T27 (PLANO-TELEGRAM.md, "T27", contrato 1; caso real 18/10: o hook de captura fez a aba continuar e o 2o parou
+// engoliu a resposta): stop_hook_active true = `continuacao: true`; false ou ausente = sem a chave
+test('T27 1. Stop com stop_hook_active true -> o evento ganha continuacao: true; false ou ausente -> sem a chave', () => {
+  const amb = ambiente();
+  try {
+    const reg = registrar(amb, registro({ name: 'projetos-42', nameSource: 'derived' }));
+    const tp = transcript(amb, reg.sessionId, [
+      L.user('faz a pagina', '2026-09-27T18:00:00.000Z'),
+      L.assistente([L.texto('Feito.')], '2026-09-27T18:01:00.000Z'),
+    ]);
+    const semCampo = stop(reg.sessionId, tp);
+    delete semCampo.stop_hook_active;
+    for (const payload of [stop(reg.sessionId, tp, { stop_hook_active: true }), stop(reg.sessionId, tp), semCampo]) {
+      assert.equal(rodar(PAROU, amb, payload).status, 0);
+    }
+    const evs = eventos(amb);
+    assert.equal(evs.length, 3);
+    assert.equal(evs[0].continuacao, true);
+    assert.equal(Object.hasOwn(evs[1], 'continuacao'), false);
+    assert.equal(Object.hasOwn(evs[2], 'continuacao'), false);
+  } finally { limpar(amb); }
+});
+
 // ---------------------------------------------------------------- cenario 2
 
 test('2. Stop de sdk-cli e de claude-desktop SEM canal de recado -> 0 eventos', () => {

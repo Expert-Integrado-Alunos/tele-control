@@ -235,7 +235,7 @@ function pedidoOk(h, { codigo, sessionId, criado = h.t - MIN, status = 'pendente
 }
 // config.json do estado: o OK pelo botao liga com telegram.ligado E telegram.ok.ligado (lerConfigOk, T7b1a). Vai pro
 // montar(cfg): a etapa D le 1 vez, no criarPorteiro (okLigado).
-const OK_LIGADO = { telegram: { ligado: true, ok: { ligado: true } } };
+const OK_LIGADO = { telegram: { ligado: true, ok: { ligado: true, naAba: false } } };
 
 // ---------------------------------------------------------------------------------------------------------------
 // T7b2b 87: passo 4 do tratarMensagemTg

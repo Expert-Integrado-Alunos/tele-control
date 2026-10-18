@@ -15,7 +15,8 @@
 // estado, messageId, contagem e o erro que o adaptador devolveu; nunca texto do dono, fala, final, frase, titulo nem
 // html/classico. O unico texto que o dono le sai do montarChamado/montarSistema (lib/formato-tg.mjs).
 import {
-  montarChamado, montarSistema, montarPainel, montarSituacao, lerFinal, lerDadosBotao, novoIdChamado, ICONE_SISTEMA, TITULO_SISTEMA,
+  montarChamado, montarChamadoComOk, montarSistema, montarPainel, montarSituacao, lerFinal, lerDadosBotao, novoIdChamado, ICONE_SISTEMA,
+  TITULO_SISTEMA,
 } from './lib/formato-tg.mjs';
 
 const SISTEMA = 'sistema'; // "sessionId" da mensagem viva do sistema (na fila e em mensagens)
@@ -47,11 +48,19 @@ const MAX_IDS_DO_DONO = 300; // anel das mensagens do dono (nunca vao pra sonda)
 
 // T7f (F8): 'calado' = o chamado da aba que so repassou a fala (a central) encerrando sem mensagem: so apaga o que era dele
 const CALADO = 'calado';
-const ESTADOS = new Set(['aviso', 'resposta', 'enviando', 'entregue', 'contexto', 'problema', 'encerrado', CALADO]);
+// T26b1: 'ok' = o chamado que so existe pra mostrar o pedido de OK (a aba nao tinha chamado): so o cabecalho + o bloco
+const ESTADOS = new Set(['aviso', 'resposta', 'enviando', 'entregue', 'contexto', 'problema', 'encerrado', CALADO, 'ok']);
 // T7k: ids de fala (o `esperar` do calar, o `esperando` relido do disco e o `liberar` da resposta) = texto nao vazio, sem
 // repetir; o resto ignorado
 const idsDeFala = (lista) => (Array.isArray(lista) ? [...new Set(lista.filter((x) => typeof x === 'string' && x !== ''))] : []);
-const NOVA_COM_NOTIFICACAO = new Set(['aviso', 'resposta', 'problema']);
+const NOVA_COM_NOTIFICACAO = new Set(['aviso', 'resposta', 'problema', 'ok']);
+// T26b1 (PLANO-TELEGRAM.md, "T26b1"): aviso/resposta que chega ate 60 s depois do OK aparecer (aberto, sem toque, na
+// tela) entra na MESMA mensagem por edicao; depois disso, mensagem nova
+const OK_JUNTA_MS = 60 * 1000;
+// T26b2: o codigo do pedido de OK (o ALFABETO_COD do lib/ok-tg.mjs, sem I, L, O, 0 e 1; copiado pra o canal nao ler
+// o ok-tg) e o intervalo minimo entre 2 voltas do okSemTela na mesma aba
+const RE_COD_OK = /^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$/;
+const OK_VOLTA_MS = 60 * 1000;
 const NOVA_SILENCIOSA = new Set(['enviando', 'contexto']);
 // T7f (F8, pedido do dono: "eu só quero direto o resultado que eu pedi"): a fala dele nao poe nada novo na tela;
 // enviando e entregue ficam so no estado (o chamado que ele respondeu, na tela com botoes, so perde os botoes)
@@ -214,8 +223,14 @@ function completarSituacao(v) {
   if (ja.length) out.apagarJa = ja;
   const toque = Array.isArray(v.apagarToque) ? v.apagarToque.filter((x) => Number.isSafeInteger(x) && x > 0) : []; // T12
   if (toque.length) out.apagarToque = toque;
+  // T26d (regra 3): a situacao substituida que ficou como mensagem da aba perde os botoes no proximo drenar
+  const semBotoes = Array.isArray(v.tirarBotoes) ? v.tirarBotoes.map(idMensagem).filter((x) => x != null) : [];
+  if (semBotoes.length) out.tirarBotoes = semBotoes;
   return out;
 }
+
+// T26d: o encerrar guardado com o OK aberto (motivo 'pc' | 'whatsapp'; hora texto ou null) | false (torto)
+const encerrarDepoisValido = (v) => ehObjeto(v) && (v.motivo === 'pc' || v.motivo === 'whatsapp') && (v.hora === null || typeof v.hora === 'string');
 
 // Saude: hora (ISO) ou null em cada campo; quebrado so true de verdade.
 function completarSaude(v) {
@@ -242,6 +257,11 @@ function maiorId(t) {
     if (!ehObjeto(c)) continue;
     if (ehObjeto(c.versao)) ver(c.versao.id);
     verTela(c.mensagem);
+    if (ehObjeto(c.ok)) { // T26b2: as versoes que o OK guarda
+      ver(c.ok.versaoId);
+      if (ehObjeto(c.ok.antes)) ver(c.ok.antes.versaoId);
+      if (ehObjeto(c.ok.tela)) ver(c.ok.tela.id);
+    }
   }
   ver(t.sistema.versaoId);
   verTela(t.sistema.mensagem);
@@ -251,6 +271,27 @@ function maiorId(t) {
   verTela(t.situacao.mensagem);
   for (const k of Object.keys(t.mensagens)) if (Number(k) < 0) ver(Number(k));
   return maior;
+}
+
+// T26b2: o c.ok lido do disco. Torto (cod fora do alfabeto, bloco sem os 2 textos, campo do contrato com tipo errado) =
+// false (o chamado perde o c.ok). Os internos tortos saem sozinhos: versaoId (inteiro seguro), antes ({versaoId,
+// descer}) e tela (a versao que a tela do OK mostrava; so no 'manter').
+function completarOk(ok) {
+  const textoOuNulo = (v) => v === null || typeof v === 'string';
+  const parte = (b) => ehObjeto(b) && typeof b.texto === 'string' && b.texto !== '' && (b.botoes == null || Array.isArray(b.botoes));
+  if (!ehObjeto(ok) || typeof ok.cod !== 'string' || !RE_COD_OK.test(ok.cod)) return false;
+  if (!ehObjeto(ok.bloco) || !parte(ok.bloco.compacto) || !parte(ok.bloco.completo)) return false;
+  if (typeof ok.completo !== 'boolean' || typeof ok.notificar !== 'boolean' || typeof ok.em !== 'string') return false;
+  if (!textoOuNulo(ok.fechado) || !textoOuNulo(ok.naTelaEm)) return false;
+  if (!(ok.toque === null || (ehObjeto(ok.toque) && (ok.toque.acao === 'sim' || ok.toque.acao === 'nao') && typeof ok.toque.em === 'string'))) return false;
+  if (ok.versaoId !== undefined && !Number.isSafeInteger(ok.versaoId)) delete ok.versaoId;
+  if (ok.antes !== undefined && !(ehObjeto(ok.antes) && Number.isSafeInteger(ok.antes.versaoId) && typeof ok.antes.descer === 'boolean')) delete ok.antes;
+  if (ok.tela !== undefined && !(ehObjeto(ok.tela) && ESTADOS.has(ok.tela.estado) && Number.isSafeInteger(ok.tela.id))) delete ok.tela;
+  // T28: o fechado de vencido (a linha em negrito, o botao e a 2a linha); torto sai sozinho
+  if (ok.forte !== undefined && typeof ok.forte !== 'string') delete ok.forte;
+  if (ok.botoesFechado !== undefined && !Array.isArray(ok.botoesFechado)) delete ok.botoesFechado;
+  if (ok.depois !== undefined && typeof ok.depois !== 'string') delete ok.depois;
+  return true;
 }
 
 /**
@@ -274,11 +315,17 @@ export function completarTg(bruto) {
   t.situacao = completarSituacao(bruto.situacao);
   t.saude = completarSaude(bruto.saude);
   t.idsDoDono = completarIdsDoDono(bruto.idsDoDono);
-  for (const c of Object.values(t.chamados)) { // T23a: o limpar de cada chamado so com entrada boa; vazio some
-    if (!ehObjeto(c) || c.limpar === undefined) continue;
-    const limpar = completarLimpar(c.limpar);
-    if (limpar.length) c.limpar = limpar;
-    else delete c.limpar;
+  for (const c of Object.values(t.chamados)) {
+    if (!ehObjeto(c)) continue;
+    if (c.limpar !== undefined) { // T23a: o limpar de cada chamado so com entrada boa; vazio some
+      const limpar = completarLimpar(c.limpar);
+      if (limpar.length) c.limpar = limpar;
+      else delete c.limpar;
+    }
+    if (c.ok !== undefined && !completarOk(c.ok)) delete c.ok; // T26b2: o OK torto sai (o resto do chamado fica)
+    if (ehObjeto(c.mensagem) && c.mensagem.ok !== undefined && typeof c.mensagem.ok !== 'string') delete c.mensagem.ok;
+    if (c.naSituacao !== undefined && !Number.isSafeInteger(c.naSituacao)) delete c.naSituacao; // T26d (regra 1)
+    if (c.encerrarDepois !== undefined && !encerrarDepoisValido(c.encerrarDepois)) delete c.encerrarDepois; // T26d
   }
   t.seq = Math.max(t.seq, maiorId(t));
   return t;
@@ -336,6 +383,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   // (a mensagem do pedido pode ter chegado sem o id): id desconhecido em (desde, ate), ou acima do desde com ate null, e de
   // fora (nunca vai pra sonda nem e apagado por ela)
   let janelasDeForaAtual = [];
+  // T26b2 (so em memoria): sessionId -> ms da ultima volta do okSemTela (no maximo 1 por minuto por aba)
+  const voltasDoOk = new Map();
 
   const agoraIso = () => isoDe(agora());
 
@@ -444,12 +493,125 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       t.chamados[sid] = c;
       if (sobras.length) logar(`${sid}: chamado novo; ${sobras.length} mensagem(ns) antiga(s) da aba no chat vao pro apagar`);
     }
+    const desce = !SO_NO_ESTADO.has(versao.estado) && (NOVA_COM_NOTIFICACAO.has(versao.estado) || NOVA_SILENCIOSA.has(versao.estado));
+    // T26b2 (so no 'manter'): a versao que a tela do OK mostra fica guardada quando a nova vai descer (o fecho edita a
+    // tela antiga com a parte dela e o bloco fechado: passoDoAlvo)
+    if (mantemResolvidas && desce && c.versao && c.descer !== true && ehObjeto(c.ok) && okNaTelaDe(c)) c.ok.tela = c.versao;
     c.versao = versao;
     delete c.esperando; // T7k: versao nova (ex.: fala nova pra central) = o calado deixa de esperar
-    if (!SO_NO_ESTADO.has(versao.estado) && (NOVA_COM_NOTIFICACAO.has(versao.estado) || NOVA_SILENCIOSA.has(versao.estado))) c.descer = true;
+    if (desce) c.descer = true;
+    if (desce) cancelarSituacaoPendente(t, sid); // T26d (regra 2): a situacao da aba ainda na fila nao sai
     c.mudouEm = agoraIso();
     enfileirar(t, sid);
     return c;
+  }
+
+  // ---------- T26d: a situacao conta como a mensagem da aba (PLANO-TELEGRAM.md, "T26d") ----------
+  // Regra 1: a situacao da aba X saiu e o chamado de X tem tela (sem mensagem nova pendente, sem OK aberto, fora do
+  // calado): a tela vai pro comeco do apagar com `manterConversa` (no 'manter' so perde os botoes) e o chamado fica "em
+  // dia" sem tela naquela versao (`c.naSituacao` = o id da versao; o drenar nao o manda de novo). Regra 2: a mensagem
+  // nova do chamado de X tira a situacao de X (e a da fila e cancelada no evento). Regra 3: a situacao de X substituida
+  // pela de Y, com X sem chamado com tela, perde os botoes e vira mensagem da aba X (`exSituacao`), que sai depois da
+  // proxima mensagem nova de X (chamado ou situacao).
+
+  // O chamado de `sid` cuja tela sai pela situacao (regra 1) | null
+  function chamadoQueSaiPelaSituacao(t, sid) {
+    if (!ehAba(sid)) return null;
+    const c = chamadoDe(t, sid);
+    if (!c || c.mensagem === null || c.descer === true || okAberto(c) || c.versao.estado === CALADO) return null;
+    return c;
+  }
+
+  // O chamado esta em dia sem tela porque a situacao da aba e a mensagem dela (regra 1)
+  const emDiaPelaSituacao = (c) => c.mensagem === null && c.descer !== true && Number.isSafeInteger(c.naSituacao) && c.naSituacao === c.versao.id;
+
+  function esvaziarSituacao(s) {
+    s.aba = null;
+    s.dados = null;
+    s.completo = false;
+    s.descer = false;
+    s.citar = null;
+  }
+
+  // Regra 1, depois que a situacao da aba `sid` saiu
+  function telaSaiPelaSituacao(t, sid) {
+    const c = chamadoQueSaiPelaSituacao(t, sid);
+    if (!c) return;
+    const id = c.mensagem.messageId;
+    if (ehObjeto(c.ok)) { // o OK fechado sai com a tela
+      delete c.ok;
+      if (c.versao.estado === 'ok') { // o chamado so existia pro OK: sai como o calado
+        okSaiComoCalado(t, sid, c);
+        logar(`${sid}: a situacao saiu; a tela ${id} do OK fechado vai pro apagar e o chamado sai`);
+        return;
+      }
+    }
+    semTirarBotoes(c, id);
+    c.apagar.unshift({ messageId: id, doBot: true, formato: formatoDe(c.mensagem.formato), manterConversa: true });
+    c.mensagem = null;
+    c.naSituacao = c.versao.id;
+    c.mudouEm = agoraIso();
+    enfileirar(t, sid);
+    logar(`${sid} ${c.versao.estado}: a situacao saiu; a tela ${id} vai pro apagar (o chamado fica em dia sem tela)`);
+  }
+
+  // Regra 3: a situacao `antiga` (na tela) foi substituida pela da aba `nova` (null = cancelada). A aba dela sem chamado
+  // com tela = ela fica no chat: perde os botoes (tirarBotoes da situacao) e o registro passa pra aba (`exSituacao`; no
+  // 'manter', `fica: true`) -> true. Senao false (ela sai como hoje).
+  function situacaoViraDaAba(t, s, antiga, nova) {
+    const id = idMensagem(antiga.messageId);
+    const reg = id == null ? null : t.mensagens[id];
+    if (!ehObjeto(reg) || reg.sessionId !== SITUACAO || !ehAba(reg.aba) || reg.aba === nova) return false;
+    const c = chamadoDe(t, reg.aba);
+    if (c && c.mensagem !== null) return false;
+    const aba = reg.aba;
+    const novo = { ...reg, sessionId: aba, exSituacao: true };
+    delete novo.aba;
+    if (mantemResolvidas) novo.fica = true;
+    t.mensagens[id] = novo;
+    marcarTirarBotoes(s, id);
+    logar(`${aba}: a situacao ${id} foi substituida; fica no chat sem os botoes como mensagem da aba`);
+    return true;
+  }
+
+  // Regra 2 (no evento): a situacao da aba `sid` ainda na fila (nao saiu) e cancelada; a que estava na tela sai como se
+  // a nova tivesse saido (regra 3 ou o apagar).
+  function cancelarSituacaoPendente(t, sid) {
+    const s = t.situacao;
+    if (s.aba !== sid || s.descer !== true || !ehObjeto(s.dados)) return;
+    const antiga = ehObjeto(s.mensagem) && idMensagem(s.mensagem.messageId) != null ? s.mensagem : null;
+    if (antiga && !situacaoViraDaAba(t, s, antiga, null)) s.apagar.unshift({ messageId: antiga.messageId, doBot: true, formato: formatoDe(antiga.formato) });
+    s.mensagem = null;
+    esvaziarSituacao(s);
+    enfileirar(t, SITUACAO);
+    logar(`${sid}: mensagem nova do chamado; a situacao da aba na fila foi cancelada`);
+  }
+
+  // Regra 2 (no envio): a mensagem nova do chamado de `sid` saiu: a situacao de `sid` na tela vai pro apagar (no
+  // 'manter' so perde os botoes); sem outra situacao na fila, a situacao fica vazia.
+  function situacaoSaiPelaAba(t, sid) {
+    const s = t.situacao;
+    const id = ehObjeto(s.mensagem) ? idMensagem(s.mensagem.messageId) : null;
+    if (id == null) return;
+    const reg = t.mensagens[id];
+    const aba = ehObjeto(reg) && reg.sessionId === SITUACAO ? reg.aba : s.aba;
+    if (aba !== sid) return;
+    s.apagar.unshift({ messageId: id, doBot: true, formato: formatoDe(s.mensagem.formato) });
+    s.mensagem = null;
+    if (s.descer !== true) esvaziarSituacao(s);
+    enfileirar(t, SITUACAO);
+    logar(`${sid}: a mensagem nova do chamado saiu; a situacao ${id} vai pro apagar`);
+  }
+
+  // Regra 3: as mensagens da aba `sid` que eram situacao (`exSituacao`, sem `fica`) vao pro fim do apagar de `d` (a
+  // mensagem nova `novoId` da aba saiu), sem repetir.
+  function exSituacaoProApagar(t, d, sid, novoId) {
+    for (const [k, m] of Object.entries(t.mensagens)) {
+      const id = idMensagem(k);
+      if (id == null || id === novoId || !ehObjeto(m) || m.sessionId !== sid || m.exSituacao !== true || m.fica === true) continue;
+      if (d.apagar.some((a) => ehObjeto(a) && idMensagem(a.messageId) === id)) continue;
+      d.apagar.push({ messageId: id, doBot: true, formato: formatoDe(m.formato) });
+    }
   }
 
   // A versao atual e a que esta na tela (e nao ha mensagem nova pendente).
@@ -458,8 +620,10 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   // T7f (F8): a mensagem na tela do chamado tem botoes? So aviso/resposta tem. A tela da versao atual = os botoes que ela
   // monta; a tela de uma versao anterior (edicao ou mensagem nova que ainda nao saiu) pode ter (ja sem botoes, o Telegram
   // responde "not modified" e o adaptador devolve ok).
+  // T26b2: a tela que mostra um OK (aberto ou fechado) nunca conta: os botoes dela sao os do OK (ou nenhum).
   function telaComBotoes(c) {
     if (c.mensagem === null || !COM_BOTOES.has(c.versao.estado)) return false;
+    if (c.mensagem.ok != null) return false;
     if (c.mensagem.versaoId !== c.versao.id) return true;
     try {
       return montarChamado(c.versao).botoes != null;
@@ -474,6 +638,51 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (n == null) return;
     if (!Array.isArray(c.tirarBotoes)) c.tirarBotoes = [];
     if (!c.tirarBotoes.includes(n)) c.tirarBotoes.push(n);
+  }
+
+  // ---------- T26b1: o OK dentro do chamado (PLANO-TELEGRAM.md, "T26b1") ----------
+  // c.ok = {cod, bloco, completo, toque: null | {acao, em}, fechado: null | texto, notificar, em, naTelaEm} + o que o
+  // canal usa por dentro: `versaoId` (a versao da ultima mudanca do OK) e `antes` ({versaoId, descer} de antes do
+  // okAbriu, pra desfazer quando o OK fecha sem nunca ter chegado na tela). A tela (c.mensagem) ganha `ok: <cod>` quando
+  // saiu mostrando aquele pedido (aberto ou fechado) e perde quando sai sem ele.
+
+  const okAberto = (c) => ehObjeto(c.ok) && typeof c.ok.fechado !== 'string';
+  // a tela atual do chamado mostra o OK de agora (aberto ou fechado)
+  const okNaTelaDe = (c) => ehObjeto(c.ok) && c.mensagem !== null && c.mensagem.ok === c.ok.cod;
+  // T28: o fechado de vencido (a linha do fecho em negrito: `forte`) que a tela mostra
+  const okVencidoNaTela = (c) => ehObjeto(c.ok) && typeof c.ok.fechado === 'string' && typeof c.ok.forte === 'string' && okNaTelaDe(c);
+
+  // A junção: OK aberto, sem toque, na tela (sem mensagem nova pendente) e ate OK_JUNTA_MS depois do naTelaEm
+  function okJunta(c) {
+    if (!okAberto(c) || c.ok.toque || c.descer === true || !okNaTelaDe(c)) return false;
+    const ms = msDeIso(c.ok.naTelaEm);
+    return Number.isFinite(ms) && agora() - ms <= OK_JUNTA_MS;
+  }
+
+  // O chamado (e a aba) que tem o pedido `cod` no c.ok | null
+  function chamadoDoOk(t, cod) {
+    if (typeof cod !== 'string' || !cod) return null;
+    for (const sid of Object.keys(t.chamados)) {
+      const c = chamadoDe(t, sid);
+      if (c && ehObjeto(c.ok) && c.ok.cod === cod) return { sid, c };
+    }
+    return null;
+  }
+
+  // A versao mudou por causa do OK: copia com id novo (o drenar reconcilia a tela por versaoId: edicao, ou mensagem nova
+  // com `descer`) e a aba entra na fila (no comeco com `frente`).
+  function okMudou(t, sid, c, { descer = false, frente = false } = {}) {
+    c.versao = { ...c.versao, id: ++t.seq };
+    if (ehObjeto(c.ok)) c.ok.versaoId = c.versao.id;
+    if (descer) c.descer = true;
+    c.mudouEm = agoraIso();
+    if (!frente) {
+      enfileirar(t, sid);
+      return;
+    }
+    const i = t.saida.findIndex((x) => ehObjeto(x) && x.sessionId === sid);
+    const item = i >= 0 ? t.saida.splice(i, 1)[0] : { sessionId: sid, entrouEm: agoraIso(), falhas: 0 };
+    t.saida.unshift(item);
   }
 
   // T7j: a mensagem `id` do bot (a tela que o dono tocou numa opcao) e apagada no proximo drenar do chamado `c`, antes de
@@ -638,9 +847,20 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     const sid = sessao(ev.sessionId, estado);
     const final = typeof ev.final === 'string' ? cortarFinal(ev.final) : '';
     const opcoes = lerFinal(final).opcoes.map(({ letra, texto }) => ({ letra, texto }));
-    trocar(t, sid, versaoNova(t, estado, {
+    const velho = chamadoDe(t, sid);
+    if (velho && velho.encerrarDepois !== undefined) { // T26d: a aba voltou a parar: o encerrar guardado nao vale mais
+      delete velho.encerrarDepois;
+      logar(`${sid} ${estado}: o encerrar guardado sai (mensagem nova da aba)`);
+    }
+    const juntar = velho !== null && okJunta(velho); // T26b1: decidido antes da troca (o trocar liga o descer)
+    const c = trocar(t, sid, versaoNova(t, estado, {
       titulo, hora: ev.finalTs || ev.at || null, final, opcoes, chamadoId: novoIdChamado(rand), nome: ev.nome, completo, citar, liberar,
     }));
+    if (juntar) {
+      c.descer = false; // edicao da mesma mensagem, sem nova notificacao
+      delete c.ok.tela; // T26b2: a tela vai mostrar esta versao (nada desce)
+      logar(`${sid} ${estado}: entra na mensagem ${c.mensagem.messageId} do OK ${c.ok.cod} (edicao)`);
+    }
   }
 
   /**
@@ -719,6 +939,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       if (!Array.isArray(c.limpar)) c.limpar = [];
       if (!c.limpar.some((b) => ehObjeto(b) && idMensagem(b.messageId) === a.messageId)) c.limpar.push(a);
     }
+    // T26b2: o c.ok dele sai junto (o pedido so confere naquela sessao); a nova nao herda OK (a tela dele ja esta nas sobras)
+    if (ehObjeto(velho.ok)) logar(`${de}: o OK ${velho.ok.cod} sai com o chamado (a aba fechou)`);
     delete t.chamados[de];
     const item = t.saida.find((i) => ehObjeto(i) && i.sessionId === de);
     if (item) tirar(t.saida, item);
@@ -824,9 +1046,36 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     const sid = sessao(sessionId, 'encerrar');
     if (motivo !== 'pc' && motivo !== 'whatsapp') throw new TypeError('encerrar: motivo invalido');
     const c = chamadoDe(t, sid);
+    if (c && okAberto(c)) { // T26b2: o pedido de OK aberto segura o chamado. T26d: o encerrar fica guardado ate o OK fechar
+      c.encerrarDepois = { hora: typeof hora === 'string' ? hora : agoraIso(), motivo };
+      logar(`${sid} ${c.versao.estado}: encerrar com o OK ${c.ok.cod} aberto; fica guardado ate o OK fechar`);
+      return;
+    }
+    encerrarChamado(t, sid, hora, motivo);
+  }
+
+  // O encerrar de sempre (o do evento e o guardado que o okFechou aplica, T26d)
+  function encerrarChamado(t, sid, hora, motivo) {
+    const c = chamadoDe(t, sid);
     if (!c || !COM_BOTOES.has(c.versao.estado)) return;
     const ant = c.versao;
-    if (!naTela(c)) {
+    const pelaSituacao = emDiaPelaSituacao(c); // T26d (regra 2): a situacao e a tela dele: o encerrado e mensagem nova
+    const foraDaTela = !naTela(c) && !pelaSituacao;
+    // T27 (PLANO-TELEGRAM.md, "T27", contrato 3; caso real 18/10: a resposta a fala dele virou edicao calada da mensagem
+    // antiga): a resposta que ainda nao saiu (a mensagem nova dela pendente: `descer`) nunca e engolida pelo "pc"; ela sai
+    // como mensagem nova, com notificacao. Nada muda no chamado (nem o OK fechado nem o encerrar guardado). A que ja saiu
+    // e so espera uma edicao (o OK mudou, "Mais informações"), a que esta na situacao e a de tela torta encerram como sempre
+    const respostaNaoSaiu = ant.estado === 'resposta' && c.descer === true;
+    if (motivo === 'pc' && respostaNaoSaiu) {
+      logar(`${sid} resposta: encerrar (pc) antes de sair ignorado; a resposta sai`);
+      return;
+    }
+    delete c.encerrarDepois;
+    // T26b2: o OK fechado sai; o resto e o de hoje. T28 (contrato 3): o fechado de vencido (`forte`) fica na tela do
+    // encerrado (a linha dele e o bloco com o botao "Tentar novamente")
+    if (ehObjeto(c.ok) && !okVencidoNaTela(c)) delete c.ok;
+    if (pelaSituacao) cancelarSituacaoPendente(t, sid);
+    if (foraDaTela) {
       if (c.mensagem === null) {
         delete t.chamados[sid];
         const item = t.saida.find((i) => ehObjeto(i) && i.sessionId === sid);
@@ -853,6 +1102,11 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     const sid = sessao(sessionId, 'calar');
     const c = chamadoDe(t, sid);
     if (!c) return;
+    if (okAberto(c)) { // T26b2: o pedido de OK aberto segura o chamado (o porteiro fecha o OK antes)
+      logar(`${sid} ${c.versao.estado}: calar com o OK ${c.ok.cod} aberto; nada muda`);
+      return;
+    }
+    if (ehObjeto(c.ok)) delete c.ok; // T26b2: o OK fechado sai; o resto e o de hoje
     const ant = c.versao;
     const falas = idsDeFala(esperar);
     if (c.mensagem !== null && falas.length) { // T7k
@@ -879,6 +1133,302 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     c.mudouEm = agoraIso();
     enfileirar(t, sid);
     logar(`${sid} ${ant.estado}: encerrado calado; ${c.apagar.length} mensagem(ns) vao pro apagar`);
+  }
+
+  // ---------- T26b1: eventos do OK (PLANO-TELEGRAM.md, "T26b1"; so mudam e.tg e poem na fila) ----------
+
+  // A mensagem `id` sai do tirarBotoes do chamado (a lista vazia some)
+  function semTirarBotoes(c, id) {
+    if (!Array.isArray(c.tirarBotoes)) return;
+    c.tirarBotoes = c.tirarBotoes.filter((x) => idMensagem(x) !== idMensagem(id));
+    if (!c.tirarBotoes.length) delete c.tirarBotoes;
+  }
+
+  // O chamado da versao 'ok' (sem o c.ok) sai como o calado: a tela vai pro comeco do apagar e o chamado sai quando o
+  // apagar esvazia (nada pra apagar = sai agora)
+  function okSaiComoCalado(t, sid, c) {
+    const ant = c.versao;
+    if (c.mensagem !== null) c.apagar.unshift({ messageId: c.mensagem.messageId, doBot: true, formato: formatoDe(c.mensagem.formato) });
+    delete c.tirarBotoes;
+    if (!c.apagar.length && !(Array.isArray(c.limpar) && c.limpar.length)) {
+      delete t.chamados[sid];
+      const item = t.saida.find((i) => ehObjeto(i) && i.sessionId === sid);
+      if (item) tirar(t.saida, item);
+      return;
+    }
+    c.mensagem = null;
+    c.descer = false;
+    c.versao = versaoNova(t, CALADO, { titulo: ant.titulo, hora: agoraIso(), final: ant.final, nome: ant.nome });
+    c.mudouEm = agoraIso();
+    enfileirar(t, sid);
+  }
+
+  // T26b2 (consertos 1 e 2): a tela do chamado mostra um OK que nao esta mais aberto no c.ok (o substituido, ou o que
+  // fechou com a mensagem dele em voo). Versao 'ok' sem c.ok = sai como o calado (a tela vai pro apagar); calado, e
+  // enviando/entregue sem c.ok = a tela vai pro comeco do apagar (manterConversa nos 2 ultimos: a fala dele em voo); o
+  // resto = versao nova (copia com ++seq), o `descer` dado e a aba na fila: o drenar edita a tela (sem o bloco, ou com o
+  // bloco fechado se o c.ok daquele pedido ainda existe fechado).
+  function telaDoOkSemDono(t, sid, c, descer) {
+    const estado = c.versao.estado;
+    if (estado === 'ok' && !ehObjeto(c.ok)) {
+      okSaiComoCalado(t, sid, c);
+      return;
+    }
+    if (estado === CALADO || (SO_NO_ESTADO.has(estado) && !ehObjeto(c.ok))) {
+      const id = c.mensagem.messageId;
+      const a = { messageId: id, doBot: true, formato: formatoDe(c.mensagem.formato) };
+      if (estado !== CALADO) a.manterConversa = true;
+      semTirarBotoes(c, id);
+      c.apagar.unshift(a);
+      c.mensagem = null;
+      if (estado !== CALADO) c.descer = false;
+      c.mudouEm = agoraIso();
+      enfileirar(t, sid);
+      return;
+    }
+    if (ehObjeto(c.ok)) {
+      okMudou(t, sid, c);
+    } else {
+      c.versao = { ...c.versao, id: ++t.seq };
+      c.mudouEm = agoraIso();
+      enfileirar(t, sid);
+    }
+    c.descer = descer === true;
+  }
+
+  // T26b2 (conserto 2): a mensagem `tela` saiu (nova ou edicao) com o OK `cod` e, com ela em voo, o pedido fechou ou
+  // saiu do chamado: a tela nunca fica com o bloco aberto sem dono. O mesmo OK aberto (o normal) ou outro OK aberto no
+  // lugar (ele desce com a mensagem nova dele) = nada. O chamado que saiu com o OK (versao 'ok' que fechou antes de a
+  // 1a mensagem voltar) volta pra tirar a tela; se a aba ja tem outro chamado, a tela vai pro comeco do apagar dele.
+  function okDepoisDoEnvio(t, alvo, d, cod, tela, descer) {
+    if (okAberto(d)) return;
+    const sid = alvo.sid;
+    if (t.chamados[sid] !== d) {
+      const outro = chamadoDe(t, sid);
+      if (outro) {
+        const a = { messageId: tela.messageId, doBot: true, formato: formatoDe(tela.formato) };
+        if (SO_NO_ESTADO.has(outro.versao.estado)) a.manterConversa = true;
+        outro.apagar.unshift(a);
+        outro.mudouEm = agoraIso();
+        enfileirar(t, sid);
+        logar(`${sid}: a mensagem ${tela.messageId} saiu com o OK ${cod}, que fechou no envio; vai pro apagar do chamado novo`);
+        return;
+      }
+      t.chamados[sid] = d;
+    }
+    telaDoOkSemDono(t, sid, d, descer);
+    logar(`${sid} ${d.versao.estado}: a mensagem ${tela.messageId} saiu com o OK ${cod}, que fechou no envio; a tela sai do OK aberto`);
+  }
+
+  // T26b2: trancada = o OK aberto, com toque, na tela (o porteiro confere o toque naquela mensagem: nada a apaga nem a
+  // reescreve ate o fecho ou o okToque(null))
+  const trancada = (c) => okAberto(c) && Boolean(c.ok.toque) && okNaTelaDe(c);
+
+  /**
+   * T26b2: o porteiro passa a cada volta. Chamado com o OK aberto fora da tela (ou com a mensagem nova pendente) e sem
+   * item na fila (a trava e o 400 tiram o item) volta pro COMECO da fila, no maximo 1 vez por minuto por aba (sem o
+   * limite voltaria a cada passo). A tela trancada nao volta (a mensagem nova dela espera o fecho). -> quantos voltaram.
+   */
+  function okSemTela(e) {
+    const t = tgDe(e);
+    const agoraMs = agora();
+    for (const [sid, ms] of voltasDoOk) if (!(agoraMs - ms < OK_VOLTA_MS)) voltasDoOk.delete(sid);
+    let n = 0;
+    for (const sid of Object.keys(t.chamados)) {
+      const c = chamadoDe(t, sid);
+      if (!c || !okAberto(c) || trancada(c)) continue;
+      if (okNaTelaDe(c) && c.descer !== true) continue;
+      if (t.saida.some((i) => ehObjeto(i) && i.sessionId === sid) || voltasDoOk.has(sid)) continue;
+      voltasDoOk.set(sid, agoraMs);
+      t.saida.unshift({ sessionId: sid, entrouEm: agoraIso(), falhas: 0 });
+      n += 1;
+      logar(`${sid} ${c.versao.estado}: o OK ${c.ok.cod} esta fora da tela; volta pro comeco da fila`);
+    }
+    return n;
+  }
+
+  /**
+   * O porteiro abriu um pedido de OK da aba: o pedido entra no chamado (c.ok) e sai na mensagem da aba, embaixo da parte
+   * dela (montarChamadoComOk). `bloco` = {compacto: {texto, botoes}, completo: {texto, botoes}} (montarBlocoOk do
+   * lib/ok-tg). -> {aceito: true, substituido: <cod> | null} | {aceito: false, motivo: 'trancada'}.
+   * Sem chamado (ou com o calado) = chamado novo na versao 'ok' (as sobras da aba vao pro apagar, como no trocar). Mesmo
+   * cod ja no chamado = aceito, nada muda. OK aberto com toque e na tela = recusa (a T26b2 trata a trancada). Outro OK
+   * aberto sem toque = substituido. A aba vai pro COMECO da fila e o OK sai em mensagem nova com notificacao.
+   */
+  function okAbriu(e, sessionId, { cod, bloco, titulo, nome } = {}) {
+    const t = tgDe(e);
+    const sid = sessao(sessionId, 'okAbriu');
+    if (typeof cod !== 'string' || !cod) throw new TypeError('okAbriu: cod invalido');
+    const parte = (b) => ehObjeto(b) && typeof b.texto === 'string' && b.texto !== '';
+    if (!ehObjeto(bloco) || !parte(bloco.compacto) || !parte(bloco.completo)) throw new TypeError('okAbriu: bloco invalido');
+    let c = chamadoDe(t, sid);
+    if (c && ehObjeto(c.ok) && c.ok.cod === cod) return { aceito: true, substituido: null };
+    if (c && okAberto(c) && c.ok.toque && okNaTelaDe(c)) {
+      logar(`${sid}: OK ${cod} recusado (o OK ${c.ok.cod} esta tocado na tela)`);
+      return { aceito: false, motivo: 'trancada' };
+    }
+    const substituido = c && okAberto(c) ? c.ok.cod : null;
+    let antes = null;
+    if (!c || c.versao.estado === CALADO) {
+      const tit = typeof titulo === 'string' && titulo ? titulo : (c?.versao.titulo ?? null);
+      c = trocar(t, sid, versaoNova(t, 'ok', { titulo: tit, hora: agoraIso(), nome }));
+    } else {
+      antes = { versaoId: c.versao.id, descer: c.descer === true };
+    }
+    c.ok = { cod, bloco, completo: false, toque: null, fechado: null, notificar: true, em: agoraIso(), naTelaEm: null };
+    if (antes) c.ok.antes = antes;
+    cancelarSituacaoPendente(t, sid); // T26d (regra 2): o OK e mensagem nova da aba
+    okMudou(t, sid, c, { descer: true, frente: true });
+    logar(`${sid} ${c.versao.estado}: OK ${cod} entra no chamado${substituido ? ` (no lugar do OK ${substituido})` : ''}`);
+    return { aceito: true, substituido };
+  }
+
+  /** "Mais informações" do OK: aberto, sem toque e compacto = o bloco completo (e a parte aberta), por edicao -> true. */
+  function okInfo(e, cod) {
+    const t = tgDe(e);
+    const a = chamadoDoOk(t, cod);
+    if (!a || !okAberto(a.c) || a.c.ok.toque || a.c.ok.completo === true) return false;
+    a.c.ok.completo = true;
+    okMudou(t, a.sid, a.c);
+    logar(`${a.sid}: OK ${cod} aberto inteiro`);
+    return true;
+  }
+
+  /**
+   * O toque no Sim/Não do OK aberto (`acao` 'sim' | 'nao'): anota e a tela perde SO o teclado (tirarBotoes; o texto nao
+   * e editado). `null` = desanota (a trava zerou) e a tela volta com os botoes por edicao. Sem o pedido aberto = false.
+   */
+  function okToque(e, cod, acao) {
+    const t = tgDe(e);
+    if (acao !== 'sim' && acao !== 'nao' && acao !== null) throw new TypeError('okToque: acao invalida');
+    const a = chamadoDoOk(t, cod);
+    if (!a || !okAberto(a.c)) return false;
+    const { sid, c } = a;
+    if (acao !== null) {
+      c.ok.toque = { acao, em: agoraIso() };
+      if (okNaTelaDe(c)) {
+        marcarTirarBotoes(c, c.mensagem.messageId);
+        c.mudouEm = agoraIso();
+        enfileirar(t, sid);
+      }
+      logar(`${sid}: OK ${cod} tocado (${acao})`);
+      return true;
+    }
+    if (!c.ok.toque) return true;
+    c.ok.toque = null;
+    if (c.mensagem !== null) semTirarBotoes(c, c.mensagem.messageId);
+    okMudou(t, sid, c);
+    logar(`${sid}: OK ${cod} sem o toque; os botoes voltam`);
+    return true;
+  }
+
+  /**
+   * O pedido `cod` fechou (o chamado que tem o cod; outro, nenhum ou ja fechado = false). Nunca chegou na tela = o c.ok
+   * sai sem mensagem (versao 'ok' sem tela = o chamado sai). `some` (no modo 'apagar'): o c.ok sai; aviso/resposta (e os
+   * outros estados que tem tela) = edicao sem o bloco, com os botoes do chamado; versao 'ok' = a tela vai pro apagar e o
+   * chamado sai como o calado; enviando/entregue = a tela vai pro comeco do apagar com `manterConversa: true` (a fala
+   * dele em voo nao e conversa resolvida) e o chamado fica. Senao (e no modo 'manter') = `c.ok.fechado = texto` e
+   * edicao (o bloco fechado, sem botoes).
+   */
+  function okFechou(e, cod, opcoes = {}) {
+    const t = tgDe(e);
+    const a = chamadoDoOk(t, cod);
+    const guardado = a && okAberto(a.c) && encerrarDepoisValido(a.c.encerrarDepois) ? a.c.encerrarDepois : null;
+    const r = okFechouSo(t, cod, opcoes);
+    // T26d (conserto da T26b2): o encerrar que chegou com o OK aberto vale agora (o de sempre, que tira o OK fechado)
+    if (r === true && guardado) {
+      delete a.c.encerrarDepois;
+      logar(`${a.sid}: o OK ${cod} fechou; o encerrar guardado vale agora`);
+      encerrarChamado(t, a.sid, guardado.hora, guardado.motivo);
+    }
+    return r;
+  }
+
+  function okFechouSo(t, cod, { texto, some = false, forte, botoes } = {}) {
+    const fecho = some !== true || mantemResolvidas;
+    if (fecho && typeof texto !== 'string') throw new TypeError('okFechou: texto invalido');
+    const a = chamadoDoOk(t, cod);
+    if (!a || !okAberto(a.c)) return false;
+    const { sid, c } = a;
+    if (c.ok.naTelaEm == null && !okNaTelaDe(c)) { // nunca chegou na tela
+      const antes = c.ok.antes;
+      const soOk = c.versao.id === c.ok.versaoId; // nada mudou na versao desde a ultima mudanca do OK
+      delete c.ok;
+      if (c.versao.estado === 'ok' && c.mensagem === null) { // o chamado so existia pro OK: sai (as sobras ficam no chat)
+        delete t.chamados[sid];
+        const item = t.saida.find((i) => ehObjeto(i) && i.sessionId === sid);
+        if (item) tirar(t.saida, item);
+      } else if (c.versao.estado === 'ok') {
+        okSaiComoCalado(t, sid, c);
+      } else if (c.mensagem !== null && c.mensagem.ok != null) {
+        // T26b2 (conserto 1): a tela ainda mostra o OK que este substituiu: o versaoId NAO volta (a tela seria dada como
+        // em dia com o bloco e os botoes do antigo); so o descer volta e o drenar tira o bloco
+        telaDoOkSemDono(t, sid, c, soOk && ehObjeto(antes) ? antes.descer === true : c.descer === true);
+      } else if (soOk && ehObjeto(antes) && Number.isSafeInteger(antes.versaoId)) {
+        c.versao = { ...c.versao, id: antes.versaoId }; // desfaz: a tela volta a estar em dia
+        c.descer = antes.descer === true;
+      }
+      logar(`${sid}: OK ${cod} fechou sem chegar na tela; sai sem mensagem`);
+      return true;
+    }
+    if (fecho) {
+      c.ok.fechado = texto;
+      // T28: o fechado de vencido = a linha do fecho em negrito (`forte`) e o botao "Tentar novamente" (`botoes`)
+      if (typeof forte === 'string' && forte !== '') c.ok.forte = forte;
+      if (Array.isArray(botoes) && botoes.length) c.ok.botoesFechado = botoes;
+      okMudou(t, sid, c);
+      logar(`${sid}: OK ${cod} fechado na tela`);
+      return true;
+    }
+    delete c.ok;
+    const estado = c.versao.estado;
+    if (estado === 'ok') {
+      okSaiComoCalado(t, sid, c);
+    } else if (SO_NO_ESTADO.has(estado)) {
+      if (c.mensagem !== null) {
+        const id = c.mensagem.messageId;
+        semTirarBotoes(c, id);
+        c.apagar.unshift({ messageId: id, doBot: true, formato: formatoDe(c.mensagem.formato), manterConversa: true });
+      }
+      c.mensagem = null;
+      c.descer = false;
+      c.mudouEm = agoraIso();
+      enfileirar(t, sid);
+    } else {
+      okMudou(t, sid, c); // edicao sem o bloco (o montarChamado de sempre)
+    }
+    logar(`${sid} ${estado}: OK ${cod} some da tela`);
+    return true;
+  }
+
+  /**
+   * T28 (PLANO-TELEGRAM.md, "T28", contratos 2 e 4): o toque em "Tentar novamente" do fechado de vencido `cod` (ou o
+   * problema na entrega do recado dele): o botao sai e a 2a linha (`linha`: "Pedi de novo à aba às HH:MM." ou "Não
+   * consegui pedir de novo à aba: ...") entra embaixo da linha do fecho, por edicao (a 2a chamada troca a linha; o botao
+   * nao volta). So o fechado de vencido (`forte`) do chamado que tem o cod; senao false.
+   */
+  function okDeNovo(e, cod, linha) {
+    const t = tgDe(e);
+    if (typeof linha !== 'string' || !linha) throw new TypeError('okDeNovo: linha invalida');
+    const a = chamadoDoOk(t, cod);
+    if (!a || typeof a.c.ok.fechado !== 'string' || typeof a.c.ok.forte !== 'string') return false;
+    delete a.c.ok.botoesFechado;
+    a.c.ok.depois = linha;
+    okMudou(t, a.sid, a.c);
+    logar(`${a.sid}: OK ${cod} vencido: o botao sai e a 2a linha entra`);
+    return true;
+  }
+
+  /** O cod do OK ABERTO mostrado na mensagem `messageId` (a tela atual do chamado) | null. */
+  function okNaMensagem(e, messageId) {
+    const t = tgDe(e);
+    const id = idMensagem(messageId);
+    if (id == null) return null;
+    for (const sid of Object.keys(t.chamados)) {
+      const c = chamadoDe(t, sid);
+      if (c && okAberto(c) && okNaTelaDe(c) && idMensagem(c.mensagem.messageId) === id) return c.ok.cod;
+    }
+    return null;
   }
 
   /**
@@ -1199,9 +1749,22 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       dono: c,
       versaoId: v.id,
       estado: v.estado,
-      silencioso: !NOVA_COM_NOTIFICACAO.has(v.estado), // notificar vem do estado da versao ATUAL na hora do envio
+      // notificar vem do estado da versao ATUAL na hora do envio; T26b1: ou do OK que ainda nao apareceu (c.ok.notificar)
+      silencioso: !NOVA_COM_NOTIFICACAO.has(v.estado) && !(ehObjeto(c.ok) && c.ok.notificar === true),
       citar: idMensagem(v.citar), // T7d1a (F1): mensagem nova sai em cima da fala do dono que a versao responde
-      montar: () => montarChamado(central ? { ...v, titulo: TITULO_SISTEMA, icone: ICONE_SISTEMA } : v),
+      comOk: true, // T26b1: alvo que pode ter o c.ok (so o chamado de aba)
+      montar: () => {
+        const base = central ? { ...v, titulo: TITULO_SISTEMA, icone: ICONE_SISTEMA } : v;
+        if (!ehObjeto(c.ok)) return montarChamado(base);
+        // T26b1: sem html (sai sempre no classico). T26b2: okAberto = a mensagem leva o bloco aberto (o conserto 2)
+        return { ...montarChamadoComOk(base, c.ok), okCod: c.ok.cod, okAberto: okAberto(c) };
+      },
+      // T26b2 (conserto 3, 'manter'): a tela antiga com a parte que ela mostrava (c.ok.tela; sem ela, so o cabecalho) e o
+      // bloco fechado
+      montarFechado: () => {
+        const tela = ehObjeto(c.ok.tela) ? c.ok.tela : { ...v, estado: 'ok' };
+        return montarChamadoComOk(central ? { ...tela, titulo: TITULO_SISTEMA, icone: ICONE_SISTEMA } : tela, c.ok);
+      },
       versao: v, // T7k: o soltar le o liberar da versao que foi pra tela
       tituloMovido: central ? TITULO_SISTEMA : v.titulo,
       iconeMovido: central ? ICONE_SISTEMA : undefined, // T22b: o movido da central com o titulo do sistema
@@ -1265,7 +1828,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       versaoId: s.versaoId,
       estado: SITUACAO,
       silencioso: true,
-      citar: idMensagem(s.citar),
+      // T26d (regra 1): a tela do chamado da aba vai sair depois dela: sem citar (apontaria pra mensagem que some)
+      citar: chamadoQueSaiPelaSituacao(t, s.aba) ? null : idMensagem(s.citar),
       aba: s.aba,
       montar: () => montarSituacao({ ...s.dados, chamadoId: s.chamadoId, completo: s.completo === true }), // T10c: com os botoes
       tituloMovido: TITULO_SITUACAO,
@@ -1403,20 +1967,41 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     }
     const formato = formatoDe(r.formato);
     const antiga = d.mensagem;
-    // so agora (a nova saiu) a que estava na tela vai pro COMECO do apagar
-    if (antiga !== null) d.apagar.unshift({ messageId: antiga.messageId, doBot: true, formato: formatoDe(antiga.formato) });
+    // so agora (a nova saiu) a que estava na tela vai pro COMECO do apagar. T26d (regra 3): a situacao substituida de
+    // uma aba sem chamado com tela fica (sem os botoes) como mensagem da aba
+    const viraDaAba = antiga !== null && alvo.sid === SITUACAO && situacaoViraDaAba(t, d, antiga, alvo.aba);
+    if (antiga !== null && !viraDaAba) d.apagar.unshift({ messageId: antiga.messageId, doBot: true, formato: formatoDe(antiga.formato) });
     d.mensagem = { messageId: id, formato, versaoId: alvo.versaoId };
+    if (m.okCod != null) { // T26b1: a tela mostra o OK; o 1o envio dele desliga o notificar e marca o naTelaEm
+      d.mensagem.ok = m.okCod;
+      if (ehObjeto(d.ok) && d.ok.cod === m.okCod) {
+        d.ok.notificar = false;
+        if (!d.ok.naTelaEm) d.ok.naTelaEm = agoraIso();
+      }
+    }
     soltar(t, alvo); // T7k
-    delete d.tirarBotoes; // T7f (F8): a tela antiga e as herdadas ja estao no apagar: nao precisam perder os botoes
+    // T7f (F8): a tela antiga e as herdadas ja estao no apagar: nao precisam perder os botoes. T26d: o tirarBotoes da
+    // situacao e o da regra 3 (as substituidas que ficam): fica
+    if (alvo.sid !== SITUACAO) delete d.tirarBotoes;
     t.mensagens[id] = { sessionId: alvo.sid, at: agoraIso(), formato };
     if (alvo.sid === SITUACAO) t.mensagens[id].aba = alvo.aba; // T10
     const citou = idMensagem(pedido.responderA); // T23a: a fala do dono em cima da qual ela saiu (a conversa dela)
     if (citou != null) t.mensagens[id].citar = citou;
+    if (alvo.sid === SITUACAO) { // T26d: regra 1 (a tela do chamado da aba sai depois) e regra 3 (as ex-situacoes dela)
+      telaSaiPelaSituacao(t, alvo.aba);
+      exSituacaoProApagar(t, d, alvo.aba, id);
+    } else if (alvo.comOk === true) { // T26d: regra 2 (a situacao da aba sai depois) e regra 3
+      delete d.naSituacao;
+      situacaoSaiPelaAba(t, alvo.sid);
+      exSituacaoProApagar(t, d, alvo.sid, id);
+    }
     if (alvo.versaoAtual() === alvo.versaoId) {
       d.descer = false;
       alvo.aoSair();
     }
     logar(`${alvo.quem}: mensagem ${id} enviada (${formato}${alvo.silencioso ? ', silenciosa' : ', com notificacao'})`);
+    // T26b2 (conserto 2): o OK fechou com ela em voo = a tela e editada (descer desliga: a mensagem nova ja saiu) ou sai
+    if (m.okCod != null && m.okAberto === true) okDepoisDoEnvio(t, alvo, d, m.okCod, d.mensagem, false);
     const incerto = desdeDe(item.incerto);
     if (incerto != null) {
       delete item.incerto;
@@ -1432,8 +2017,15 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     const r = await chamar(t, 'editar', { sessionId: alvo.sid, estado: alvo.estado, messageId: tela.messageId, pedido }, resumo);
     if (r.ok === true) {
       tela.versaoId = alvo.versaoId;
+      if (m.okCod != null || tela.ok != null) { // T26b1: a edicao poe os botoes certos: a tela sai do tirarBotoes
+        semTirarBotoes(d, tela.messageId);
+        if (m.okCod != null) tela.ok = m.okCod;
+        else delete tela.ok;
+      }
       soltar(t, alvo); // T7k
       logar(`${alvo.quem}: mensagem ${tela.messageId} editada`);
+      // T26b2 (conserto 2): o OK fechou com a edicao em voo (o descer fica como esta)
+      if (m.okCod != null && m.okAberto === true && d.mensagem === tela) okDepoisDoEnvio(t, alvo, d, m.okCod, tela, d.descer === true);
       return 'segue';
     }
     if (r.codigo === 400 && !ehPausa(r) && alvo.sid === PAINEL) {
@@ -1509,8 +2101,9 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   // de sair do t.mensagens: com `citar` X, X no anel (idsDoDono) e nenhum outro registro sem `voz` com `citar` X (a ultima
   // mensagem do robo em cima de X saiu) = a conversa de X se resolveu: as vozes com `citar` X e depois o X entram no
   // COMECO do `limpar` do dono `d` (o mesmo alvo), nessa ordem, sem repetir id que ja esteja na lista. Senao, nada.
-  function conversaResolvida(t, d, id) {
+  function conversaResolvida(t, d, id, entrada) {
     if (!limpaResolvidas) return;
+    if (ehObjeto(entrada) && entrada.manterConversa === true) return; // T26b2: a tela do OK com a fala dele em voo
     const registro = t.mensagens[id];
     const x = ehObjeto(registro) ? idMensagem(registro.citar) : null;
     if (x == null || !Array.isArray(t.idsDoDono) || !t.idsDoDono.includes(x)) return;
@@ -1561,7 +2154,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     const r = await chamar(t, 'apagar', { sessionId: alvo.sid, messageId: id }, resumo);
     if (r.ok === true) { // apagada, ou ja tinha sumido
       tirar(d.apagar, a);
-      conversaResolvida(t, d, id); // T23a: a versao nova, o calado e as sobras (o registro e lido antes de sair)
+      conversaResolvida(t, d, id, a); // T23a: a versao nova, o calado e as sobras (o registro e lido antes de sair)
       delete t.mensagens[id];
       return 'segue';
     }
@@ -1719,7 +2312,64 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       return 'segue';
     }
     if (Array.isArray(d.tirarBotoes) && d.tirarBotoes.length) return tirarBotoesPrimeira(t, item, alvo, resumo);
+    // T26b1: a tela do OK que sumiu com a fala dele em voo (okFechou some) sai agora; o resto do apagar espera como antes
+    if (d.apagar.length && ehObjeto(d.apagar[0]) && d.apagar[0].manterConversa === true) return apagarPrimeira(t, item, alvo, resumo);
     tirar(t.saida, item);
+    return 'segue';
+  }
+
+  // T26b2: a tela trancada (o OK aberto, tocado, na tela) nunca e apagada nem reescrita: o passo so tira os botoes e
+  // apaga o que esta no apagar (que nunca e ela: se aparecer, sai da lista sem apagar); o resto espera e o item sai da
+  // fila (1 log quando ha mensagem esperando). O okFechou e o okToque(null) poem a aba de volta na fila.
+  async function passoTrancado(t, item, alvo, resumo, emDia) {
+    const d = alvo.dono;
+    const tela = idMensagem(d.mensagem.messageId);
+    if (Array.isArray(d.tirarBotoes) && d.tirarBotoes.length) return tirarBotoesPrimeira(t, item, alvo, resumo);
+    if (d.apagar.length) {
+      const a = d.apagar[0];
+      if (ehObjeto(a) && idMensagem(a.messageId) === tela) {
+        tirar(d.apagar, a);
+        logar(`${alvo.sid}: a mensagem ${tela} e a tela trancada do OK ${d.ok.cod}; sai do apagar sem apagar`);
+        return 'segue';
+      }
+      return apagarPrimeira(t, item, alvo, resumo);
+    }
+    tirar(t.saida, item);
+    if (!emDia && (d.descer === true || d.mensagem.versaoId !== alvo.versaoId)) {
+      logar(`${alvo.quem}: a tela ${tela} esta trancada (OK ${d.ok.cod} tocado); a mensagem nova espera o fecho`);
+    }
+    return 'segue';
+  }
+
+  // T26b2 (conserto 3, modo 'manter'): o OK fechou com a mensagem nova pendente e a tela antiga ainda o mostra aberto:
+  // ela e EDITADA pro bloco fechado (com a parte que mostrava, sem botoes) e fica no chat (`fica: true`; nada de
+  // tirar-botoes depois); a mensagem nova sai no proximo passo. Montagem torta ou 400 = o caminho da T26b1 (o c.ok sai e
+  // a tela antiga so perde os botoes); 429 e transporte = fica (falhou).
+  async function fecharTelaAntiga(t, item, alvo, resumo) {
+    const d = alvo.dono;
+    const tela = d.mensagem;
+    const cod = d.ok.cod;
+    let m = null;
+    try {
+      m = alvo.montarFechado();
+    } catch {
+      m = null;
+    }
+    if (m) {
+      const pedido = { html: undefined, classico: m.classico, botoes: null, formato: formatoDe(tela.formato) };
+      const r = await chamar(t, 'editar', { sessionId: alvo.sid, estado: alvo.estado, messageId: tela.messageId, pedido }, resumo);
+      if (r.ok === true) {
+        semTirarBotoes(d, tela.messageId);
+        if (ehObjeto(t.mensagens[tela.messageId])) t.mensagens[tela.messageId].fica = true;
+        d.mensagem = null;
+        logar(`${alvo.sid}: mensagem ${tela.messageId} fica no chat com o OK ${cod} fechado (modo manter)`);
+        return 'segue';
+      }
+      if (r.codigo !== 400 || ehPausa(r)) return falhou(t, item, alvo, r, 'editar');
+    }
+    delete d.ok;
+    if (alvo.estado === 'ok') okSaiComoCalado(t, alvo.sid, d);
+    logar(`${alvo.sid}: a mensagem ${tela.messageId} nao virou o OK ${cod} fechado; segue sem o bloco`);
     return 'segue';
   }
 
@@ -1733,8 +2383,29 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (Array.isArray(d.apagarToque) && d.apagarToque.length) return apagarToquePrimeira(t, item, alvo, resumo); // T12
     if (Array.isArray(d.apagarJa) && d.apagarJa.length) return apagarJaPrimeira(t, item, alvo, resumo);
     if (Array.isArray(d.limpar) && d.limpar.length) return limparPrimeira(t, item, alvo, resumo); // T23a: antes da tela e do calado
-    if (alvo.estado === CALADO || SO_NO_ESTADO.has(alvo.estado)) return passoSemTela(t, item, alvo, resumo);
-    if (d.mensagem === null || d.descer === true || d.mensagem.versaoId !== alvo.versaoId) {
+    // T26b1: chamado com o c.ok nunca vai pro passoSemTela (enviando/entregue com OK sai na tela); nesses estados a tela
+    // esta em dia quando mostra a ultima mudanca do OK (a versao nova da fala dele nao muda o que aparece)
+    const comOk = alvo.comOk === true && ehObjeto(d.ok) && alvo.estado !== CALADO;
+    if (!comOk && (alvo.estado === CALADO || SO_NO_ESTADO.has(alvo.estado))) return passoSemTela(t, item, alvo, resumo);
+    const emDiaComOk = comOk && SO_NO_ESTADO.has(alvo.estado) && d.mensagem !== null && d.descer !== true
+      && d.mensagem.ok === d.ok.cod && Number.isSafeInteger(d.ok.versaoId) && d.mensagem.versaoId >= d.ok.versaoId;
+    if (comOk && trancada(d)) return passoTrancado(t, item, alvo, resumo, emDiaComOk); // T26b2
+    // T26d (regra 1): a situacao da aba e a mensagem dela: o chamado esta em dia sem tela (so o apagar)
+    const emDiaSemTela = alvo.comOk === true && !comOk && d.mensagem === null && d.descer !== true && d.naSituacao === alvo.versaoId;
+    if (!emDiaComOk && !emDiaSemTela && (d.mensagem === null || d.descer === true || d.mensagem.versaoId !== alvo.versaoId)) {
+      const nova = d.mensagem === null || d.descer === true;
+      if (comOk && nova && typeof d.ok.fechado === 'string') { // a mensagem nova nao leva o bloco fechado
+        // T26b2 (conserto 3, 'manter'): a tela antiga que ainda mostra este OK aberto vira o bloco fechado antes
+        if (mantemResolvidas && okNaTelaDe(d) && Number.isSafeInteger(d.ok.versaoId) && d.mensagem.versaoId < d.ok.versaoId) {
+          return fecharTelaAntiga(t, item, alvo, resumo);
+        }
+        delete d.ok;
+        if (SO_NO_ESTADO.has(alvo.estado)) return passoSemTela(t, item, alvo, resumo);
+        if (alvo.estado === 'ok') {
+          okSaiComoCalado(t, alvo.sid, d);
+          return 'segue';
+        }
+      }
       let m;
       try {
         m = alvo.montar();
@@ -1744,8 +2415,14 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         return 'segue';
       }
       if (d.mensagem === null || d.descer === true) return enviarNova(t, item, alvo, m, resumo);
+      if (m.okCod != null && m.html === undefined && formatoDe(d.mensagem.formato) === 'rich') {
+        d.descer = true; // T26b1: nunca edicao sem html de uma tela rich: mensagem nova (a antiga vai pro apagar)
+        return 'segue';
+      }
       return editarTela(t, item, alvo, m, resumo);
     }
+    // T26b1: o toque. T26d: a situacao substituida que fica como mensagem da aba (regra 3)
+    if ((comOk || alvo.sid === SITUACAO) && Array.isArray(d.tirarBotoes) && d.tirarBotoes.length) return tirarBotoesPrimeira(t, item, alvo, resumo);
     if (d.apagar.length) return apagarPrimeira(t, item, alvo, resumo);
     tirar(t.saida, item);
     return 'segue';
@@ -1793,7 +2470,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         const toque = Array.isArray(s.apagarToque) && s.apagarToque.length > 0; // T12: o /start do toque
         const ja = Array.isArray(s.apagarJa) && s.apagarJa.length > 0;
         const limparS = Array.isArray(s.limpar) && s.limpar.length > 0; // T23a: depois do toque e do apagarJa
-        if (!toque && !ja && !limparS && !(Array.isArray(s.apagar) && s.apagar.length)) {
+        const semBotoes = Array.isArray(s.tirarBotoes) && s.tirarBotoes.length > 0; // T26d (regra 3): antes do apagar
+        if (!toque && !ja && !limparS && !semBotoes && !(Array.isArray(s.apagar) && s.apagar.length)) {
           tirar(t.saida, item);
           logar(`${SITUACAO} saiu da fila (nenhuma situacao na tela)`);
           return 'segue';
@@ -1801,8 +2479,10 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         alvo = alvoSituacao(t);
         if (agoraMs < pausaAte || agoraMs < recuoAte) return 'para';
         if (toque) return apagarToquePrimeira(t, item, alvo, resumo);
-        if (!ja && limparS) return limparPrimeira(t, item, alvo, resumo);
-        return ja ? apagarJaPrimeira(t, item, alvo, resumo) : apagarPrimeira(t, item, alvo, resumo);
+        if (ja) return apagarJaPrimeira(t, item, alvo, resumo);
+        if (limparS) return limparPrimeira(t, item, alvo, resumo);
+        if (semBotoes) return tirarBotoesPrimeira(t, item, alvo, resumo);
+        return apagarPrimeira(t, item, alvo, resumo);
       }
       alvo = alvoSituacao(t);
     } else {
@@ -1818,7 +2498,9 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         return 'segue';
       }
       // T7c2: so o aviso NOVO (sem mensagem na tela ou descendo); a edicao de um aviso na tela (o abrir) sai
-      if (!modoRua && c.versao.estado === 'aviso' && (c.mensagem === null || c.descer === true)) {
+      // T26b1: com o OK aberto no chamado o aviso sai junto (o OK nunca fica sem tela por causa do aviso)
+      // T26d: o aviso em dia sem tela (a situacao e a mensagem dele) nao e aviso novo: o apagar dele segue
+      if (!modoRua && c.versao.estado === 'aviso' && (c.mensagem === null || c.descer === true) && !okAberto(c) && !emDiaPelaSituacao(c)) {
         tirar(t.saida, item);
         logar(`${sid} aviso saiu da fila sem enviar (dono no PC)`);
         return 'segue';
@@ -1970,5 +2652,12 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     maiorIdDoChat,
     vozEnviada,
     naFila,
+    okAbriu, // T26b1
+    okInfo,
+    okToque,
+    okFechou,
+    okDeNovo, // T28
+    okNaMensagem,
+    okSemTela, // T26b2
   };
 }

@@ -108,4 +108,6 @@ não começam com "Nome da sessão:". Estas regras valem a sessão inteira, incl
     `node "{{repo}}/porteiro.mjs" aguardar --sessao "<sessionId>[,<sessionId>...]" --msg <id da mensagem do dono>`
     (com `--voltar` pra trazer de volta) e responda ao dono em 1 linha: "pedi pro porteiro mover X e Y pra Aguardando"
     (ou "pedi pro porteiro voltar X pro Esperando"). Quem move e confirma é o porteiro, em cima da fala dele; a aba
-    volta sozinha pro Esperando se perguntar de novo. Pedido de OK não vai pra Aguardando (vence sozinho).
+    volta sozinha pro Esperando se perguntar de novo. Pedido de OK não vai pra Aguardando (vence sozinho). A pergunta
+    de aba fechada sem resposta há 2 dias o porteiro move sozinho pra Aguardando; a que o dono trouxe de volta fica no
+    Esperando até a aba perguntar de novo.

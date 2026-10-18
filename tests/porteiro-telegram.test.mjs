@@ -4753,7 +4753,7 @@ test('T10 4. painel com o @ do bot: o nome de cada aba aberta vira link (esperan
   assert.ok(!h.tg.de('enviar').at(-1).args[0].html.includes('<a '));
 });
 
-test('T10 5. "/start a_<aba>" (o toque no nome): a situacao numa mensagem propria, silenciosa, em cima do chamado dela na tela; trabalhando com a ultima mensagem do transcript; a 2a sai sem citar (T12: o /start sai do chat) e apaga a 1a; nada vai pra aba', async () => {
+test('T10 5. "/start a_<aba>" (o toque no nome): a situacao numa mensagem propria, silenciosa, sem citar (T26d regra 1: ela e a mensagem da aba e a tela do chamado sai); trabalhando com a ultima mensagem do transcript; a 2a sai sem citar (T12: o /start sai do chat) e a 1a fica sem os botoes como mensagem da aba (T26d regra 3); nada vai pra aba', async () => {
   const h = montar();
   aba(h, 'S1', 'Faro');
   aba(h, 'S2', 'Site');
@@ -4766,19 +4766,20 @@ test('T10 5. "/start a_<aba>" (o toque no nome): a situacao numa mensagem propri
   const env = h.tg.de('enviar').map((c) => c.args[0]);
   assert.equal(env.length, 1);
   assert.equal(env[0].silencioso, true);
-  assert.equal(env[0].responderA, tela, 'em cima do chamado dela na tela');
+  assert.equal(env[0].responderA, undefined, 'T26d regra 1: sem citar (a situacao e a mensagem da aba)');
   assert.equal(env[0].html, '<h2>ℹ️ Faro</h2><p><i>Trabalhando agora.</i></p><p>Rodando a bateria de testes agora.</p>'); // T10b
   assert.equal(env[0].classico, '<b>ℹ️ Faro</b>\n<i>Trabalhando agora.</i>\nRodando a bateria de testes agora.');
   const e = estado(h);
   const idSit = e.tg.situacao.mensagem.messageId;
-  // T23a: o registro guarda o citar (o chamado na tela: fora do anel, nada a limpar)
-  assert.deepEqual({ ...e.tg.mensagens[idSit], at: null }, { sessionId: 'situacao', aba: 'S1', at: null, formato: 'rich', citar: tela });
+  // T26d regra 1: sem citar, o registro nao guarda o citar; a tela do chamado sai
+  assert.deepEqual({ ...e.tg.mensagens[idSit], at: null }, { sessionId: 'situacao', aba: 'S1', at: null, formato: 'rich' });
+  assert.ok(apagadas(h).includes(tela), 'T26d regra 1: a tela do chamado sai quando a situacao sai');
   assert.deepEqual(e.tg.sistema.linhas, [], 'a do sistema nao mexe');
   assert.equal(e.tg.painel.mensagem, null, 'nem o painel');
   assert.ok(logs(h).some((l) => /Telegram: situacao da aba S1 pedida pelo link do painel/.test(l)), logs(h).join('\n'));
   assert.ok(logs(h).some((l) => l.includes(`telegram situacao: mensagem ${idSit} enviada (rich, silenciosa)`)), logs(h).join('\n'));
   // 2o toque (aba parada, sem chamado na tela e sem mensagem nenhuma): T12: sem citar, o "/start" dele sai antes; a
-  // anterior sai depois
+  // anterior (S1 sem chamado na tela) fica no chat sem os botoes, como mensagem da aba (T26d regra 3)
   h.tg.zerar();
   const u2 = msgTg(h, '/start@Teste_ControleBot a_S2');
   await lerTg(h, [u2]);
@@ -4786,7 +4787,8 @@ test('T10 5. "/start a_<aba>" (o toque no nome): a situacao numa mensagem propri
   assert.equal(env2.length, 1);
   assert.equal(env2[0].responderA, undefined);
   assert.equal(env2[0].html, '<h2>ℹ️ Site</h2><p><i>Parada.</i></p><p>Ainda sem mensagem dela.</p>'); // T10b
-  assert.deepEqual(apagadas(h), [mid(u2), idSit]);
+  assert.deepEqual(apagadas(h), [mid(u2)]);
+  assert.deepEqual(h.tg.de('editarBotoes').map((c) => c.args), [[idSit, null]]);
   assert.equal(h.entregas.length, 0);
 });
 
@@ -4937,7 +4939,7 @@ test('T10c 10. a situacao com os botoes do aviso: "Mais informações" abre ali 
   assert.equal(h.entregas.length, 1);
 });
 
-test('T10c 11. toque na opcao da situacao com o aviso da aba na tela: o aviso tambem sai (a pergunta foi respondida)', async () => {
+test('T10c 11. toque na opcao da situacao com o aviso da aba na tela: o aviso sai quando a situacao sai (T26d regra 1) e a situacao sai no toque (a pergunta foi respondida)', async () => {
   const h = montar();
   aba(h, 'S1', 'Faro');
   ligarTg(h);
@@ -4945,15 +4947,17 @@ test('T10c 11. toque na opcao da situacao com o aviso da aba na tela: o aviso ta
   const { messageId: tela } = await chamadoNaTela(h, 'S1', 'Faro');
   await lerTg(h, [msgTg(h, '/start a_S1')]);
   const env = h.tg.de('enviar').at(-1).args[0];
-  assert.equal(env.responderA, tela, 'em cima do aviso dela');
+  assert.equal(env.responderA, undefined, 'T26d regra 1: sem citar (a situacao e a mensagem da aba)');
   const id = estado(h).tg.situacao.chamadoId;
   const idSit = estado(h).tg.situacao.mensagem.messageId;
+  assert.ok(apagadas(h).includes(tela), 'T26d regra 1: a tela do aviso sai quando a situacao sai');
   h.tg.zerar();
   await lerTg(h, [toqueTg(h, `o:${id}:1`, idSit)]);
   await bombear(h.cru);
   assert.deepEqual(h.entregas.map((p) => p.sessionId), ['S1']);
   assert.ok(h.entregas[0].texto.includes('B) Só as correções'), h.entregas[0].texto);
-  assert.deepEqual(apagadas(h).sort(), [tela, idSit].sort(), 'o aviso e a situacao saem');
+  assert.deepEqual(apagadas(h), [idSit], 'a situacao sai no toque (o aviso ja tinha saido com ela)');
+  assert.notEqual(tela, idSit);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -5019,11 +5023,13 @@ test('T16 4. cauda sem pedido e sem texto (a vez de agora so de passos, como na 
   let env = h.tg.de('enviar').at(-1).args[0];
   assert.equal(env.html, '<h2>ℹ️ Aula</h2><p><i>Trabalhando agora. Último passo às 12:31: Rodar a bateria</i></p><p>Ainda sem mensagem neste trabalho.</p>');
   assert.equal(env.botoes ?? null, null);
-  // so o titulo no historico (nenhum passo): so a frase de sempre; segue em cima do aviso dela (T10)
+  // so o titulo no historico (nenhum passo): so a frase de sempre; sem citar o aviso dela (T26d regra 1: a situacao e a
+  // mensagem da aba)
   await lerTg(h, [msgTg(h, '/start a_S2')]);
   env = h.tg.de('enviar').at(-1).args[0];
   assert.equal(env.html, '<h2>ℹ️ Site</h2><p><i>Trabalhando agora.</i></p><p>Ainda sem mensagem neste trabalho.</p>');
-  assert.equal(env.responderA, tela);
+  assert.equal(env.responderA, undefined);
+  assert.ok(tela);
   const situacoes = h.tg.de('enviar').map((c) => c.args[0].html).filter((x) => x.includes('<i>Trabalhando'));
   assert.equal(situacoes.length, 2);
   assert.ok(situacoes.every((x) => !x.includes('Terminei a revisão')), situacoes.join('\n'));
@@ -5390,4 +5396,66 @@ test('T17b 8. resposta longa: a fala corta em 2.500 caracteres e a legenda avisa
   assert.equal(v.legenda, 'Faro: resposta em áudio (voz gerada por IA). O restante está no texto.');
   assert.ok(fv.textos[0].length <= 2500 + 30, String(fv.textos[0].length));
   assert.ok(fv.textos[0].endsWith('O restante está no texto.'));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// T27 (PLANO-TELEGRAM.md, "T27"; caso real 18/10: a aba respondeu a fala dele, o hook de Stop de captura fez ela continuar
+// e o 2o parou, sem precisar dele, encerrou o chamado: a resposta virou edicao calada da mensagem antiga)
+test('T27 2. resposta a fala do Telegram + parou de continuacao no mesmo passo = a resposta sai como mensagem nova, com notificacao; sem a marca de continuacao tambem', async () => {
+  for (const continuacao of [true, false]) {
+    const h = montar();
+    aba(h, 'S1', 'Faro');
+    ligarTg(h);
+    await falarTg(h, 'Faro: funciona no mac?');
+    abaResponde(h, 'S1', [h.entregas[0]], { final: '> Telegram do Davi (12:00): «funciona no mac?»\n\nHoje não: só Windows.' });
+    const ev2 = parou(h, 'S1', { final: 'Não salvei nada novo.', finalTs: iso(h.t + 5000) });
+    if (continuacao) ev2.continuacao = true;
+    evento(h, ev2);
+    await h.p.passoEventos();
+    assert.equal(chamado(h, 'S1').versao.estado, 'resposta', `continuacao ${continuacao}: o 2o parou nao encerra a resposta`);
+    h.tg.zerar();
+    await h.p.esperarTelegram(15000);
+    assert.deepEqual(h.tg.tela(), [['enviar', false]], `continuacao ${continuacao}: mensagem nova com notificacao`);
+    assert.ok(h.tg.de('enviar')[0].args[0].html.includes('Hoje não: só Windows.'));
+    assert.equal(h.tg.de('editar').length, 0, 'nenhuma edicao');
+  }
+});
+
+test('T27 3. na rua, aviso que precisa dele + parou de continuacao sem precisar = o aviso sai e a pergunta fica nas pendencias; parou comum segue o de hoje', async () => {
+  const h = montar({ canalPrincipal: 'telegram' });
+  aba(h, 'S1', 'Faro');
+  ligarTg(h);
+  await ligarRua(h);
+  h.t += MIN;
+  evento(h, parou(h, 'S1', { final: FINAL, marcas: DECISAO }));
+  evento(h, { ...parou(h, 'S1', { final: 'Não salvei nada novo.', finalTs: iso(h.t + 5000) }), continuacao: true });
+  await h.p.passoEventos();
+  assert.equal(chamado(h, 'S1').versao.estado, 'aviso');
+  assert.equal(estado(h).ultimosParou.S1.precisa, true, 'a pergunta continua de pe');
+  await h.p.esperarTelegram(15000);
+  assert.deepEqual(h.tg.tela(), [['enviar', false]]);
+  assert.ok(logs(h).some((l) => l.includes('S1') && l.includes('continuacao por hook; o chamado do Telegram fica como esta')), logs(h).join('\n'));
+  assert.ok(logs(h).some((l) => l.includes('S1') && l.includes('a pergunta de antes fica nas pendencias')), logs(h).join('\n'));
+
+  // sem a marca (a aba seguiu de verdade, sem precisar dele): o aviso que nao saiu sai do chamado, como hoje
+  const s = montar({ canalPrincipal: 'telegram' });
+  aba(s, 'S1', 'Faro');
+  ligarTg(s);
+  await ligarRua(s);
+  s.t += MIN;
+  evento(s, parou(s, 'S1', { final: FINAL, marcas: DECISAO }));
+  evento(s, parou(s, 'S1', { final: 'Feito, publiquei.', finalTs: iso(s.t + 5000) }));
+  await s.p.passoEventos();
+  assert.equal(chamado(s, 'S1'), undefined);
+  assert.equal(estado(s).ultimosParou.S1.precisa, false);
+
+  // dono no PC (sem rua): a continuacao tambem nao encerra o chamado com botoes que esta na tela
+  const p = montar({ canalPrincipal: 'telegram' });
+  aba(p, 'S1', 'Faro');
+  await chamadoNaTela(p, 'S1', 'Faro');
+  ligarTg(p);
+  p.t += 3 * MIN;
+  evento(p, { ...parou(p, 'S1', { final: 'Não salvei nada novo.' }), continuacao: true });
+  await p.p.passoEventos();
+  assert.equal(chamado(p, 'S1').versao.estado, 'aviso');
 });

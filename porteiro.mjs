@@ -135,7 +135,7 @@ import { classificarResposta, normalizarResposta, ROTULO } from './ok-wpp.mjs';
 import { criarTelegram } from './telegram.mjs';
 import { tgNovo, completarTg, criarCanalTelegram } from './canal-telegram.mjs';
 import { valorDoReg, lerRegistroReal, chaveTelegram } from './lib/registro.mjs';
-import { lerConfigOk, lerDadosOk, conferirToque, montarOkTg, montarOkTgFechado } from './lib/ok-tg.mjs';
+import { lerConfigOk, lerOkNaAba, lerDadosOk, conferirToque, montarOkTg, montarOkTgFechado, montarBlocoOk, montarBlocoOkFechado, conferirToqueDeNovo, lerDadosDeNovo, botoesDeNovo } from './lib/ok-tg.mjs';
 import {
   lerConfig, identidadeTelegram, botIdDaChave, identidadeWhatsapp, RE_NUMERO_WPP, WPP_DESLIGADO_NO_CONFIG,
   sessoesDoConfig, identidadeCentral, claudeDoConfig, appsDoConfig, orcaDoConfig, bancoVsCodeDoConfig, donoDoConfig,
@@ -248,6 +248,8 @@ const COMANDO_CONFERE_MS = MIN;
 // `aguardar` da central leva no maximo AGUARDAR_MAX_IDS abas por vez
 const AGUARDANDO_MAX = 200;
 const AGUARDAR_MAX_IDS = 20;
+// T25 (PLANO-TELEGRAM.md, "T25"): a pergunta de aba fechada sem resposta ha AGUARDAR_SOZINHO_MS vai sozinha pro Aguardando
+const AGUARDAR_SOZINHO_MS = 48 * 60 * MIN;
 const PASTAS_FORA_DA_SESSAO = new Set(['node_modules', '.git', '.next', 'dist', 'build']);
 // F3.11: saude do canal e aviso no Telegram pelo portao de avisos (contrato `avisa`/`gateway_url`)
 const SAUDE_MS = 10 * MIN; // leitura (ou envio com item esperando) falhando isso = canal quebrado
@@ -349,6 +351,13 @@ const FRASES_TG = {
   fechadaReabre: 'Fechada. Responda aqui pra reabrir.',
   // T16 (PLANO-TELEGRAM.md, contrato 5): toque numa opcao da situacao com a aba trabalhando (nada vai pra aba)
   toqueTrabalhando: 'A aba está trabalhando agora; não passei essa opção.',
+  // T28 (PLANO-TELEGRAM.md, "T28", contratos 2-4): o toque em "🔄 Tentar novamente" do OK que expirou (no topo) e a 2a
+  // linha do bloco
+  okDeNovoPedindo: 'Pedindo de novo à aba.',
+  okDeNovoPedi: (hora) => `Pedi de novo à aba às ${hora}.`,
+  okDeNovoJa: (hora) => `Já pedi de novo às ${hora}.`,
+  okDeNovoAntigo: 'Esse pedido é antigo. Peça de novo na aba.',
+  okDeNovoFalhou: (frase) => `Não consegui pedir de novo à aba: ${/[.!?]$/.test(frase) ? frase : `${frase}.`}`,
 };
 
 /**
@@ -387,6 +396,10 @@ export const FRASES = {
   // A3a: o ok-wpp.mjs da pasta onde este repositorio esta instalado
   notaPedidoOk: (cod) =>
     `Resposta ao seu pedido de OK ${cod}. Antes de agir, rode: node ${caminhoPraComando(path.join(REPO, 'ok-wpp.mjs'))} verificar ${cod} (so age com status ok).`,
+  // T28 (PLANO-TELEGRAM.md, "T28", contrato 2): o recado do toque em "Tentar novamente": a aba pede o OK de novo (codigo
+  // novo, a trava de hoje inteira) ou diz por que nao. Sem a acao (o recado nunca leva o texto do pedido).
+  notaDeNovo: (cod, hora) =>
+    `O pedido de OK ${cod} expirou às ${hora} sem a aba conferir; se a ação ainda faz sentido, peça o OK de novo agora (ok-wpp pedir, código novo: node ${caminhoPraComando(path.join(REPO, 'ok-wpp.mjs'))} pedir --tipo <tipo> --acao "<ação>"); se não faz mais, diga em 1 frase por quê.`,
   // F4g: curto e sem "responde citando" (caso real: "eu já entendi isso"); `cabeca` = o cabecalho da sessao
   avisoBarrado: (cabeca) => `${cabeca}\nO texto dela não passou no filtro do WhatsApp; está na aba do PC.`,
   // D3b
@@ -720,6 +733,10 @@ function estadoNovo(agoraMs, eventosFile) {
     // -> {em (a hora do mover), finalTs (o da pergunta movida)}. Vale so pra MESMA pergunta (aguardandoDe): pergunta nova
     // volta sozinha pro Esperando e o podar tira o registro. Estado velho sem a chave = {}.
     aguardando: {},
+    // T25 (PLANO-TELEGRAM.md, "T25"): as perguntas que o dono trouxe de volta do Aguardando (`aguardar --voltar`):
+    // sessionId -> {em (a hora da volta), finalTs (o da pergunta)}. Vale so pra MESMA pergunta (fixaDe): o aguardarSozinho
+    // nao leva de novo; pergunta nova = a regra volta a valer e o podar tira o registro. Estado velho sem a chave = {}.
+    fixasNoEsperando: {},
     // T12 (PLANO-TELEGRAM.md, "T12"): o painel do Telegram na tela. tocadas = sessionId -> lugar no painel na hora do toque
     // no nome dela (fica fora do painel enquanto continua no mesmo lugar; no maximo 300); conferidoEm = a ultima vez que o
     // painel vivo remontou os dados (ISO | null). O /painel novo zera as tocadas.
@@ -862,6 +879,13 @@ function podar(e, agoraMs) {
     boas.sort((a, b) => msDeIso(b[1].em) - msDeIso(a[1].em));
     e.aguardando = Object.fromEntries(boas.slice(0, AGUARDANDO_MAX));
   }
+  // T25: fica so o registro de volta que vale (fixaDe: chave UUID, a mesma pergunta no ultimosParou, hora legivel); no
+  // maximo AGUARDANDO_MAX, os mais novos
+  if (e.fixasNoEsperando && typeof e.fixasNoEsperando === 'object' && !Array.isArray(e.fixasNoEsperando)) {
+    const boas = Object.entries(e.fixasNoEsperando).filter(([k]) => UUID_RE.test(k) && fixaDe(e, k) !== null);
+    boas.sort((a, b) => msDeIso(b[1].em) - msDeIso(a[1].em));
+    e.fixasNoEsperando = Object.fromEntries(boas.slice(0, AGUARDANDO_MAX));
+  }
   for (const k of ['centralReabrindo', 'centralSemRecado', 'fraseReabertaDe']) {
     const v = e[k];
     if (v === null || v === undefined) continue;
@@ -922,6 +946,15 @@ function aguardandoDe(e, sid) {
   if (!a || typeof a !== 'object' || !u || typeof u !== 'object' || u.precisa !== true) return null;
   if (typeof a.finalTs !== 'string' || a.finalTs !== u.finalTs || !Number.isFinite(msDeIso(a.em))) return null;
   return a;
+}
+
+// T25 (PLANO-TELEGRAM.md, "T25"): o registro da pergunta que o dono trouxe de volta do Aguardando e que ainda vale | null.
+// A regra do aguardandoDe sobre o e.fixasNoEsperando: so a MESMA pergunta (o finalTs do ultimo parou dela que precisa
+// dele) e a hora da volta legivel.
+function fixaDe(e, sid) {
+  const fx = e?.fixasNoEsperando;
+  if (!fx || typeof fx !== 'object' || Array.isArray(fx) || !Object.hasOwn(fx, sid)) return null;
+  return aguardandoDe({ aguardando: fx, ultimosParou: e.ultimosParou }, sid);
 }
 
 /**
@@ -1209,9 +1242,15 @@ export function criarPorteiro({
   // fora do ensaio (o ensaio nunca manda pedido de OK pelo Telegram) e com telegram.ok.ligado no config.json (lido 1 vez,
   // como o telegram.ligado: ligar ou desligar = religar o porteiro). Desligado = tudo como antes.
   const okLigado = canal !== null && !emEnsaio && lerConfigOk(C.estadoDir).ligado === true;
+  // T26c1 (PLANO-TELEGRAM.md, "T26c1"): o pedido de OK NOVO sai dentro da mensagem da aba (canal.okAbriu), sem o
+  // enviarTexto proprio. Chave telegram.ok.naAba ausente = ligada; so `false` volta ao caminho de hoje. Lida 1 vez, como o
+  // okLigado; a entrada ja aberta segue pelo caminho em que nasceu ate fechar (o `naAba` dela).
+  const okNaAba = okLigado && lerOkNaAba(C.estadoDir);
   const okDeNovoEm = new Map(); // T7b2a (so em memoria): COD (envio) ou f:COD (fecho) -> ms antes do qual nao tenta de novo
   const okIlegiveis = new Set(); // T7b2a (so em memoria): pedidos que o montarOkTg recusou (1 linha de log so)
   const okPedidosLidos = new Map(); // T7b2a (so em memoria): COD -> ultimo pedido lido (fecha a mensagem se o arquivo sumir)
+  const okRecusaLogada = new Set(); // T26c2 (so em memoria): pedidos que a tela trancada recusou (1 linha de log ate entrar ou sair)
+  const okFechouNoCanal = new Set(); // T26c2 (so em memoria): entradas naAba que ja passaram pelo canal.okFechou (as outras ainda nao)
   let conflitoLogadoEm = -Infinity; // T3a: 409 do getUpdates (outro leitor), no maximo 1 linha a cada 10 min
   // T4b: a ULTIMA falha de leitura do Telegram foi 409 (a frase do aviso ganha "Outro programa está lendo"); sucesso zera.
   // So em memoria: campo novo no e.tg.saude some no proximo carregar (o completarSaude do canal so guarda os que existem).
@@ -1539,6 +1578,10 @@ export function criarPorteiro({
   // T7f (revisao 03/10): com o titulo do pedido (o chamado pode ter encerrado calado com a fala ainda em voo; sem titulo
   // no pedido = o do chamado, como antes).
   async function avisarProblema(e, pedido, sessionId, frase) {
+    if (ehRecadoDeNovo(pedido)) { // T28: o recado do Tentar novamente: a 2a linha do bloco vencido
+      await problemaNoDeNovo(e, pedido, frase);
+      return;
+    }
     if (pedido?.ok) {
       await problemaNoOk(e, pedido, frase);
       return;
@@ -1568,7 +1611,7 @@ export function criarPorteiro({
   // mensagem do pedido (o recado segue na fila da aba e o verificar ainda pode conferir; o fecho fica pro usado, recusado
   // ou vencido): so 1 linha de log.
   async function avisarConferencia(e, pedido, sessionId, oque, linha, frase) {
-    if (pedido?.ok) {
+    if (recadoDeBotao(pedido)) { // T28: o recado do Tentar novamente tambem
       const cod = typeof pedido.ok === 'string' && RE_COD_OK.test(pedido.ok) ? pedido.ok : '?';
       log(`Telegram: o recado do pedido de OK ${cod} ${oque} na aba ${sessionId}; a mensagem do pedido fica como esta`);
       return;
@@ -1581,7 +1624,7 @@ export function criarPorteiro({
   // com botoes dessa aba no Telegram (se houver) encerra ("você respondeu pelo WhatsApp"; sem botoes o canal ignora).
   // T7b2a: o recado do toque num pedido de OK (`ok`) nao mexe no chamado da aba (nem "entregue" nem "encerrar").
   function entregueNoCanal(e, pedido, agoraMs) {
-    if (!canal || pedido?.ok) return;
+    if (!canal || recadoDeBotao(pedido)) return; // T28: o recado do Tentar novamente tambem
     const sid = pedido.sessionId;
     if (peloTelegram(pedido)) eventoTg('entregue', () => canal.entregue(e, sid, iso(agoraMs)));
     else eventoTg('encerrar', () => canal.encerrar(e, sid, iso(agoraMs), 'whatsapp'));
@@ -1637,7 +1680,7 @@ export function criarPorteiro({
     const falaEm = Number.isFinite(primeira) ? primeira : agoraMs;
     // F4.1: antes da resposta (a resposta a esta fala nao e editada). T7b2a: o recado do toque no pedido de OK nao mexe
     // no grupo (F7: nada sai no grupo quando o toque vem do Telegram)
-    if (!pedido.ok) await concluirAba(e, pedido, agoraMs, falaEm);
+    if (!recadoDeBotao(pedido)) await concluirAba(e, pedido, agoraMs, falaEm); // T28: o Tentar novamente tambem
     entregueNoCanal(e, pedido, agoraMs); // T3b: antes da resposta (a resposta, se ja veio, substitui o "entregue")
     if (pedido.nomear) await nomearSessao(e, pedido, agoraMs); // F4b: a fala chegou na aba nova = vale como "enviado"
     registrarEntrega(e, pedido, falaEm);
@@ -1671,7 +1714,7 @@ export function criarPorteiro({
     e.centralPendentes.push({ pedido: { ...pedido, deNovo: true, centralVelha: sid }, desde, porque: 'nao_achei' });
     log('fala pra central estacionada (nao_achei): espera a central que recebe');
     const daAba = (x) => x && typeof x === 'object' && x.pedido && typeof x.pedido === 'object' && x.pedido.sessionId === sid &&
-      x.tipo !== 'reforco' && !x.entregaId && !x.emVooDesde && !x.pedido.ok;
+      x.tipo !== 'reforco' && !x.entregaId && !x.emVooDesde && !recadoDeBotao(x.pedido);
     for (const k of ['filaEntrega', 'repassar']) {
       const ficam = [];
       for (const x of e[k]) {
@@ -1728,7 +1771,7 @@ export function criarPorteiro({
       // F4.1: antes da resposta (a resposta a esta fala nao e editada); a fala saiu na 1a tentativa ou nesta. T7b2a: o
       // recado do toque no pedido de OK nao mexe no grupo (F7)
       const primeira = msDeIso(item.primeiraEm);
-      if (!pedido.ok) await concluirAba(e, pedido, agoraMs, Number.isFinite(primeira) ? Math.min(primeira, inicio) : inicio);
+      if (!recadoDeBotao(pedido)) await concluirAba(e, pedido, agoraMs, Number.isFinite(primeira) ? Math.min(primeira, inicio) : inicio);
       entregueNoCanal(e, pedido, agoraMs); // T3b: antes da resposta (a resposta, se ja veio, substitui o "entregue")
       fraseDaReabertura(e, pedido, agoraMs); // T7a1c: so no Telegram, depois do "entregue", 1 vez por reabertura
       // F4b: sessao nova = o nome vai pro transcript da aba e a frase "Abri a sessão" sai antes da resposta dela
@@ -1745,7 +1788,7 @@ export function criarPorteiro({
       // Revisao da T7b2a (item 1): o recado do toque num pedido de OK (`ok`) e so da sessionId EXATA do pedido, tambem
       // quando ela e a central: nao recebeu = a mensagem do pedido fecha com "não consegui entregar" (problemaNoOk). Nunca
       // estaciona, nunca passa pra outra central e nunca vira falaRecebida no chamado dela.
-      if (pedido.ok) {
+      if (recadoDeBotao(pedido)) { // T28: o recado do Tentar novamente tambem
         await avisarProblema(e, pedido, pedido.sessionId, FRASES.naoAchei(tituloDoPedido(pedido)));
         return;
       }
@@ -2877,9 +2920,13 @@ export function criarPorteiro({
     // T7a1b: o abrir sozinho e a central travada (fecha com as guardas e abre outra) no cuidarDaCentral; o ensaio entra
     // so pra registrar que nao mata (nunca abre nem mata).
     // T18b: a escondida que o porteiro retomou volta a conversa pro VS Code (fecha so ela, parada e sem fala esperando)
+    // T25: a pergunta de aba fechada sem resposta ha 2 dias vai sozinha pro Aguardando (a mesma foto das vivas do
+    // cuidarDaCentral: nenhuma listagem a mais por minuto)
     if (!e.trava) {
       const pendentes = Array.isArray(e.centralPendentes) ? e.centralPendentes.length : 0;
-      await cuidarDaCentral(e, sessoesVivas(), agoraMs, { idle, pendentes });
+      const vivas = sessoesVivas();
+      aguardarSozinho(e, vivas, agoraMs);
+      await cuidarDaCentral(e, vivas, agoraMs, { idle, pendentes });
       await devolverRetomadas(e, agoraMs, { idle });
     }
     if (!semWpp) await avisarSaudePendente(e, agoraMs); // F3.11: Telegram, nunca o grupo (A2b: nem a queda velha do disco)
@@ -4147,6 +4194,7 @@ export function criarPorteiro({
       const t = nomeNaFrase((viva && (viva.titulo || viva.nome)) || item?.titulo || tituloDaAbaFechada(e, sid) || sid.slice(0, 8));
       if (voltar) {
         if (aguardandoDe(e, sid)) {
+          e.fixasNoEsperando[sid] = { em: iso(agoraMs), finalTs: e.aguardando[sid].finalTs }; // T25: o sozinho nao leva de novo
           delete e.aguardando[sid];
           mudou.push(t);
         } else ficou.push(`${t} não está no Aguardando agora.`);
@@ -4154,6 +4202,7 @@ export function criarPorteiro({
         ficou.push(`${t}: o pedido de OK não vai pra Aguardando (vence sozinho).`);
       } else if (item && !item.aguardando && typeof u?.finalTs === 'string') {
         e.aguardando[sid] = { em: iso(agoraMs), finalTs: u.finalTs };
+        delete e.fixasNoEsperando[sid]; // T25: movida a mao de novo
         mudou.push(t);
       } else ficou.push(`${t} não está no Esperando você agora.`);
     }
@@ -4164,6 +4213,27 @@ export function criarPorteiro({
     log(`aguardar da central (${voltar ? 'voltar' : 'mover'}): ${mudou.length} ${voltar ? 'de volta pro Esperando' : 'pra Aguardando'}, ${ficou.length} sem mudar`);
     const peloTg = canal !== null && id.startsWith('tg-u');
     await fraseNoCanal(e, peloTg, `${CABECALHO}\n${linhas.join('\n')}`, { citar: peloTg ? citarDaRecebida(e, id) : null });
+  }
+
+  // T25 (PLANO-TELEGRAM.md, "T25"; caso real: «Ta com muuuito chat lá que eu acho qeu nao ta mais ativo na real»): no
+  // passoMinuto, sem trava. A pergunta de aba FECHADA (item do itensPendencias fora das vivas) ha AGUARDAR_SOZINHO_MS ou
+  // mais, sem pedido de OK, fora do Aguardando e sem registro de volta que vale (fixaDe) ganha o registro do aguardar
+  // {em: agora, finalTs}. A aberta fica (ele ve no VS Code). Nenhuma aba viva na lista = nao mexe (a leitura falhou ou o
+  // PC sem sessao: nao da pra saber quem esta fechada; a central viva sempre aparece). Moveu = 1 linha de log; nada sai
+  // pra ninguem (o painel vivo atualiza a tela). Devolve quantas moveu.
+  function aguardarSozinho(e, vivas, agoraMs) {
+    if (!Array.isArray(vivas) || !vivas.length) return 0;
+    let n = 0;
+    for (const item of itensPendencias(e, vivas, agoraMs)) {
+      if (!item.fechada || item.ok || item.aguardando || !UUID_RE.test(item.sid)) continue;
+      if (!Number.isFinite(item.ms) || agoraMs - item.ms < AGUARDAR_SOZINHO_MS || fixaDe(e, item.sid)) continue;
+      const u = e.ultimosParou[item.sid];
+      if (typeof u?.finalTs !== 'string') continue;
+      e.aguardando[item.sid] = { em: iso(agoraMs), finalTs: u.finalTs };
+      n += 1;
+    }
+    if (n) log(`aguardar sozinho: ${n} pergunta(s) de aba fechada sem resposta ha 2 dias pra Aguardando`);
+    return n;
   }
 
   // Item de e.reaberturas que da pra usar (estado do disco pode vir torto). nome null = a retomada sem -n (T18).
@@ -4357,13 +4427,27 @@ export function criarPorteiro({
     }
     e.vistosEventos.push(chave);
     const precisa = precisaDoDono(ev);
+    // T27 (PLANO-TELEGRAM.md, "T27", contrato 2): a aba continuou por um hook de Stop (nao por ele) = a mesma vez da
+    // parada anterior: nao encerra o chamado e nao apaga a pergunta que ficou de pe
+    const continuacao = ev.continuacao === true;
     const ultimo = { finalTs: ev.finalTs || ev.at || null, precisa, at: iso(agoraMs) };
     if (precisa) { // T7d2 (F2): o "pendências" lista a pergunta mesmo com a aba fechada (titulo e nome guardados)
       Object.assign(ultimo, {
         titulo: tituloDoEvento(ev), nome: typeof ev.nome === 'string' ? ev.nome : null, pergunta: perguntaDoFinal(ev.final),
       });
     }
-    e.ultimosParou[ev.sessionId] = ultimo;
+    if (continuacao && !precisa && e.ultimosParou[ev.sessionId]?.precisa === true) {
+      log(`parou ${ev.sessionId}: continuacao por hook sem pergunta; a pergunta de antes fica nas pendencias`);
+    } else {
+      e.ultimosParou[ev.sessionId] = ultimo;
+    }
+    const encerrarSeNaoContinua = () => {
+      if (continuacao) {
+        log(`parou ${ev.sessionId}: continuacao por hook; o chamado do Telegram fica como esta`);
+        return;
+      }
+      encerrarNoTg(e, ev, 'pc');
+    };
     // T21 ("T21", contrato 2): o parou de um terminal do Orca grava a origem; outro valor de `app` (ou nenhum) = nada.
     if (ev.app === 'orca') e.origens[ev.sessionId] = { app: 'orca', em: iso(agoraMs) };
     // observacao do D5b1: a entrega pode ser registrada depois deste parou. D6: vai pro estado, no mesmo salvar do offset.
@@ -4405,7 +4489,7 @@ export function criarPorteiro({
       return;
     }
     if (!efetivo) { // dono no PC (ou travado): nada vai pro grupo nem pro Telegram
-      if (!e.trava) encerrarNoTg(e, ev, 'pc'); // T3b: a aba seguiu sem o Telegram: o chamado com botoes encerra
+      if (!e.trava) encerrarSeNaoContinua(); // T3b: a aba seguiu sem o Telegram: o chamado com botoes encerra (T27: so sem hook)
       return;
     }
     const titulo = tituloDoEvento(ev);
@@ -4413,7 +4497,7 @@ export function criarPorteiro({
     // Caso real ("quanto menos mensagem, melhor"): so vai pro grupo o que pede o dono. Aba que terminou sem precisar
     // dele nao gera mensagem nenhuma (o resumo de 30 min "Terminaram sem precisar de voce" saiu).
     if (!precisa) {
-      encerrarNoTg(e, ev, 'pc');
+      encerrarSeNaoContinua(); // T27: continuacao por hook nao encerra
       return;
     }
     // T3b: o aviso vai SO pro canal principal (sem mensagem em dobro); no Telegram a versao nova substitui o chamado
@@ -5734,6 +5818,10 @@ export function criarPorteiro({
       await tratarToqueOk(e, u, bruto, lote);
       return;
     }
+    if (okLigado && typeof u.dados === 'string' && u.dados.startsWith('r:')) { // T28: "Tentar novamente"
+      await tratarToqueDeNovo(e, u, bruto, lote);
+      return;
+    }
     const r = canal.lerToque(e, u.dados, u.messageId);
     if (!r || r.obsoleto || !r.sessionId) {
       await responderToqueTg(u.toqueId, FRASES_TG.toqueVelho);
@@ -5847,8 +5935,21 @@ export function criarPorteiro({
     }
     return ultimo;
   }
+  // T26c1: o cod do OK ABERTO que a tela da aba `id` mostra (canal.okNaMensagem) | null. So com o OK ligado; nunca lanca.
+  function okNaTelaDaAba(e, id) {
+    if (!okLigado || !canal) return null;
+    try {
+      const cod = canal.okNaMensagem(e, id);
+      return typeof cod === 'string' && cod ? cod : null;
+    } catch {
+      return null;
+    }
+  }
   // T7b2b: o codigo do pedido cuja mensagem aberta (a principal ou uma das `outras`) e a `id` | null.
+  // T26c1: primeiro a tela da aba mostrando aquele OK (canal.okNaMensagem); senao, o de hoje.
   function okDaMensagem(e, id) {
+    const daAba = okNaTelaDaAba(e, id);
+    if (daAba !== null) return daAba;
     const ms = e?.okTg?.mensagens;
     if (!Number.isSafeInteger(id) || id < 1 || !ms || typeof ms !== 'object') return null;
     for (const cod of Object.keys(ms)) {
@@ -5974,22 +6075,25 @@ export function criarPorteiro({
       return { linha: FRASES_TG.okCancelado(horaBRT(quando)), fim: 'cancelado', some: true };
     }
     if (p.status === 'pendente') { // vencido (o aberto nem chega aqui)
-      if (t?.acao === 'sim') return { linha: FRASES_TG.okNaoConferiu(horaBRT(t.em), horaBRT(p.expiraEm)), fim: 'expirou', some: false };
+      // T28: os 2 vencidos que ficam (sem resposta e Sim nao conferido) = a linha em negrito e o "Tentar novamente"
+      if (t?.acao === 'sim') return { linha: FRASES_TG.okNaoConferiu(horaBRT(t.em), horaBRT(p.expiraEm)), fim: 'expirou', some: false, deNovo: true };
       if (t?.acao === 'nao') return { linha: FRASES_TG.okCancelado(horaBRT(t.em)), fim: 'expirou', some: true };
-      return { linha: FRASES_TG.okExpirouSem(horaBRT(p.expiraEm)), fim: 'expirou', some: false };
+      return { linha: FRASES_TG.okExpirouSem(horaBRT(p.expiraEm)), fim: 'expirou', some: false, deNovo: true };
     }
     return { linha: FRASES_TG.okNaoVale, fim: 'nao-vale', some: false };
   }
 
   // Edita a mensagem do pedido (e as outras do envio incerto) pro fechado, sem botoes. Todas ok (ou 400: sumiu ou nao da
   // pra editar) = fechada (fechadoEm, fim); transporte ou 429 = de novo em 30 s. Devolve se fechou.
-  async function fecharMensagensOk(cod, m, p, linha, fim, agoraMs) {
+  // T28: `deNovo` (o vencido que fica) = o fechado sai com o botao "🔄 Tentar novamente" (texto puro: sem negrito).
+  async function fecharMensagensOk(cod, m, p, linha, fim, agoraMs, deNovo = false) {
     const texto = p ? textoFechadoOk(p, linha) : linha;
     const ids = [...new Set([m.messageId, ...(Array.isArray(m.outras) ? m.outras : [])])]
       .filter((id) => Number.isSafeInteger(id) && id > 0);
     let falha = null;
+    const pedido = deNovo === true ? { texto, botoes: botoesDeNovo(cod) } : { texto };
     for (const id of ids) {
-      const r = await chamarTg('editarTexto', () => tg.editarTexto(id, { texto }));
+      const r = await chamarTg('editarTexto', () => tg.editarTexto(id, pedido));
       if (r.ok === true || (r.codigo === 400 && r.esperarS == null)) continue;
       falha = r;
     }
@@ -6042,16 +6146,66 @@ export function criarPorteiro({
   // (1) fecha: cada mensagem aberta cujo pedido saiu de pendente (usado, recusado, vencido, arquivo sumido), relendo o
   // arquivo, e editada 1 vez pro fechado. T7j: o que o toque dele concluiu (`some` do fechoDoOk) sai do chat.
   // T23c: no modo manter (resolvidasTg) o apagarMensagensOk devolve o fecho editado: o `some` tambem fica no chat.
+  // T26c2: a entrada naAba fecha pelo canal (fecharNaAba). -> se o canal mudou (quem chama drena).
   async function fecharOkTg(e, agoraMs) {
+    let mudou = false;
     for (const [cod, m] of Object.entries(e.okTg.mensagens)) {
       if (!m || typeof m !== 'object' || m.fechadoEm) continue;
       if (agoraMs < (okDeNovoEm.get(`f:${cod}`) ?? -Infinity)) continue;
       const p = lerPedidoOk(cod);
       if (pedidoAberto(p, agoraMs)) continue;
-      const { linha, fim, some } = fechoDoOk(p, m);
+      const { linha, fim, some, deNovo } = fechoDoOk(p, m);
+      if (m.naAba === true) {
+        const r = await fecharNaAba(e, cod, m, p ?? okPedidosLidos.get(cod) ?? null, linha, fim, some, agoraMs, deNovo === true);
+        if (r.mudou) mudou = true;
+        if (r.fechou || r.mudou) salvar(e);
+        continue;
+      }
       const fechar = some ? apagarMensagensOk : fecharMensagensOk;
-      if (await fechar(cod, m, p ?? okPedidosLidos.get(cod) ?? null, linha, fim, agoraMs)) salvar(e);
+      if (await fechar(cod, m, p ?? okPedidosLidos.get(cod) ?? null, linha, fim, agoraMs, deNovo === true)) salvar(e);
     }
+    return mudou;
+  }
+
+  // T26c2 (PLANO-TELEGRAM.md, "T26c2"): o fecho da entrada naAba. O bloco fechado (montarBlocoOkFechado com os campos do
+  // pedido; pedido ilegivel = so a linha) vai pro canal.okFechou com o `some` do fechoDoOk (o canal decide: a tela sai,
+  // perde o bloco ou mostra o bloco fechado na MESMA mensagem; e aplica o encerrar guardado), 1 vez por entrada. false (o
+  // chamado nao tem mais aquele cod: herdado, substituido) = a entrada fecha do mesmo jeito, 1 log. As `outras` (envio
+  // incerto) pelo fecharMensagensOk/apagarMensagensOk de hoje (o messageId null nunca vai pro adaptador; eles gravam
+  // fechadoEm, fim e apagada, ou o de novo em 30 s); sem outras = fechadoEm e fim aqui. Log sem o texto.
+  // -> {fechou, mudou} (mudou = o canal mudou: quem chama drena).
+  // T28: `deNovo` (o vencido que fica) = a linha do fecho em negrito (`forte`) e o botao "🔄 Tentar novamente".
+  async function fecharNaAba(e, cod, m, p, linha, fim, some, agoraMs, deNovo = false) {
+    let mudou = false;
+    if (!okFechouNoCanal.has(cod)) {
+      let texto = linha;
+      try {
+        if (p) texto = montarBlocoOkFechado({ tipo: p.tipo, destinatarios: p.destinatarios, acao: p.acao, linha });
+      } catch {
+        texto = linha;
+      }
+      const fecho = { texto, some: some === true };
+      if (deNovo === true) {
+        fecho.forte = linha;
+        fecho.botoes = botoesDeNovo(cod);
+      }
+      let r = false;
+      try { r = canal.okFechou(e, cod, fecho) === true; } catch { r = false; }
+      okFechouNoCanal.add(cod);
+      mudou = r;
+      if (!r) log(`Telegram: o canal nao tem mais o pedido de OK ${cod} aberto na mensagem da aba (herdado ou substituido); a entrada fecha do mesmo jeito`);
+    }
+    const outras = Array.isArray(m.outras) ? m.outras.filter((id) => Number.isSafeInteger(id) && id > 0) : [];
+    let fechou = true;
+    if (outras.length) {
+      fechou = await (some ? apagarMensagensOk : fecharMensagensOk)(cod, m, p, linha, fim, agoraMs, deNovo === true);
+    } else {
+      m.fechadoEm = iso(agora());
+      m.fim = fim;
+      log(`Telegram: pedido de OK ${cod} fechado na mensagem da aba (${fim})`);
+    }
+    if (fechou) okFechouNoCanal.delete(cod);
+    return { fechou, mudou };
   }
 
   // T7i (PLANO-T7.md "T7i"; caso real: "Depois que eu tocar no botão sim, é pra sumir os dois botões"):
@@ -6096,7 +6250,9 @@ export function criarPorteiro({
   // T7i: (1b) os botoes de cada mensagem aberta, com o pedido aberto, seguem o toque: anotado (Sim ou Nao) e com botoes =
   // tira (a nova tentativa depois de uma falha, e a entrada de antes da T7i); sem toque e sem botoes (a trava zerou o
   // toque) = repoe, so destravado. Pedido que saiu de pendente fica pro fecho (acima).
+  // T26c2: a entrada naAba pelo canal (botoesNaAba). -> se o canal mudou (quem chama drena).
   async function botoesOkTg(e, agoraMs) {
+    let mudou = false;
     for (const [cod, m] of Object.entries(e.okTg.mensagens)) {
       if (!m || typeof m !== 'object' || m.fechadoEm) continue;
       const tirar = toqueAnotado(m) !== null;
@@ -6105,26 +6261,65 @@ export function criarPorteiro({
       if (agoraMs < (okDeNovoEm.get(`b:${cod}`) ?? -Infinity)) continue;
       const p = lerPedidoOk(cod);
       if (!pedidoAberto(p, agoraMs)) continue;
+      if (m.naAba === true) {
+        const r = await botoesNaAba(e, cod, m, p, tirar, agoraMs);
+        if (r.mudou) mudou = true;
+        if (r.fez || r.mudou) salvar(e);
+        continue;
+      }
       if (await botoesDoOk(cod, m, p, tirar, agoraMs)) salvar(e);
     }
+    return mudou;
+  }
+
+  // T26c2 (PLANO-TELEGRAM.md, "T26c2"): os botoes da entrada naAba seguem o toque pelo canal. Tirar (anotado e com
+  // botoes: a nova tentativa) = canal.okToque(e, cod, acao) (a tela perde so o teclado); repor (sem toque e sem botoes: a
+  // trava zerou o toque; quem chama so chega aqui destravado) = canal.okToque(e, cod, null) (o canal desanota e a tela
+  // volta com os botoes por edicao). false (o canal nao tem o pedido aberto) = nada a fazer na tela, 1 log. As `outras`
+  // pelo botoesDoOk de hoje (que grava o semBotoes, ou o de novo em 30 s); sem outras = o semBotoes aqui.
+  // -> {fez, mudou} (mudou = o canal mudou: quem chama drena).
+  async function botoesNaAba(e, cod, m, p, tirar, agoraMs) {
+    const t = toqueAnotado(m);
+    let mudou = false;
+    try { mudou = canal.okToque(e, cod, tirar && t ? t.acao : null) === true; } catch { mudou = false; }
+    if (!mudou) log(`Telegram: o canal nao tem o pedido de OK ${cod} aberto: os botoes da mensagem da aba ficam como estao`);
+    const outras = Array.isArray(m.outras) ? m.outras.filter((id) => Number.isSafeInteger(id) && id > 0) : [];
+    if (outras.length) return { fez: await botoesDoOk(cod, m, p, tirar, agoraMs), mudou };
+    m.semBotoes = tirar;
+    if (mudou) log(`Telegram: pedido de OK ${cod} ${tirar ? 'sem os botoes na mensagem da aba' : 'com os botoes de novo na mensagem da aba (a trava zerou o toque)'}`);
+    return { fez: true, mudou };
   }
 
   // (2) manda: pedido pendente, no prazo, sem trava (quem chama confere), sem entrada e criado depois do iniciadoEm ->
   // enviarTexto com o compacto e os botoes, notificando. Falhou = de novo em 30 s (1 log por falha). Envio incerto pode
   // deixar 2 mensagens: o toque em qualquer uma vale (a outra entra em `outras`) e as duas fecham juntas.
+  // T26c1: com o okNaAba, os pedidos pela ordem do criadoEm (empate = o nome), cada um pelo okNaAbaTg; senao, pela ordem
+  // do nome, o enviarTexto de hoje.
   async function mandarOkTg(e, agoraMs) {
     let nomes;
     try { nomes = fs.readdirSync(path.join(C.estadoDir, 'oks')); } catch { return; }
     const iniciado = msDeIso(e.okTg.iniciadoEm);
+    const novos = [];
     for (const nome of nomes.sort()) {
       const x = /^([A-Z2-9]{6})\.json$/.exec(nome);
       if (!x || Object.hasOwn(e.okTg.mensagens, x[1])) continue;
       const cod = x[1];
       if (agoraMs < (okDeNovoEm.get(cod) ?? -Infinity)) continue;
       const p = lerPedidoOk(cod);
-      if (!pedidoAberto(p, agoraMs) || typeof p.sessionId !== 'string' || !p.sessionId) continue;
+      if (!pedidoAberto(p, agoraMs) || typeof p.sessionId !== 'string' || !p.sessionId) {
+        okRecusaLogada.delete(cod); // T26c2: o pedido saiu (o log da recusa ja nao importa)
+        continue;
+      }
       const criado = msDeIso(p.criadoEm);
       if (!(Number.isFinite(criado) && Number.isFinite(iniciado) && criado >= iniciado)) continue;
+      novos.push({ cod, p, criado });
+    }
+    if (okNaAba) {
+      novos.sort((a, b) => a.criado - b.criado || (a.cod < b.cod ? -1 : a.cod > b.cod ? 1 : 0));
+      for (const { cod, p } of novos) await okNaAbaTg(e, cod, p, agoraMs);
+      return;
+    }
+    for (const { cod, p } of novos) {
       let msg;
       try {
         msg = montarOkTg({ ...p, completo: false });
@@ -6157,24 +6352,95 @@ export function criarPorteiro({
     }
   }
 
+  // T26c1 (PLANO-TELEGRAM.md, "T26c1"): o pedido `cod` novo entra na mensagem da aba (canal.okAbriu, com os 2 blocos do
+  // montarBlocoOk e o titulo e o nome como o recado do toque resolve). Aceito = entrada com `messageId: null` (a tela e do
+  // canal) e `naAba: true`; o substituido aberto fecha com fim 'substituido'; salva e drena na hora. Recusado (a tela
+  // trancada) = de novo em 30 s, 1 log, sem entrada. Nenhum enviarTexto. Log so com cod e sessionId.
+  async function okNaAbaTg(e, cod, p, agoraMs) {
+    let bloco;
+    try {
+      bloco = { compacto: montarBlocoOk({ ...p, completo: false }), completo: montarBlocoOk({ ...p, completo: true }) };
+    } catch {
+      if (!okIlegiveis.has(cod)) log(`Telegram: pedido de OK ${cod} ilegivel (tipo ou codigo): nao sai no chat`);
+      okIlegiveis.add(cod);
+      return;
+    }
+    const viva = sessoesVivas().find((s) => s.sessionId === p.sessionId);
+    const reg = viva?.registro || lib.acharRegistro(p.sessionId, C.sessionsDir);
+    const titulo = viva?.titulo ?? resolverTitulo(p.sessionId, reg) ?? (typeof p.titulo === 'string' ? p.titulo : null);
+    let r;
+    try {
+      r = canal.okAbriu(e, p.sessionId, { cod, bloco, titulo, nome: reg?.name ?? null });
+    } catch (err) {
+      r = { aceito: false, motivo: `erro ${String(err?.name || 'erro').slice(0, 40)}` };
+    }
+    if (!r || r.aceito !== true) {
+      okDeNovoEm.set(cod, agoraMs + OK_TG_DE_NOVO_MS);
+      // T26c2: 1 linha por pedido ate ele entrar ou sair (a tela trancada pode durar ate o pedido dela fechar)
+      if (!okRecusaLogada.has(cod)) {
+        okRecusaLogada.add(cod);
+        log(`Telegram: pedido de OK ${cod} recusado pela mensagem da aba ${p.sessionId} (${r?.motivo ?? 'sem resposta'}); de novo a cada 30 s`);
+      }
+      return;
+    }
+    okDeNovoEm.delete(cod);
+    okRecusaLogada.delete(cod);
+    e.okTg.mensagens[cod] = {
+      messageId: null, outras: [], sessionId: p.sessionId, completo: false, enviadoEm: iso(agora()), toque: null,
+      fechadoEm: null, fim: null, semBotoes: false, naAba: true,
+    };
+    const sub = typeof r.substituido === 'string' ? e.okTg.mensagens[r.substituido] : null;
+    if (sub && typeof sub === 'object' && !sub.fechadoEm) {
+      sub.fechadoEm = iso(agora());
+      sub.fim = 'substituido';
+    }
+    log(`Telegram: pedido de OK ${cod} na mensagem da aba ${p.sessionId}${r.substituido ? ` (no lugar do pedido ${r.substituido})` : ''}`);
+    salvar(e); // o porteiro que morre logo depois nao abre de novo
+    await drenarTg(e);
+  }
+
   // A cada volta do esperarTelegram, depois do drenar (so com o OK ligado): fecha, acerta os botoes (T7i), manda (sem
   // trava) e recalcula o segurar. Nunca lanca.
+  // T26c2: sem trava, o canal.okSemTela (o OK aberto fora da tela volta pra fila); qualquer mudanca no canal neste passo
+  // (fecho, botoes, sem tela) = 1 drenarTg no fim do passo (o OK novo aceito ja drena na hora, como na T26c1).
   async function passoOkTg(e, agoraMs) {
+    let mudou = false;
     try {
-      await fecharOkTg(e, agoraMs);
-      await botoesOkTg(e, agoraMs); // T7i
-      if (!e.trava) await mandarOkTg(e, agoraMs);
+      if (await fecharOkTg(e, agoraMs)) mudou = true;
+      if (await botoesOkTg(e, agoraMs)) mudou = true; // T7i
+      if (!e.trava) {
+        let n = 0;
+        try { n = canal.okSemTela(e); } catch { n = 0; }
+        if (Number.isSafeInteger(n) && n > 0) {
+          mudou = true;
+          salvar(e);
+        }
+        await mandarOkTg(e, agoraMs);
+      }
       recalcularSegurar(e, agoraMs);
     } catch (err) {
       log(`Telegram: passo do pedido de OK falhou (${String(err?.name || 'erro').slice(0, 40)})`);
     }
+    if (mudou) await drenarTg(e);
   }
 
   // A entrada do pedido pro toque valido: a que existe (toque numa mensagem que o porteiro nao conhecia, envio incerto =
   // entra em `outras`) ou uma nova com a mensagem tocada (envio incerto sem nenhuma conhecida: assim nao sai outra).
+  // T26c1: primeiro a tela da aba mostrando aquele OK (canal.okNaMensagem) = a entrada daquele cod, sem ir pra `outras`
+  // (sem entrada = uma nova naAba, com messageId null); senao, o de hoje.
   function entradaDoToque(e, p, r) {
     const ms = e.okTg.mensagens;
     let m = ms[p.codigo];
+    if (okNaTelaDaAba(e, r.messageId) === p.codigo) {
+      if (m && typeof m === 'object') return m;
+      m = {
+        messageId: null, outras: [], sessionId: p.sessionId, completo: r.completo === true, enviadoEm: null, toque: null,
+        fechadoEm: null, fim: null, semBotoes: false, naAba: true,
+      };
+      ms[p.codigo] = m;
+      log(`Telegram: toque no pedido de OK ${p.codigo} na mensagem da aba sem entrada no porteiro: vale`);
+      return m;
+    }
     if (!m || typeof m !== 'object') {
       m = {
         messageId: r.messageId, outras: [], sessionId: p.sessionId, completo: r.completo === true, enviadoEm: null, toque: null,
@@ -6233,6 +6499,7 @@ export function criarPorteiro({
       await responderToqueTg(u.toqueId, FRASES_TG.okExpirou);
       return;
     }
+    const naTela = okNaTelaDaAba(e, r.messageId) === cod; // T26c1: tocado na tela da aba que mostra este OK
     const m = entradaDoToque(e, p, r);
     if (r.acao === 'info') {
       const ja = toqueAnotado(m); // T7i: depois do toque os botoes nao voltam
@@ -6241,6 +6508,16 @@ export function criarPorteiro({
         return;
       }
       await responderToqueTg(u.toqueId);
+      if (naTela) { // T26c1: a tela da aba vira o bloco completo pelo canal (no lugar do editarTexto)
+        let abriu = false;
+        try { abriu = canal.okInfo(e, cod) === true; } catch { abriu = false; }
+        if (abriu) {
+          m.completo = true;
+          await drenarTg(e);
+        }
+        log(`Telegram: mais informacoes no pedido de OK ${cod} na mensagem da aba${abriu ? '' : ' (ja aberto ou tocado: nada muda)'}`);
+        return;
+      }
       const completo = montarOkTg({ ...p, completo: true });
       const ed = await chamarTg('editarTexto', () => tg.editarTexto(r.messageId, { texto: completo.texto, botoes: completo.botoes }));
       if (ed.ok === true && r.messageId === m.messageId) m.completo = true;
@@ -6277,6 +6554,19 @@ export function criarPorteiro({
     });
     lote.pedidos += 1;
     log(`Telegram: toque ${r.acao} no pedido de OK ${cod} (update ${u.updateId}): recado pra aba ${p.sessionId}`);
+    if (m.naAba === true) {
+      // T26c1: o canal anota o toque e a tela da aba perde so o teclado (no lugar do botoesDoOk da tela); o botoesDoOk de
+      // hoje so pras `outras` (o messageId e null), se houver
+      let anotou = false;
+      try { anotou = canal.okToque(e, cod, r.acao) === true; } catch { anotou = false; }
+      if (anotou) await drenarTg(e);
+      else log(`Telegram: o pedido de OK ${cod} nao esta aberto na mensagem da aba (o canal nao anotou o toque)`);
+      if (m.semBotoes !== true && Array.isArray(m.outras) && m.outras.length) await botoesDoOk(cod, m, p, true, agoraMs);
+      // T26c2: sem outras, o semBotoes segue o que foi feito na tela (o canal tirou o teclado ou nao tem o pedido): o
+      // botoesOkTg nao repete o okToque; a trava que zerar o toque faz os botoes voltarem (okToque null, destravado)
+      if (!(Array.isArray(m.outras) && m.outras.length)) m.semBotoes = true;
+      return;
+    }
     if (m.semBotoes !== true) await botoesDoOk(cod, m, p, true, agoraMs); // T7i: os botoes saem na hora
   }
 
@@ -6295,7 +6585,105 @@ export function criarPorteiro({
       return;
     }
     const linha = FRASES_TG.okNaoEntregue(QUEM_OK[t.acao] ?? 'Sim', horaBRT(t.em), semCabecalho(frase));
+    if (m.naAba === true) { // T26c2: o bloco fechado com a linha do problema pelo canal (some false) + as outras; drena
+      const r = await fecharNaAba(e, cod, m, lerPedidoOk(cod), linha, 'problema', false, agoraMs);
+      if (r.fechou || r.mudou) salvar(e);
+      if (r.mudou) await drenarTg(e);
+      return;
+    }
     await fecharMensagensOk(cod, m, lerPedidoOk(cod), linha, 'problema', agoraMs);
+  }
+
+  // ---------- T28: "🔄 Tentar novamente" no OK que expirou (PLANO-TELEGRAM.md, "T28") ----------
+  // O toque faz a ABA pedir de novo (decisao 1): o pedido vencido nao reabre; o recado vai pela fila de entrega, no molde do
+  // toque Sim/Nao (sessionId exata, nada no grupo nem no chamado da aba), sem o campo `ok` e com o id `tgdn-u<update>`.
+
+  const VALE_DE_NOVO_MS = 24 * 60 * 60 * 1000; // decisao 4: o botao vale 24 h depois do vencimento
+
+  // A 2a linha do bloco vencido de `cod` (o botao sai): a mensagem da aba pelo canal (entrada naAba) e as mensagens
+  // separadas (messageId e outras) por editarTexto, texto puro. -> se o canal mudou (quem chama drena).
+  async function linhaDeNovo(e, cod, m, p, linha2) {
+    let mudou = false;
+    if (m.naAba === true) {
+      try { mudou = canal.okDeNovo(e, cod, linha2) === true; } catch { mudou = false; }
+      if (!mudou) log(`Telegram: o pedido de OK ${cod} vencido nao esta mais na mensagem da aba; a 2a linha fica de fora`);
+    }
+    const ids = [...new Set([m.messageId, ...(Array.isArray(m.outras) ? m.outras : [])])].filter((id) => Number.isSafeInteger(id) && id > 0);
+    if (ids.length) {
+      const { linha } = fechoDoOk(p, m);
+      const texto = `${p ? textoFechadoOk(p, linha) : linha}\n${linha2}`;
+      for (const id of ids) {
+        const r = await chamarTg('editarTexto', () => tg.editarTexto(id, { texto }));
+        if (r.ok !== true) log(`Telegram: a 2a linha do pedido de OK ${cod} nao entrou na mensagem ${id} (${erroTg(r.erro)})`);
+      }
+    }
+    return mudou;
+  }
+
+  // O recado do "Tentar novamente" (id tgdn-u<update>)
+  const ehRecadoDeNovo = (pedido) => /^tgdn-u\d+$/.test(String(pedido?.providerMsgId ?? ''));
+  // Recado de botao (o toque Sim/Nao do OK ou o "Tentar novamente"): sessionId exata, nada no grupo nem no chamado da aba
+  const recadoDeBotao = (pedido) => Boolean(pedido?.ok) || ehRecadoDeNovo(pedido);
+
+  // Toque em "Tentar novamente" (dados r:<COD>), com o OK ligado e destravado (o tratarToqueTg responde a trava antes).
+  // Confere: o dono no chat privado dele, mensagem do bot (conferirToqueDeNovo); o pedido existe, pendente e vencido; a
+  // entrada dele fechada com fim 'expirou'; sem deNovoEm; ate 24 h depois do vencimento. Confere = "Pedindo de novo à
+  // aba." no topo, deNovoEm gravado, a 2a linha no bloco (sem o botao) e 1 recado pra aba. Log sem o texto do pedido.
+  async function tratarToqueDeNovo(e, u, bruto, lote) {
+    const agoraMs = agora();
+    const r = conferirToqueDeNovo(bruto, { botId: identTg?.botId ?? null, chatDono: identTg?.chatId ?? null });
+    const cod = r.valido ? r.codigo : (lerDadosDeNovo(u.dados)?.codigo ?? '?');
+    const nao = async (frase, motivo) => {
+      log(`Telegram: tentar novamente no pedido de OK ${cod} (update ${u.updateId}) nao confere: ${motivo}`);
+      await responderToqueTg(u.toqueId, frase);
+    };
+    if (!r.valido) return nao(FRASES_TG.toqueVelho, r.motivo);
+    const p = lerPedidoOk(cod);
+    const expira = msDeIso(p?.expiraEm);
+    if (!p || p.status !== 'pendente' || !Number.isFinite(expira) || !(agoraMs > expira)) return nao(FRASES_TG.toqueVelho, 'o pedido nao esta vencido');
+    if (typeof p.sessionId !== 'string' || !p.sessionId) return nao(FRASES_TG.toqueVelho, 'pedido sem sessao');
+    // as 24 h antes da entrada: a faxina tira a entrada fechada 24 h depois do fecho (o "antigo" nao depende dela)
+    if (agoraMs > expira + VALE_DE_NOVO_MS) return nao(FRASES_TG.okDeNovoAntigo, 'mais de 24 h do vencimento');
+    const m = e.okTg.mensagens[cod];
+    if (!m || typeof m !== 'object' || !m.fechadoEm || m.fim !== 'expirou') return nao(FRASES_TG.toqueVelho, 'a mensagem do pedido nao fechou como expirou');
+    if (m.deNovoEm) return nao(FRASES_TG.okDeNovoJa(horaBRT(m.deNovoEm)), 'ja pedi de novo');
+    m.deNovoEm = iso(agoraMs);
+    m.deNovoUpdate = u.updateId;
+    await responderToqueTg(u.toqueId, FRASES_TG.okDeNovoPedindo);
+    const viva = lote.vivas().find((s) => s.sessionId === p.sessionId);
+    const reg = viva?.registro || lib.acharRegistro(p.sessionId, C.sessionsDir);
+    enfileirar(e, {
+      sessionId: p.sessionId,
+      nome: reg?.name ?? null,
+      titulo: viva?.titulo ?? resolverTitulo(p.sessionId, reg) ?? (typeof p.titulo === 'string' ? p.titulo : null),
+      texto: 'Tentar novamente',
+      audio: false,
+      hora: horaBRT(iso(agoraMs)),
+      providerMsgId: `tgdn-u${u.updateId}`, // nunca tg-u nem tgok-u: o recado nao e fala dele nem resposta a pedido aberto
+      messageId: null,
+      anexos: [],
+      canal: 'telegram',
+      nota: FRASES.notaDeNovo(cod, horaBRT(p.expiraEm)),
+    });
+    lote.pedidos += 1;
+    log(`Telegram: tentar novamente no pedido de OK ${cod} (update ${u.updateId}): recado pra aba ${p.sessionId}`);
+    if (await linhaDeNovo(e, cod, m, p, FRASES_TG.okDeNovoPedi(horaBRT(m.deNovoEm)))) await drenarTg(e);
+  }
+
+  // Problema na entrega do recado do "Tentar novamente" (os casos do problemaNoOk): a 2a linha vira "Não consegui pedir de
+  // novo à aba: <frase sem cabecalho>."; o botao nao volta.
+  async function problemaNoDeNovo(e, pedido, frase) {
+    const x = /^tgdn-u(\d+)$/.exec(String(pedido.providerMsgId ?? ''));
+    const ms = e.okTg?.mensagens && typeof e.okTg.mensagens === 'object' ? e.okTg.mensagens : {};
+    const achado = x ? Object.entries(ms).find(([, m]) => m && typeof m === 'object' && m.deNovoUpdate === Number(x[1])) : null;
+    if (!okLigado || !achado) {
+      log('Telegram: problema na entrega do recado do tentar novamente; sem a entrada do pedido, nada muda');
+      return;
+    }
+    const [cod, m] = achado;
+    log(`Telegram: problema na entrega do recado do tentar novamente no pedido de OK ${cod}`);
+    const p = lerPedidoOk(cod) ?? okPedidosLidos.get(cod) ?? null;
+    if (await linhaDeNovo(e, cod, m, p, FRASES_TG.okDeNovoFalhou(semCabecalho(frase)))) await drenarTg(e);
   }
 
   // Um lote de updates, em ordem: normaliza; o que e novo (vistos, 300 ultimos) e tratado; o offset anda; 1 salvar por

@@ -4,7 +4,7 @@
 // Funcoes puras: nada de rede, chave real, config.json real nem porteiro rodando. Pasta temporaria com prefixo "t7b1a-".
 // Os modulos novos carregam dentro de cada teste (import dinamico): sem eles, cada teste falha sozinho.
 // Rodar: node --test --test-reporter=tap "tests/ok-tg.test.mjs"
-import { test } from 'node:test';
+import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -512,4 +512,267 @@ test('A1 7. conferirToque e travaNoChat sem padrao: sem botId ou chatDono valido
   assert.equal('BOT_CLAUDE_PC' in m, false);
   // o nome da constante de antes montado por pedacos (o nome inteiro e termo proibido na copia aberta)
   assert.equal(['CHAT_E', 'RIC'].join('') in m, false);
+});
+
+// ---------- T26a (PLANO-TELEGRAM.md, "T26a"): o bloco do OK e a conferencia pelo fim do texto ----------
+
+describe('T26a o bloco do OK, a conferencia pelo fim do texto e a chave naAba', () => {
+  // A acao com o que o HTML escaparia: no texto puro do bloco nada some
+  const ACAO_T = 'subir <pid>.json & y';
+  const AB = ['Ana', 'Bruno'];
+  // [tipo, destinatarios, rotulo, linha Pra (so quando o rotulo nao traz), o que o Sim libera, libera do pedido]
+  const TIPOS = [
+    ['crm', null, 'CRM', '', 'esta ação, 1 vez'],
+    ['crm', AB, 'CRM', 'Pra: Ana, Bruno.\n', 'esta ação, 1 vez'],
+    ['mensagem', AB, 'mensagem pra Ana, Bruno', '', 'esta ação, 1 vez'],
+    ['mensagem', null, 'mensagem', '', 'esta ação, 1 vez'],
+    ['publicacao', null, 'publicação', '', '1 publicação em produção'],
+    ['disparo', AB, 'disparo pra Ana, Bruno', '', 'o resto do disparo (depois do piloto) por até 2 horas'],
+    ['disparo', null, 'disparo em massa', '', 'o resto do disparo (depois do piloto)', 'o resto do disparo (depois do piloto)'],
+    ['pagamento', null, 'pagamento', '', 'esta ação, 1 vez'],
+    ['apagar', AB, 'apagar', 'Pra: Ana, Bruno.\n', 'esta ação, 1 vez'],
+    ['outro', null, 'ação', '', 'esta ação, 1 vez'],
+  ];
+  const compactoAMao = (rotulo) => `Pedido de OK (${rotulo}): ${ACAO_T}\n\nPosso? Vale até 10:30.`;
+  const completoAMao = (rotulo, pra, libera) =>
+    `Pedido de OK (${rotulo}): ${ACAO_T}\n\nPedido às 10:00, vale até 10:30.\n${pra}O Sim libera ${libera}; o Não cancela o pedido.\n\nPosso?`;
+
+  test('T26a 1: montarBlocoOk = o montarOkTg de hoje sem o cabecalho; montarOkTg igual ao texto montado a mao, em todos os tipos', async () => {
+    const m = await carregar();
+    assert.equal(typeof m.montarBlocoOk, 'function');
+    for (const [tipo, destinatarios, rotulo, pra, libera, doPedido] of TIPOS) {
+      const p = pedido({ tipo, destinatarios, acao: ACAO_T, ...(doPedido ? { libera: doPedido } : {}) });
+      const nome = JSON.stringify([tipo, destinatarios]);
+      // o de hoje, byte a byte, montado a mao
+      const c = m.montarOkTg({ ...p, completo: false });
+      assert.equal(c.texto, `ℹ️ Nome\n${compactoAMao(rotulo)}`, nome);
+      assert.deepEqual(c.botoes, [[SIM, NAO], [MAIS]], nome);
+      assert.deepEqual(m.montarOkTg(p), c, `${nome}: completo ausente = compacto`);
+      const k = m.montarOkTg({ ...p, completo: true });
+      assert.equal(k.texto, `ℹ️ Nome\n${completoAMao(rotulo, pra, libera)}`, nome);
+      assert.deepEqual(k.botoes, [[SIM, NAO]], nome);
+      // o bloco: o mesmo sem a 1a linha, os mesmos botoes
+      const bc = m.montarBlocoOk({ ...p, completo: false });
+      assert.deepEqual(bc, { texto: compactoAMao(rotulo), botoes: [[SIM, NAO], [MAIS]] }, nome);
+      assert.deepEqual(m.montarBlocoOk(p), bc, `${nome}: completo ausente = compacto`);
+      const bk = m.montarBlocoOk({ ...p, completo: true });
+      assert.deepEqual(bk, { texto: completoAMao(rotulo, pra, libera), botoes: [[SIM, NAO]] }, nome);
+      assert.equal(c.texto, `ℹ️ Nome\n${bc.texto}`, nome);
+      assert.equal(k.texto, `ℹ️ Nome\n${bk.texto}`, nome);
+    }
+    // o cabecalho fica fora do bloco: titulo nenhum muda o bloco
+    assert.deepEqual(m.montarBlocoOk(pedido({ titulo: '🚀 **Site** — v2' })), m.montarBlocoOk(pedido()));
+    // entrada invalida: TypeError como no montarOkTg
+    assert.throws(() => m.montarBlocoOk(pedido({ tipo: 'toString' })), TypeError);
+    assert.throws(() => m.montarBlocoOk(pedido({ codigo: 'abc' })), TypeError);
+  });
+
+  test('T26a 2: montarBlocoOkFechado = linha do pedido + vazia + linha de fecho; montarOkTgFechado igual ao de hoje', async () => {
+    const m = await carregar();
+    const linha = 'Você tocou em Sim às 10:05. A aba conferiu às 10:06.';
+    const p = pedido({ tipo: 'mensagem', destinatarios: AB, acao: ACAO_T });
+    const f = m.montarBlocoOkFechado({ ...p, linha });
+    assert.equal(f, `Pedido de OK (mensagem pra Ana, Bruno): ${ACAO_T}\n\n${linha}`);
+    assert.deepEqual(m.montarOkTgFechado({ ...p, linha }), { texto: `ℹ️ Nome\nPedido de OK (mensagem pra Ana, Bruno): ${ACAO_T}\n\n${linha}` });
+    assert.equal(m.montarBlocoOkFechado({ ...pedido() }), 'Pedido de OK (publicação): subir o site X em produção\n\n');
+  });
+
+  // Texto qualquer acima do bloco (o que a aba escreveu, com o que pareceria pedido)
+  const ABA = 'ℹ️ Nome\nTerminei a revisão do <pid>.json.\n\nPosso? Vale até 10:30.\nA) Sim / B) Não';
+
+  test('T26a 3: conferirToque aceita a mensagem que TERMINA no bloco (compacto ou completo), com o teclado exato dele ou nenhum; o legado vale', async () => {
+    const m = await carregar();
+    const p = pedido();
+    const bc = m.montarBlocoOk({ ...p, completo: false });
+    const bk = m.montarBlocoOk({ ...p, completo: true });
+    const conf = (o) => m.conferirToque(toque(m, o), { pedido: p });
+    const ok = (completo, acao = 'sim') => ({ valido: true, acao, completo, updateId: 900, toqueId: 'cbq-1', messageId: 77 });
+    assert.deepEqual(conf({ texto: `${ABA}\n\n${bc.texto}`, teclado: apiTeclado(bc.botoes) }), ok(false));
+    assert.deepEqual(conf({ texto: `${ABA}\n${bc.texto}`, teclado: apiTeclado(bc.botoes), dados: `k:${COD}:n` }), ok(false, 'nao'));
+    assert.deepEqual(conf({ texto: `${ABA}\n\n${bc.texto}`, teclado: apiTeclado(bc.botoes), dados: `k:${COD}:i` }), ok(false, 'info'));
+    assert.deepEqual(conf({ texto: `${ABA}\n\n${bk.texto}`, teclado: apiTeclado(bk.botoes) }), ok(true));
+    // o bloco sozinho (sem cabecalho nenhum)
+    assert.deepEqual(conf({ texto: bc.texto, teclado: apiTeclado(bc.botoes) }), ok(false));
+    assert.deepEqual(conf({ texto: bk.texto, teclado: apiTeclado(bk.botoes) }), ok(true));
+    // sem teclado (T7i: o porteiro ja tirou os botoes)
+    assert.deepEqual(conf({ texto: `${ABA}\n\n${bc.texto}`, semTeclado: true }), ok(false));
+    assert.deepEqual(conf({ texto: `${ABA}\n\n${bk.texto}`, teclado: { inline_keyboard: [] } }), ok(true));
+    // normalizado como hoje: \r\n e espaco no fim da linha nao contam
+    const torto = `${ABA}  \r\n\r\n${bc.texto.replace(/\n/g, ' \r\n')}`;
+    assert.deepEqual(conf({ texto: torto, teclado: apiTeclado(bc.botoes) }), ok(false));
+    // um texto da aba enorme e com quebras nao muda nada
+    assert.deepEqual(conf({ texto: `${'x\n'.repeat(500)}\n${bc.texto}`, teclado: apiTeclado(bc.botoes) }), ok(false));
+    // legado: o texto de hoje inteiro continua valendo
+    assert.deepEqual(conf({}), ok(false));
+    assert.deepEqual(conf({ completo: true }), ok(true));
+  });
+
+  test('T26a 4: conferirToque recusa bloco no meio, bloco de outro pedido e teclado com botao a mais', async () => {
+    const m = await carregar();
+    const p = pedido();
+    const bc = m.montarBlocoOk({ ...p, completo: false });
+    const bk = m.montarBlocoOk({ ...p, completo: true });
+    const recusa = (o, motivo, nome) => assert.deepEqual(m.conferirToque(toque(m, o), { pedido: p }), { valido: false, motivo }, nome);
+    const TEXTO = 'texto da mensagem nao confere com o pedido';
+    const BOTOES = 'botoes da mensagem nao conferem com o pedido';
+    const tec = apiTeclado(bc.botoes);
+    // bloco no MEIO: texto depois dele
+    recusa({ texto: `${ABA}\n\n${bc.texto}\nPS: e mais isso`, teclado: tec }, TEXTO, 'bloco no meio');
+    recusa({ texto: `${bc.texto}\n\n${ABA}`, teclado: tec }, TEXTO, 'bloco no comeco');
+    recusa({ texto: `${ABA}\n\n${bk.texto}\n.`, teclado: apiTeclado(bk.botoes) }, TEXTO, 'completo no meio');
+    recusa({ texto: `${ABA}\n\n${montarOkTgLegado(m, p)}\nfim`, teclado: tec }, TEXTO, 'o texto de hoje no meio');
+    // colado no texto de cima, sem a quebra
+    recusa({ texto: `${ABA}${bc.texto}`, teclado: tec }, TEXTO, 'sem quebra antes do bloco');
+    recusa({ texto: `${ABA}\n\n${bc.texto.slice(1)}`, teclado: tec }, TEXTO, 'bloco cortado');
+    // bloco de outro pedido (outra acao, outro tipo, outra hora), com os dados e o teclado deste
+    for (const [nome, outro] of [
+      ['outra acao', pedido({ acao: 'apagar o banco' })],
+      ['outro tipo', pedido({ tipo: 'apagar' })],
+      ['outra hora', pedido({ expiraEm: '2026-10-02T13:45:00.700Z' })],
+    ]) {
+      recusa({ texto: `${ABA}\n\n${m.montarBlocoOk({ ...outro, completo: false }).texto}`, teclado: tec }, TEXTO, nome);
+      recusa({ texto: `${ABA}\n\n${m.montarBlocoOk({ ...outro, completo: true }).texto}`, teclado: apiTeclado(bk.botoes) }, TEXTO, `${nome} (completo)`);
+    }
+    // o bloco fechado nao se toca
+    recusa({ texto: `${ABA}\n\n${m.montarBlocoOkFechado({ ...p, linha: 'Você tocou em Sim às 10:05.' })}`, teclado: tec }, TEXTO, 'fechado');
+    // teclado com qualquer botao a mais (a opcao de um chamado), ou o de outra versao
+    const opcao = { text: 'A) Sim', callback_data: 'o:ABCDEFGH:0' };
+    const linhaAMais = { inline_keyboard: [...tec.inline_keyboard, [opcao]] };
+    const naLinha = { inline_keyboard: [[...tec.inline_keyboard[0], opcao], tec.inline_keyboard[1]] };
+    const antes = { inline_keyboard: [[opcao], ...tec.inline_keyboard] };
+    for (const [nome, t] of [['linha a mais', linhaAMais], ['botao a mais na linha', naLinha], ['linha antes', antes]]) {
+      recusa({ texto: `${ABA}\n\n${bc.texto}`, teclado: t }, BOTOES, nome);
+    }
+    const kMais = { inline_keyboard: [...apiTeclado(bk.botoes).inline_keyboard, [opcao]] };
+    recusa({ texto: `${ABA}\n\n${bk.texto}`, teclado: kMais }, BOTOES, 'completo com botao a mais');
+    recusa({ texto: `${ABA}\n\n${bc.texto}`, teclado: apiTeclado(bk.botoes) }, BOTOES, 'compacto com o teclado do completo');
+    recusa({ texto: `${ABA}\n\n${bk.texto}`, teclado: tec }, BOTOES, 'completo com o teclado do compacto');
+    // Mais informacoes tocado no completo: fora do teclado dele
+    recusa({ texto: `${ABA}\n\n${bk.texto}`, teclado: apiTeclado(bk.botoes), dados: `k:${COD}:i` }, 'botao tocado fora do teclado', 'info no completo');
+  });
+
+  test('T26a 5: lerOkNaAba = telegram.ok.naAba !== false (ausente, ilegivel ou sem config = true); lerConfigOk nao muda', async () => {
+    const m = await carregar();
+    assert.equal(typeof m.lerOkNaAba, 'function');
+    assert.equal(m.lerOkNaAba(undefined), true, 'sem pasta');
+    assert.equal(m.lerOkNaAba(''), true);
+    assert.equal(m.lerOkNaAba(42), true);
+    const dir = pastaTemp('t26a-');
+    try {
+      const grava = (v) => fs.writeFileSync(path.join(dir, 'config.json'), typeof v === 'string' ? v : JSON.stringify(v));
+      assert.equal(m.lerOkNaAba(dir), true, 'sem config.json');
+      const ligados = [
+        '{lixo', 'null', '[]', '"texto"', {}, { naAba: false }, { telegram: null }, { telegram: true }, { telegram: [] },
+        { telegram: { naAba: false } }, { telegram: { ok: null } }, { telegram: { ok: true } }, { telegram: { ok: {} } },
+        { telegram: { ok: [false] } }, { telegram: { ok: { naAba: true } } }, { telegram: { ok: { naAba: 'false' } } },
+        { telegram: { ok: { naAba: 0 } } }, { telegram: { ok: { naAba: null } } }, { telegram: { ligado: false, ok: { ligado: false } } },
+      ];
+      for (const v of ligados) {
+        grava(v);
+        assert.equal(m.lerOkNaAba(dir), true, JSON.stringify(v));
+      }
+      grava({ telegram: { ok: { naAba: false } } });
+      assert.equal(m.lerOkNaAba(dir), false);
+      grava({ canalPrincipal: 'telegram', telegram: { ligado: true, ok: { ligado: true, naAba: false } } });
+      assert.equal(m.lerOkNaAba(dir), false);
+      // o lerConfigOk devolve o mesmo objeto de sempre (o A5c 19 confere o objeto inteiro)
+      assert.deepEqual(m.lerConfigOk(dir), { ligado: true });
+      grava({ telegram: { ligado: true, ok: { ligado: true, naAba: true } } });
+      assert.deepEqual(m.lerConfigOk(dir), { ligado: true });
+      assert.equal(m.lerOkNaAba(dir), true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// O texto de hoje (cabecalho + bloco) pro caso "no meio"
+function montarOkTgLegado(m, p) {
+  return m.montarOkTg({ ...p, completo: false }).texto;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// T28 (PLANO-TELEGRAM.md, "T28"; pedido do dono 16/10/2026 08:29 e 18/10 15:36; troca do 18/10 15:49: sem o X vermelho,
+// so negrito, e o botao com 🔄): o OK que expirou ganha o botao "🔄 Tentar novamente" (dados r:<COD>). Por que existe: o
+// dado novo nunca pode ser lido como Sim (lerDadosOk, conferirToque e o ok-wpp nao mudam) e o toque nele so prova quem
+// tocou e onde (nao concede nada: so pede a aba um pedido novo).
+describe('T28 o botao Tentar novamente (r:<COD>)', () => {
+  const DADOS_R = `r:${COD}`;
+  // o toque no botao r: como o getUpdates devolve; cada campo trocavel pra forjar 1 coisa por vez
+  const toqueR = (o = {}) => ({
+    update_id: o.updateId ?? 900,
+    callback_query: {
+      id: 'cbq-r', from: o.from ?? { id: CHAT_DONO, is_bot: false, first_name: 'Davi' }, chat_instance: '-1', data: o.dados ?? DADOS_R,
+      message: o.message === null ? undefined : {
+        message_id: 77, from: o.msgFrom ?? { id: BOT, is_bot: true, first_name: 'Bot' }, chat: o.chat ?? { id: CHAT_DONO, type: 'private' },
+        date: o.date ?? 1760000000, text: 'qualquer texto',
+      },
+    },
+  });
+  const pedidoBase = () => ({
+    v: 1, codigo: COD, sessionId: 'S1', titulo: 'Nome', tipo: 'publicacao', acao: 'subir o site X em produção', destinatarios: null,
+    criadoEm: '2026-10-02T13:00:00.700Z', expiraEm: '2026-10-02T13:30:00.700Z', status: 'pendente',
+  });
+
+  test('T28 1: dadosDeNovo = r:<COD>; codigo fora do alfabeto = TypeError; lerDadosDeNovo so le ^r:<COD de 6>$', async () => {
+    const m = await carregarCru();
+    assert.equal(m.dadosDeNovo(COD), DADOS_R);
+    for (const ruim of ['abc234', 'ABC23', 'ABC2345', 'ABCI23', 'ABC0Z1', '', null, undefined, 42]) {
+      assert.throws(() => m.dadosDeNovo(ruim), TypeError, String(ruim));
+    }
+    assert.deepEqual(m.lerDadosDeNovo(DADOS_R), { codigo: COD });
+    for (const ruim of [`r:${COD} `, ` r:${COD}`, `r:${COD}:s`, 'r:ABC23', 'r:ABCI23', `k:${COD}:s`, `R:${COD}`, `r:${COD}\n`, null, 7, {}]) {
+      assert.equal(m.lerDadosDeNovo(ruim), null, JSON.stringify(ruim));
+    }
+  });
+
+  // T28s (sabotagens #6 e #10 da t28.mjs): o motivo de cada recusa, nem o toque sem ids passa
+  test('T28s: conferirToqueDeNovo sem bot ou chat do dono recusa pelo motivo dele (nem o toque sem ids passa); chat do dono que nao e privado = fora do chat privado', async () => {
+    const m = await carregarCru();
+    const semIds = toqueR({ from: { is_bot: false }, chat: { type: 'private' }, msgFrom: { is_bot: true } });
+    for (const o of [{}, { chatDono: CHAT_DONO }, { botId: BOT }]) {
+      const u = o.botId || o.chatDono ? toqueR() : semIds;
+      assert.deepEqual(m.conferirToqueDeNovo(u, o), { valido: false, motivo: 'sem bot ou chat do dono' }, JSON.stringify(o));
+    }
+    const grupoDoDono = toqueR({ chat: { id: CHAT_DONO, type: 'group' } });
+    assert.deepEqual(m.conferirToqueDeNovo(grupoDoDono, { botId: BOT, chatDono: CHAT_DONO }), { valido: false, motivo: 'toque fora do chat privado do dono' });
+  });
+
+  test('T28 2: o botao = [[{texto: "🔄 Tentar novamente", dados: r:<COD>}]] (sem X vermelho); r: nunca vira toque de OK (lerDadosOk null, conferirToque invalido)', async () => {
+    const m = await carregar();
+    assert.deepEqual(m.botoesDeNovo(COD), [[{ texto: '🔄 Tentar novamente', dados: DADOS_R }]]);
+    assert.ok(!JSON.stringify(m.botoesDeNovo(COD)).includes('❌'));
+    assert.equal(m.lerDadosOk(DADOS_R), null);
+    const p = pedidoBase();
+    const r = m.conferirToque(toqueR({ date: Math.floor(Date.parse(p.criadoEm) / 1000) + 2 }), { pedido: p });
+    assert.equal(r.valido, false);
+    assert.equal(r.motivo, 'dados do botao ilegiveis');
+  });
+
+  test('T28 3: conferirToqueDeNovo confere quem tocou (o dono), o chat privado dele e a mensagem do bot, sem o texto; o resto nao confere', async () => {
+    const m = await carregarCru();
+    const ids = { botId: BOT, chatDono: CHAT_DONO };
+    assert.deepEqual(m.conferirToqueDeNovo(toqueR(), ids), { valido: true, codigo: COD, updateId: 900, toqueId: 'cbq-r', messageId: 77 });
+    const forjados = [
+      ['sem bot', toqueR(), { chatDono: CHAT_DONO }],
+      ['sem chat do dono', toqueR(), { botId: BOT }],
+      ['outra pessoa', toqueR({ from: { id: 555, is_bot: false } }), ids],
+      ['o proprio bot', toqueR({ from: { id: CHAT_DONO, is_bot: true } }), ids],
+      ['chat de grupo', toqueR({ chat: { id: -100123, type: 'supergroup' } }), ids],
+      ['chat de outro', toqueR({ chat: { id: 555, type: 'private' } }), ids],
+      ['mensagem de outro bot', toqueR({ msgFrom: { id: 1234, is_bot: true } }), ids],
+      ['mensagem inacessivel', toqueR({ date: 0 }), ids],
+      ['sem mensagem', toqueR({ message: null }), ids],
+      ['dados de OK', toqueR({ dados: `k:${COD}:s` }), ids],
+      ['dados tortos', toqueR({ dados: 'r:abc234' }), ids],
+      ['sem update_id', { ...toqueR(), update_id: 'x' }, ids],
+      ['nao e toque', { update_id: 1, message: {} }, ids],
+    ];
+    for (const [nome, u, o] of forjados) {
+      const r = m.conferirToqueDeNovo(u, o);
+      assert.equal(r.valido, false, nome);
+      assert.equal(typeof r.motivo, 'string', nome);
+    }
+    assert.equal(m.conferirToqueDeNovo(null, ids).valido, false);
+  });
 });

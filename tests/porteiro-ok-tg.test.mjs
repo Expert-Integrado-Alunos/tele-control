@@ -168,7 +168,7 @@ function montar({ ok = true, ensaio = false, respostasEntrega = [], sondaTg = fa
   };
   for (const d of [env.SESSOES_WPP_DIR, env.CLAUDE_SESSIONS_DIR, env.CLAUDE_PROJECTS_DIR]) fs.mkdirSync(d, { recursive: true });
   if (ok) {
-    fs.writeFileSync(path.join(env.SESSOES_WPP_DIR, 'config.json'), JSON.stringify({ telegram: { ligado: true, ok: { ligado: true } } }));
+    fs.writeFileSync(path.join(env.SESSOES_WPP_DIR, 'config.json'), JSON.stringify({ telegram: { ligado: true, ok: { ligado: true, naAba: false } } }));
   }
   const h = {
     raiz, env, t: T0, idle: 0, grupo: [], enviados: [], reacoes: [], edicoesGrupo: [], entregas: [], nReg: 0, nMsg: 0,
@@ -820,7 +820,8 @@ test('T7b2a 85. fecho (1 vez cada, sem botoes, relendo o arquivo): usado pelo Te
       assert.equal(ed.length, 1, `${c.nome}: 1 edicao`);
       assert.equal(ed[0].args[0], id, c.nome);
       assert.equal(ed[0].args[1].texto, montarOkTgFechado({ ...p, linha }).texto, c.nome);
-      assert.equal(ed[0].args[1].botoes ?? null, null, `${c.nome}: sem botoes`);
+      // T28: o vencido que fica ganha o botao Tentar novamente; os outros fechos seguem sem botoes
+      assert.deepEqual(ed[0].args[1].botoes ?? null, /sem resposta\.$|: expirou\.$/.test(linha) ? [[{ texto: '🔄 Tentar novamente', dados: 'r:ABC234' }]] : null, `${c.nome}: botoes`);
     }
     const m = okDe(h, 'ABC234');
     assert.ok(Number.isFinite(Date.parse(m.fechadoEm)), `${c.nome}: fechadoEm`);
@@ -1809,12 +1810,12 @@ test('T7i 114. a trava zera o toque: travado, os botoes nao voltam; destravado (
   h2.tg.respEditarTexto.push({ ok: false, erro: 'editarTexto: fetch failed', codigo: 0 });
   await h2.p.esperarTelegram(15000);
   assert.equal(h2.tg.de('editarTexto').length, 1, 'o fecho tentou e falhou');
-  assert.ok(h2.tg.de('editarTexto').every((c) => (c.args[1].botoes ?? null) === null), 'vencido: os botoes nunca voltam');
+  assert.ok(h2.tg.de('editarTexto').every((c) => !JSON.stringify(c.args[1].botoes ?? null).includes('"k:')), 'vencido: os botoes do OK nunca voltam (T28: so o Tentar novamente)');
   h2.t += 30 * 1000;
   await h2.p.esperarTelegram(15000);
   const ed = h2.tg.de('editarTexto');
   assert.equal(ed.length, 2, 'o fecho de novo (30 s)');
-  assert.ok(ed.every((c) => (c.args[1].botoes ?? null) === null), 'sem botoes');
+  assert.ok(ed.every((c) => !JSON.stringify(c.args[1].botoes ?? null).includes('"k:')), 'sem os botoes do OK (T28: so o Tentar novamente)');
   assert.equal(ed[1].args[1].texto, montarOkTgFechado({ ...r2.p, linha: TXT.expirouSem(horaBRT(r2.p.expiraEm)) }).texto);
   assert.ok(okDe(h2, 'ABC234').fechadoEm);
 });
@@ -1836,7 +1837,7 @@ test('T7i 115. fecho depois do toque (a mensagem ja sem botoes): vencido com o S
       await h.p.esperarTelegram(15000);
       const ed = h.tg.de('editarTexto');
       assert.equal(ed.length, 1, caso);
-      assert.deepEqual(ed[0].args, [id, { texto: montarOkTgFechado({ ...p, linha }).texto }], caso);
+      assert.deepEqual(ed[0].args, [id, { texto: montarOkTgFechado({ ...p, linha }).texto, botoes: [[{ texto: '🔄 Tentar novamente', dados: 'r:ABC234' }]] }], caso); // T28
       assert.deepEqual(h.tg.de('apagar'), [], `${caso}: fica no chat`);
     }
     assert.deepEqual(h.tg.de('editarBotoes'), [], `${caso}: nada de botao`);
@@ -1954,7 +1955,8 @@ test('T7j 8. porteiro: nao somem (fecho editado, como hoje): respondido pelo Wha
     const linha = c.linha(h, t, p);
     await h.p.esperarTelegram(15000);
     assert.deepEqual(h.tg.de('apagar'), [], `${c.nome}: nao some`);
-    assert.deepEqual(h.tg.de('editarTexto').map((x) => x.args), [[id, { texto: montarOkTgFechado({ ...p, linha }).texto }]], `${c.nome}: o fecho editado, como hoje`);
+    const comR = /sem resposta\.$|: expirou\.$/.test(linha); // T28: o vencido que fica ganha o botao Tentar novamente
+    assert.deepEqual(h.tg.de('editarTexto').map((x) => x.args), [[id, comR ? { texto: montarOkTgFechado({ ...p, linha }).texto, botoes: [[{ texto: '🔄 Tentar novamente', dados: 'r:ABC234' }]] } : { texto: montarOkTgFechado({ ...p, linha }).texto }]], `${c.nome}: o fecho editado, como hoje`);
     const m = okDe(h, 'ABC234');
     assert.ok(m.fechadoEm, c.nome);
     assert.equal(m.apagada, undefined, `${c.nome}: nao passou pelo apagar`);
@@ -2031,7 +2033,7 @@ test('T7j 8b. porteiro: nao some com a outra mensagem do pedido (Sim tocado na m
   await h.p.esperarTelegram(15000);
   assert.deepEqual(h.tg.de('apagar'), [], 'nao some');
   const fecho = montarOkTgFechado({ ...p, linha: TXT.naoConferiu(horaBRT(iso(t)), horaBRT(p.expiraEm)) }).texto;
-  assert.deepEqual(h.tg.de('editarTexto').map((x) => x.args), [[id, { texto: fecho }], [outra, { texto: fecho }]], 'o fecho nas duas');
+  assert.deepEqual(h.tg.de('editarTexto').map((x) => x.args), [[id, { texto: fecho, botoes: [[{ texto: '🔄 Tentar novamente', dados: 'r:ABC234' }]] }], [outra, { texto: fecho, botoes: [[{ texto: '🔄 Tentar novamente', dados: 'r:ABC234' }]] }]], 'o fecho nas duas (T28: com o botao)');
   const m = okDe(h, 'ABC234');
   assert.ok(m.fechadoEm);
   assert.equal(m.apagada, undefined);
