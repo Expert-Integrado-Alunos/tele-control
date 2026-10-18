@@ -1,0 +1,12 @@
+# scripts do bash (tools/integrar) sempre em LF: com core.autocrlf=true o checkout poria CRLF e o bash quebraria
+*.sh text eol=lf
+
+# Fora da cópia aberta (PLANO-ABERTO.md): o robô publicador baixa o tarball do GitHub, que respeita o export-ignore.
+# Docs internos, ferramentas do principal e a vitrine ficam só na fonte privada.
+/CLAUDE.md   export-ignore
+/PLANO*.md   export-ignore
+/tools       export-ignore
+# o teste do religar importa o tools/integrar/religar.mjs: vai junto com o tools/ (sem ele, a suite quebra na copia)
+/tests/religar.test.mjs export-ignore
+/vitrine     export-ignore
+/docs        export-ignore

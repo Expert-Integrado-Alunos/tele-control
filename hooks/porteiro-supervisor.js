@@ -1,0 +1,95 @@
+#!/usr/bin/env node
+'use strict';
+/*
+ * porteiro-supervisor.js — SessionStart (startup|resume|clear). Religa o porteiro do sessoes-wpp quando ele morreu.
+ * Plano: PLANO.md (fase 3, pos-rodada 2 do GPT-6).
+ *
+ * Por que existe (GPT-6 rodada 2, 27/09/2026 23:47, achado 12): o porteiro so sobe no login (.vbs na pasta Startup) e
+ * quando alguem roda `porteiro garantir`. Morreu no meio do dia (queda, taskkill, reinicio de outra aba) = o dono fica
+ * sem o canal ate alguem notar. Agora abrir, retomar ou limpar qualquer sessao do Claude Code
+ * confere a trava do porteiro e, com dono morto, roda o MESMO .vbs do login.
+ *
+ * Decisoes:
+ * 1. So roda onde o sessoes-wpp existe: Windows + config.json na pasta de estado. VPS, notebook e maquina sem o recurso
+ *    = silencio (a policy e da frota inteira).
+ * 2. Religa pelo wscript + .vbs, nunca com spawn direto do porteiro: o .vbs tira as variaveis da aba (id, pid, socket,
+ *    entrypoint) que o porteiro herdaria (caso real).
+ * 3. Parado de proposito fica parado: arquivo `desligado` na pasta de estado = nao religa. (`porteiro parar` nao cria
+ *    esse arquivo: religar e "parar + .vbs", e parar sem o arquivo volta na proxima sessao.)
+ * 4. No maximo 1 tentativa a cada 3 min (supervisor.json): porteiro que morre ao subir nao vira laco a cada aba aberta.
+ *    Duas sessoes ao mesmo tempo podem tentar juntas; a trava porteiro.lock (flag wx) deixa so um porteiro de pe.
+ * 5. Nada no stdout (SessionStart poe o stdout no contexto da sessao) e sempre exit 0; o rastro vai pro log do
+ *    sessoes-wpp. Espera o `spawn`/`error` do wscript (max 2 s) pra falha ao lancar nao sumir (achado 13).
+ * 6. Pid vivo na trava = porteiro vivo, igual ao `garantir` (pid reaproveitado por outro processo engana os dois).
+ *
+ * Env (teste e override): SESSOES_WPP_DIR, SESSOES_WPP_LOG (lib/sessoes-wpp.js) e SESSOES_WPP_PORTEIRO_VBS (o .vbs).
+ */
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const lib = require('./lib/sessoes-wpp.js');
+
+const INTERVALO_MS = 3 * 60 * 1000;
+const ESPERA_SPAWN_MS = 2000;
+const VBS_PADRAO = path.join(__dirname, '..', 'sessoes-wpp-porteiro.vbs');
+
+function pidVivo(pid) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try { process.kill(n, 0); return true; } catch (err) { return err && err.code === 'EPERM'; }
+}
+
+function lerPid(arq) {
+  try { return Number(String(fs.readFileSync(arq, 'utf8')).trim()) || null; } catch (_) { return null; }
+}
+
+function ultimaTentativa(arq) {
+  try { return Number(JSON.parse(fs.readFileSync(arq, 'utf8')).em) || 0; } catch (_) { return 0; }
+}
+
+function lancar(vbs, logFile) {
+  return new Promise((resolver) => {
+    let filho;
+    const fim = (msg) => { if (msg) lib.log(logFile, msg); resolver(); };
+    const corte = setTimeout(() => fim('supervisor: wscript nao respondeu em 2 s (sem confirmacao de que subiu)'), ESPERA_SPAWN_MS);
+    try {
+      filho = spawn('wscript.exe', [vbs], { detached: true, stdio: 'ignore', windowsHide: true });
+    } catch (err) {
+      clearTimeout(corte);
+      return fim(`supervisor: religar o porteiro falhou (wscript): ${String((err && err.message) || err).slice(0, 160)}`);
+    }
+    filho.once('spawn', () => { clearTimeout(corte); filho.unref(); fim(); });
+    filho.once('error', (err) => { clearTimeout(corte); fim(`supervisor: religar o porteiro falhou (wscript): ${String((err && err.message) || err).slice(0, 160)}`); });
+  });
+}
+
+async function main() {
+  if (process.platform !== 'win32') return;
+  const C = lib.caminhos(process.env);
+  if (!fs.existsSync(path.join(C.estadoDir, 'config.json'))) return;
+  if (fs.existsSync(path.join(C.estadoDir, 'desligado'))) return;
+
+  const pid = lerPid(path.join(C.estadoDir, 'porteiro.lock'));
+  if (pid && pidVivo(pid)) return;
+
+  const marca = path.join(C.estadoDir, 'supervisor.json');
+  const antes = ultimaTentativa(marca);
+  if (Date.now() - antes < INTERVALO_MS) return;
+
+  const vbs = process.env.SESSOES_WPP_PORTEIRO_VBS || VBS_PADRAO;
+  if (!fs.existsSync(vbs)) {
+    lib.log(C.logFile, `supervisor: porteiro morto e o lancador nao existe (${vbs}); nada feito`);
+    return;
+  }
+  try { fs.writeFileSync(marca, JSON.stringify({ em: Date.now(), pidMorto: pid || null })); } catch (_) { /* segue */ }
+  lib.log(C.logFile, `supervisor: porteiro ${pid ? `morto (pid ${pid})` : 'sem trava'}; religando pelo .vbs (abertura de sessao)`);
+  await lancar(vbs, C.logFile);
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    try { lib.log(lib.caminhos(process.env).logFile, `supervisor: erro interno (ignorado): ${String((err && err.message) || err).slice(0, 160)}`); } catch (_) { /* nada */ }
+  }).finally(() => process.exit(0));
+}
+
+module.exports = { main };
