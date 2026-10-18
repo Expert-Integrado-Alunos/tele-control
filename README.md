@@ -1,4 +1,4 @@
-> **Cópia publicada pela Expert Integrado — versão 2026-10-18-5f10ac3.** Este repositório é somente leitura para alunos da Mentoria Automações Inteligentes: é a versão publicada de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico). Dúvidas e sugestões vão pelo Portal do Aluno, não por issues aqui.
+> **Publicado pela Expert Integrado — versão 2026-10-18-475ec99.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
 
 # Tele Control — as abas do Claude Code do seu PC, controladas pelo celular
 
