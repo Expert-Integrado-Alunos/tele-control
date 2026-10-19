@@ -1110,3 +1110,12 @@ test('F4f c. last_assistant_message vazio, so espacos ou que nao e texto = como 
     assert.equal(ev.marcas.pergunta, true);
   } finally { limpar(amb); }
 });
+
+test('T31. ultimoEntrypoint: o entrypoint da ULTIMA linha que tem o campo (a conversa que nasceu no Desktop e segue no VS Code = claude-vscode); linha sem o campo, vazio ou que nao e texto pula; nenhuma = null; entrada que nao e lista = null', () => {
+  assert.equal(lib.ultimoEntrypoint([{ entrypoint: 'claude-desktop' }, { type: 'x' }, { entrypoint: 'claude-vscode' }, { type: 'ai-title' }]), 'claude-vscode');
+  assert.equal(lib.ultimoEntrypoint([{ entrypoint: 'claude-vscode' }, { entrypoint: 'claude-desktop' }]), 'claude-desktop');
+  assert.equal(lib.ultimoEntrypoint([{ entrypoint: 'cli' }, { entrypoint: '' }, { entrypoint: 7 }, null, 'texto']), 'cli');
+  assert.equal(lib.ultimoEntrypoint([{ type: 'custom-title' }]), null);
+  assert.equal(lib.ultimoEntrypoint([]), null);
+  for (const x of [null, undefined, 'cli', { entrypoint: 'cli' }]) assert.equal(lib.ultimoEntrypoint(x), null);
+});

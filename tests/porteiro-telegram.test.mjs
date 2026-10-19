@@ -57,6 +57,8 @@ const COMANDOS = [
   { command: 'painel', description: 'Painel das abas' },
   { command: 'rua', description: 'Tô na rua' },
   { command: 'voltei', description: 'Voltei pro PC' },
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' }, // T29a
+  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' }, // T29a
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' }, // T10b
 ]; // T10b: sem o start (saia "Painel das abas" 2 vezes; o "/start" digitado e o do link seguem valendo)
 
@@ -158,7 +160,7 @@ function dubleTg(h) {
   return tg;
 }
 
-function montar({ ensaio = false, tg: comTg = true, respostasEntrega = [], canalPrincipal, transcrever, avisarTelegram, falar, vozTg } = {}) {
+function montar({ ensaio = false, tg: comTg = true, respostasEntrega = [], canalPrincipal, transcrever, avisarTelegram, falar, vozTg, resolvidasTg } = {}) {
   const raiz = pastaTemp('porteiro-tg-');
   const env = {
     SESSOES_WPP_DIR: path.join(raiz, 'estado'),
@@ -203,6 +205,7 @@ function montar({ ensaio = false, tg: comTg = true, respostasEntrega = [], canal
     central: CENTRAL_TESTE, raizesSessao: RAIZES_TESTE, // A3a: a central e as pastas como o dono configura
   };
   if (comTg) Object.assign(opcoes, { tg: h.tg, identTg: { chatId: DONO, botId: BOT } }); // A1: o chat e o bot de antes
+  if (resolvidasTg !== undefined) opcoes.resolvidasTg = resolvidasTg; // T29b: o encerrado editado (com o motivo) e o do manter
   if (canalPrincipal) opcoes.canalPrincipal = canalPrincipal;
   if (transcrever) opcoes.transcrever = transcrever; // T4a: duble (nunca o python de verdade)
   if (avisarTelegram) opcoes.avisarTelegram = avisarTelegram; // T4b: o portao duble (nunca rede)
@@ -825,7 +828,8 @@ test('5a. "trava" trava e salva antes da linha (em cima da mensagem dele, que fi
   await h.p.esperarTelegram(15000);
   assert.equal(linhasSistema(h).length, 2);
   // T23 (modo apagar): a linha antiga estava em cima do "Trava" dele; trocada, o "Trava" sai junto
-  assert.deepEqual(h.tg.tela(), [['enviar', false], ['apagar', 901], ['apagar', mid(tr)]], 'a linha nova notifica; a antiga sai e leva o "Trava" (T23)');
+  // T29b (limpo): a linha na tela ha 1 min sai na interacao seguinte ("faz X") e leva o "Trava" (T23); a nova (902) notifica e sai no "bom dia"
+  assert.deepEqual(h.tg.tela(), [['apagar', 901], ['apagar', mid(tr)], ['enviar', false], ['apagar', 902]], 'a linha nova notifica; a antiga sai e leva o "Trava" (T23)');
 
   const q = toqueTg(h, `o:${chamadoId}:0`, tela);
   h.tg.lotes.push([q]);
@@ -1331,7 +1335,7 @@ test('T3b 4. aviso: principal telegram = chamado no Telegram (sai no COMECO do e
 });
 
 test('T3b 5. encerrar: aviso com botoes na tela + parou que nao responde (dono no PC) = encerrado "pc"; fala do WhatsApp entregue = encerrado "whatsapp"; parou que vira aviso novo no Telegram nao encerra', async () => {
-  const h = montar({ canalPrincipal: 'telegram' });
+  const h = montar({ canalPrincipal: 'telegram', resolvidasTg: 'manter' }); // T29b: o encerrado com o motivo e o do manter (no limpo ele apaga)
   aba(h, 'S1', 'Faro');
   const { messageId: tela } = await chamadoNaTela(h, 'S1', 'Faro');
   ligarTg(h);
@@ -1346,7 +1350,7 @@ test('T3b 5. encerrar: aviso com botoes na tela + parou que nao responde (dono n
   assert.ok(ed.html.includes('Encerrada às 12:03: a aba seguiu no PC.'), ed.html);
   assert.deepEqual(h.enviados, []);
 
-  const w = montar({ canalPrincipal: 'telegram' });
+  const w = montar({ canalPrincipal: 'telegram', resolvidasTg: 'manter' }); // T29b: o encerrado com o motivo e o do manter (no limpo ele apaga)
   aba(w, 'S1', 'Faro');
   const { messageId: telaW } = await chamadoNaTela(w, 'S1', 'Faro');
   ligarTg(w);
@@ -1377,7 +1381,7 @@ test('T3b 5. encerrar: aviso com botoes na tela + parou que nao responde (dono n
 
 // Os outros fins de parou que nao geram versao nova no Telegram (achados da validacao da T3b: 3 sabotagens verdes)
 test('T3b 5b. encerrar: parou sem precisar dele (na rua) = "pc"; aviso que vai pro grupo (principal whatsapp) = "pc"; resposta so da fala do WhatsApp = "whatsapp"', async () => {
-  const s = montar({ canalPrincipal: 'telegram' });
+  const s = montar({ canalPrincipal: 'telegram', resolvidasTg: 'manter' }); // T29b: o encerrado com o motivo e o do manter (no limpo ele apaga)
   aba(s, 'S1', 'Faro');
   const { messageId: telaS } = await chamadoNaTela(s, 'S1', 'Faro');
   ligarTg(s);
@@ -1393,7 +1397,7 @@ test('T3b 5b. encerrar: parou sem precisar dele (na rua) = "pc"; aviso que vai p
   assert.ok(ed.html.includes('a aba seguiu no PC.'), ed.html);
   assert.deepEqual(s.enviados, []);
 
-  const w = montar({ canalPrincipal: 'whatsapp' });
+  const w = montar({ canalPrincipal: 'whatsapp', resolvidasTg: 'manter' }); // T29b: idem
   aba(w, 'S1', 'Faro');
   const { messageId: telaW } = await chamadoNaTela(w, 'S1', 'Faro');
   ligarTg(w);
@@ -1410,7 +1414,7 @@ test('T3b 5b. encerrar: parou sem precisar dele (na rua) = "pc"; aviso que vai p
   assert.equal(ed.botoes, null);
 
   // chamado com botoes que apareceu depois da entrega do WhatsApp (o encerrar da entrega nao achou nada)
-  const r = montar({ canalPrincipal: 'telegram' });
+  const r = montar({ canalPrincipal: 'telegram', resolvidasTg: 'manter' }); // T29b: o encerrado com o motivo e o do manter (no limpo ele apaga)
   aba(r, 'S1', 'Faro');
   ligarTg(r);
   msg(r, { content: 'Faro: roda A' });
@@ -2957,7 +2961,7 @@ test('T5b 4. o nome do registro vai no chamado e passa pelos estados (enviando, 
   await falarTg(p, 'sim', { respondeA: c.messageId });
   assert.deepEqual([chamado(p, 'S1').versao.estado, chamado(p, 'S1').versao.nome], ['problema', 'projetos-42']);
 
-  const n = montar();
+  const n = montar({ resolvidasTg: 'manter' }); // T29b: o encerrado que fica na tela e o do manter
   aba(n, 'S1', 'Faro');
   await chamadoNaTela(n, 'S1', 'Faro', FINAL, 'projetos-42');
   ligarTg(n);
@@ -4772,7 +4776,8 @@ test('T10 5. "/start a_<aba>" (o toque no nome): a situacao numa mensagem propri
   const e = estado(h);
   const idSit = e.tg.situacao.mensagem.messageId;
   // T26d regra 1: sem citar, o registro nao guarda o citar; a tela do chamado sai
-  assert.deepEqual({ ...e.tg.mensagens[idSit], at: null }, { sessionId: 'situacao', aba: 'S1', at: null, formato: 'rich' });
+  // T29b: a situacao sem pergunta leva a marca semNada
+  assert.deepEqual({ ...e.tg.mensagens[idSit], at: null }, { sessionId: 'situacao', aba: 'S1', at: null, formato: 'rich', semNada: true });
   assert.ok(apagadas(h).includes(tela), 'T26d regra 1: a tela do chamado sai quando a situacao sai');
   assert.deepEqual(e.tg.sistema.linhas, [], 'a do sistema nao mexe');
   assert.equal(e.tg.painel.mensagem, null, 'nem o painel');
@@ -5035,7 +5040,7 @@ test('T16 4. cauda sem pedido e sem texto (a vez de agora so de passos, como na 
   assert.ok(situacoes.every((x) => !x.includes('Terminei a revisão')), situacoes.join('\n'));
 });
 
-test('T16 5. texto desta vez: nas 2 linhas com as opcoes em texto e so o "Mais informações" (abre sem botao); passo depois do texto entra, o de antes nao', async () => {
+test('T16 5. texto desta vez: nas 2 linhas com as opcoes em texto e so o "Mais informações" (abre sem botao de opcao, T29c: com o "Menos informações"); passo depois do texto entra, o de antes nao', async () => {
   const h = montar();
   aba(h, 'S1', 'Aula');
   ligarTg(h);
@@ -5056,13 +5061,13 @@ test('T16 5. texto desta vez: nas 2 linhas com as opcoes em texto e so o "Mais i
   assert.ok(env.html.includes('A) Sim (recomendado) / B) Não'), `as opcoes em texto: ${env.html}`);
   assert.ok(!env.html.includes('Terminei a revisão'), env.html);
   assert.deepEqual(env.botoes.map((l) => l[0].dados), [`i:${id}`]);
-  // Mais informações: o texto inteiro, sem botao
+  // Mais informações: o texto inteiro, sem botao de opcao (T29c: so o "Menos informações", que volta pro compacto)
   const idSit = estado(h).tg.situacao.mensagem.messageId;
   h.tg.zerar();
   await lerTg(h, [toqueTg(h, `i:${id}`, idSit)]);
   const ed = h.tg.de('editar')[0].args[1];
   assert.ok(ed.html.startsWith('<h2>ℹ️ Aula</h2><p><i>Trabalhando agora, desde 12:20.</i></p><p>Achei a causa'), ed.html);
-  assert.equal((ed.botoes ?? []).length, 0, JSON.stringify(ed.botoes));
+  assert.deepEqual(ed.botoes, [[{ texto: 'Menos informações', dados: `m:${id}` }]], JSON.stringify(ed.botoes));
   assert.equal(h.entregas.length, 0);
   // o passo depois do texto entra na frase
   transcript(h, 'S1', [passoDaAba('Rodar os testes', iso(aos('12:30'))), resultadoNaAba(iso(aos('12:31')))]);

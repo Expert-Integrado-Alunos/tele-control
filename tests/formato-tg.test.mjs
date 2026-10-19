@@ -660,11 +660,11 @@ describe('T7c1: Mais informações no formato (aviso e resposta compactos; abert
       assert.ok(aberto.html.includes(DETALHE) && aberto.classico.includes(DETALHE), `${estado}: aberto mostra o resto do texto`);
       assert.deepEqual(aberto.botoes, BOTOES_FINAL, `${estado}: sem Mais informações depois de aberto`);
       assert.ok(!JSON.stringify(aberto.botoes).includes('"i:'), estado);
-      // sem opcoes: aberto e sem botao nenhum
+      // sem opcoes: aberto e sem botao de opcao (T29c: so o "Menos informações", que volta pro compacto)
       assert.deepEqual(montarChamado({ ...base, estado, final: 'Terminei.\nPosso seguir?', completo: true }), {
         html: '<h2>ℹ️ Faro</h2><p>Terminei.<br>Posso seguir?</p>',
         classico: '<b>ℹ️ Faro</b>\n\nTerminei.\nPosso seguir?',
-        botoes: null,
+        botoes: [[{ texto: 'Menos informações', dados: `m:${ID}` }]],
       }, estado);
       // so true abre
       const quase = montarChamado({ ...base, estado, final: FINAL, completo: 'sim' });
@@ -1011,12 +1011,12 @@ describe('T16 1. montarSituacao com trabalhando: true = sem os botoes das opcoes
     assert.deepEqual(r.botoes, [MAIS]);
   });
 
-  test('aberta (completo): o texto inteiro com a situacao embaixo do titulo e sem botao nenhum', () => {
+  test('aberta (completo): o texto inteiro com a situacao embaixo do titulo e sem botao de opcao (T29c: so o "Menos informações")', () => {
     const r = montarSituacao({ titulo: 'Aula', situacao: SIT, final: FIN, chamadoId: ID, trabalhando: true, completo: true });
     const aberta = montarSituacao({ titulo: 'Aula', situacao: SIT, final: FIN, chamadoId: ID, completo: true });
     assert.equal(r.html, aberta.html);
     assert.equal(r.classico, aberta.classico);
-    assert.equal(r.botoes, null);
+    assert.deepEqual(r.botoes, [[{ texto: 'Menos informações', dados: `m:${ID}` }]]);
   });
 
   test('sem texto: "Ainda sem mensagem neste trabalho." e sem botao; so true liga (o resto = os botoes do aviso, como antes)', () => {
@@ -1401,7 +1401,16 @@ describe('T26a montarChamadoComOk e o estado ok', () => {
         }
       }
     }
-    assert.equal(crypto.createHash('sha256').update(JSON.stringify(saidas)).digest('hex'), '5f2a7c3b0a8d4701e30d280aac65b9d9d16f21022633d172ce22172b20b2f50e');
+    // T29c: o "Menos informações" (m:) e a unica diferenca desde a base: so no aberto sem botao de opcao (LONGO, cujo
+    // "A) / B)" sem DECISAO nao vira botao, e 'Feito.'; chamado e situacao com id); sem ele, o resto sai byte a byte igual
+    const comMenos = saidas.map((s, i) => [i, JSON.stringify(s.botoes ?? null).includes('"m:')]).filter(([, m]) => m).map(([i]) => i);
+    assert.deepEqual(comMenos, [9, 10, 21, 22, 33, 34, 45, 46], JSON.stringify(comMenos));
+    for (const i of comMenos) assert.deepEqual(saidas[i].botoes, [[{ texto: 'Menos informações', dados: 'm:ABCDEFGH' }]]);
+    const semMenos = saidas.map((s) => {
+      const linhas = Array.isArray(s.botoes) ? s.botoes.filter((l) => !l.some((b) => String(b.dados).startsWith('m:'))) : s.botoes;
+      return { ...s, botoes: Array.isArray(linhas) && linhas.length === 0 ? null : linhas };
+    });
+    assert.equal(crypto.createHash('sha256').update(JSON.stringify(semMenos)).digest('hex'), '5f2a7c3b0a8d4701e30d280aac65b9d9d16f21022633d172ce22172b20b2f50e');
   });
 
   test('T26a 3: resposta/aviso + bloco compacto: a parte da aba (opcoes em texto, sem botao de opcao) + o bloco escapado no fim, botoes do bloco', () => {
@@ -1622,3 +1631,168 @@ import crypto from 'node:crypto';
 import * as formatoTg from '../lib/formato-tg.mjs';
 import * as okTg from '../lib/ok-tg.mjs';
 import { limparParaWhatsApp } from '../lib/formato.mjs';
+
+// ---------- T29c: "Menos informações" (PLANO-TELEGRAM.md, "T29c") ----------
+// Pedido do dono (18/10/2026 19:04, audio no Telegram): «quando eu clico em mais informações, ele expande [...] eu queria
+// que tivesse um botão de comprimir de volta, a não ser quando tem um botão de pergunta e resposta». O aberto SEM botao
+// de resposta (nenhuma opcao na tela, fora do OK) ganha, na ultima linha, "Menos informações" (m:<ID>); com opcao, como
+// hoje. O OK dentro da mensagem (montarChamadoComOk) fica de fora.
+
+describe('T29c. "Menos informações" no aberto sem botao de resposta', () => {
+  const MENOS = [{ texto: 'Menos informações', dados: `m:${ID}` }];
+  const LONGO = 'Publiquei o site.\n\nO deploy levou 2 min e o cache foi limpo.\n\nTudo conferido no ar.';
+  const base = { titulo: 'Faro', hora: '2026-09-29T15:00:00.000Z', chamadoId: ID };
+
+  test('dadosBotao menos = m:<ID> (10 bytes), prefixo que nao colide; lerDadosBotao de m: = menos; lixo = null; entrada invalida = TypeError', () => {
+    const d = dadosBotao({ chamadoId: ID, acao: 'menos' });
+    assert.equal(d, `m:${ID}`);
+    assert.ok(Buffer.byteLength(d, 'utf8') <= 64);
+    assert.deepEqual(lerDadosBotao(d), { acao: 'menos', chamadoId: ID });
+    const outro = 'Z2Z2Z2Z2';
+    assert.deepEqual(lerDadosBotao(dadosBotao({ chamadoId: outro, acao: 'menos' })), { acao: 'menos', chamadoId: outro });
+    assert.ok(!['o', 'i', 'c', 'r', 'k', 'z'].includes(d.split(':')[0]), 'o prefixo nao e de outro botao (opcao, informacoes, legado, OK)');
+    // os outros continuam
+    assert.deepEqual(lerDadosBotao(`i:${ID}`), { acao: 'informacoes', chamadoId: ID });
+    assert.deepEqual(lerDadosBotao(`o:${ID}:2`), { acao: 'opcao', chamadoId: ID, indice: 2 });
+    for (const lixo of [`m:${ID}:1`, 'm:', `m:${ID.toLowerCase()}`, 'm:ABCDEFGI', 'm:ABCDEFG', ` m:${ID}`, `m:${ID}\n`, `M:${ID}`, `mm:${ID}`]) {
+      assert.equal(lerDadosBotao(lixo), null, JSON.stringify(lixo));
+    }
+    for (const ruim of [{ chamadoId: 'abcdefgh', acao: 'menos' }, { acao: 'menos' }, { chamadoId: ID, acao: 'Menos' }]) {
+      assert.throws(() => dadosBotao(ruim), TypeError, JSON.stringify(ruim));
+    }
+  });
+
+  test('chamado: aberto sem opcao = so o "Menos informações"; aberto com opcao = so as opcoes (como hoje); compacto = como hoje (o "Mais informações", sem o Menos)', () => {
+    for (const estado of ['aviso', 'resposta']) {
+      const aberto = montarChamado({ ...base, estado, final: LONGO, completo: true });
+      assert.deepEqual(aberto.botoes, [MENOS], estado);
+      assert.ok(aberto.html.includes('Tudo conferido no ar.'), 'o texto inteiro');
+      const compacto = montarChamado({ ...base, estado, final: LONGO });
+      assert.deepEqual(compacto.botoes, [MAIS], `${estado} compacto`);
+      const comOpcao = montarChamado({ ...base, estado, final: FINAL, completo: true });
+      assert.deepEqual(comOpcao.botoes.flat().map((b) => b.dados), [`o:${ID}:0`, `o:${ID}:1`], `${estado} com opcao`);
+      const comOpcaoCurto = montarChamado({ ...base, estado, final: FINAL });
+      assert.deepEqual(comOpcaoCurto.botoes.flat().map((b) => b.dados), [`o:${ID}:0`, `o:${ID}:1`, `i:${ID}`]);
+    }
+    // sem texto pra abrir: nem Mais nem Menos (o completo nao abre nada)
+    assert.equal(montarChamado({ ...base, estado: 'aviso', final: '', completo: true }).botoes, null);
+    // os outros estados nao tem botao, abertos ou nao
+    for (const estado of ['enviando', 'entregue', 'contexto', 'problema', 'encerrado']) {
+      assert.equal(montarChamado({ ...base, estado, final: LONGO, completo: true, fala: 'x', motivo: 'pc' }).botoes, null, estado);
+    }
+  });
+
+  test('o OK dentro da mensagem (montarChamadoComOk) fica de fora: aberto, sem opcao, nenhum "Menos informações"', () => {
+    const v = { ...base, estado: 'resposta', final: LONGO, completo: true };
+    const simNao = [[{ texto: 'Sim', dados: 'k:ABC123:s' }, { texto: 'Não', dados: 'k:ABC123:n' }]];
+    const bloco = { compacto: { texto: 'Pedido de OK: x', botoes: simNao }, completo: { texto: 'Pedido de OK: x (inteiro)', botoes: simNao } };
+    for (const completo of [false, true]) {
+      const r = formatoTg.montarChamadoComOk(v, { bloco, completo });
+      assert.deepEqual(r.botoes, simNao, `ok.completo ${completo}`);
+    }
+    assert.equal(formatoTg.montarChamadoComOk(v, { fechado: 'Pedido de OK: x\n\nfim' }).botoes, null);
+  });
+
+  test('situacao: aberta sem opcao = "Menos informações"; com opcao = so as opcoes; a de aba trabalhando (opcoes em texto) aberta = "Menos informações"; compacta = como hoje; sem id = sem botao', () => {
+    const s = { titulo: 'Faro', situacao: 'Parada.', chamadoId: ID };
+    assert.deepEqual(montarSituacao({ ...s, final: LONGO, completo: true }).botoes, [MENOS]);
+    assert.deepEqual(montarSituacao({ ...s, final: LONGO }).botoes, [MAIS]);
+    assert.deepEqual(montarSituacao({ ...s, final: FINAL, completo: true }).botoes.flat().map((b) => b.dados), [`o:${ID}:0`, `o:${ID}:1`]);
+    const trab = { ...s, situacao: 'Trabalhando agora.', final: FINAL, trabalhando: true };
+    assert.deepEqual(montarSituacao({ ...trab, completo: true }).botoes, [MENOS], 'T16: as opcoes ficam em texto, nao e botao de resposta');
+    assert.deepEqual(montarSituacao(trab).botoes, [MAIS]);
+    assert.equal(montarSituacao({ ...s, final: LONGO, completo: true, chamadoId: 'abc' }).botoes, null, 'sem id = sem botao');
+    assert.equal(montarSituacao({ ...s, final: '', completo: true }).botoes, null, 'sem texto pra abrir');
+  });
+});
+
+// ---------- T29d: a busca no painel (PLANO-TELEGRAM.md, "T29d") ----------
+// Pedido do dono (18/10/2026 19:04, audio no Telegram): «uma função de buscar alguma palavra dentro daquela própria
+// mensagem». O painel ganha o botao "Buscar" (p:b); com a busca, so as abas que batem no nome, no grupo ou na
+// pergunta/1a frase, sem maiuscula e acento, em todos os grupos (antes do corte "e mais N"); topo "Busca: «x» (N abas)";
+// nada = "Nenhuma aba com «x»."; o botao vira "Limpar busca" (p:l).
+
+describe('T29d. a busca no painel', () => {
+  const AG = '2026-10-18T22:00:00.000Z';
+  const D = {
+    hora: AG, modoRua: true, abertas: 9,
+    esperando: [
+      { titulo: 'Revisão do site', hora: AG, texto: 'Publico agora?', sid: 'e1' },
+      { titulo: 'Faro', hora: AG, texto: 'Mando a proposta pro cliente São Paulo?', sid: 'e2' },
+    ],
+    aguardando: [{ titulo: 'Contrato', hora: AG, texto: 'Assino?', sid: 'a1', em: AG }],
+    trabalhando: [{ titulo: 'Bateria do porteiro', sid: 't1' }, 'Outra coisa'],
+    paradas: [{ titulo: 'Site novo', sid: 'p1' }, 'Planilha'],
+    fechadas: [{ titulo: 'Velha', sid: 'f1', grupo: 'Clientes' }, { titulo: 'Solta', sid: 'f2', grupo: null }],
+  };
+  const { montarPainel, filtrarPainel, botoesPainel, palavraDaBusca, PERGUNTA_BUSCA, EXEMPLO_BUSCA } = formatoTg;
+
+  test('o botao: sem busca "Buscar" (p:b), com busca "Limpar busca" (p:l); dados que nao colidem; leitura estrita', () => {
+    assert.deepEqual(botoesPainel(null), [[{ texto: 'Buscar', dados: 'p:b' }]]);
+    assert.deepEqual(botoesPainel('   '), [[{ texto: 'Buscar', dados: 'p:b' }]]);
+    assert.deepEqual(botoesPainel('faro'), [[{ texto: 'Limpar busca', dados: 'p:l' }]]);
+    assert.equal(dadosBotao({ acao: 'buscar' }), 'p:b');
+    assert.equal(dadosBotao({ acao: 'limparBusca' }), 'p:l');
+    assert.deepEqual(lerDadosBotao('p:b'), { acao: 'buscar' });
+    assert.deepEqual(lerDadosBotao('p:l'), { acao: 'limparBusca' });
+    for (const lixo of ['p:', 'p:x', 'p:bb', 'P:b', ' p:b', 'p:b\n', 'p:l ', `p:${ID}`]) assert.equal(lerDadosBotao(lixo), null, JSON.stringify(lixo));
+    assert.equal(PERGUNTA_BUSCA, 'Qual palavra?');
+    assert.equal(EXEMPLO_BUSCA, 'nome da aba ou palavra');
+  });
+
+  test('sem busca o painel e o de hoje (busca vazia ou so espaco = sem busca)', () => {
+    const hoje = montarPainel(D);
+    assert.deepEqual(montarPainel(D, {}), hoje);
+    assert.deepEqual(montarPainel(D, { busca: '  ' }), hoje);
+    assert.deepEqual(montarPainel(D, { busca: null }), hoje);
+    assert.ok(hoje.html.includes('Abas abertas: 9'));
+  });
+
+  test('so as que batem, sem maiuscula e acento; topo "Busca: «x» (N abas)"; nome, pergunta mostrada e grupo', () => {
+    const r = montarPainel(D, { busca: 'SITE' });
+    assert.ok(r.html.startsWith('<h3>Busca: «SITE» (2 abas)</h3>'), r.html);
+    assert.ok(r.classico.startsWith('<b>Busca: «SITE» (2 abas)</b>'), r.classico);
+    for (const s of [r.html, r.classico]) {
+      assert.ok(s.includes('Revisão do site') && s.includes('Site novo'), s);
+      for (const fora of ['Faro', 'Contrato', 'Bateria', 'Outra coisa', 'Planilha', 'Velha', 'Solta', 'Abas abertas', 'Nada esperando']) assert.ok(!s.includes(fora), `${fora}: ${s}`);
+    }
+    assert.ok(r.html.includes('🔴 Esperando você (1)') && r.html.includes('🟢 Paradas (1)'), r.html);
+    // acento e maiuscula dos dois lados; a pergunta mostrada (nao o nome)
+    const sp = montarPainel(D, { busca: 'sao paulo' });
+    assert.ok(sp.html.includes('(1 aba)') && sp.html.includes('Faro') && !sp.html.includes('Revisão'), sp.html);
+    assert.ok(montarPainel(D, { busca: 'revisao' }).html.includes('Revisão do site'));
+    assert.ok(montarPainel(D, { busca: 'ASSINO' }).html.includes('🔵 Aguardando (1)'), 'o aguardando pela pergunta');
+    // o grupo das Fechadas (e o "Sem grupo")
+    const cl = montarPainel(D, { busca: 'clientes' });
+    assert.ok(cl.html.includes('Velha') && !cl.html.includes('Solta') && cl.html.includes('⚪ Fechadas (1)'), cl.html);
+    assert.ok(montarPainel(D, { busca: 'sem grupo' }).html.includes('Solta'));
+    assert.ok(montarPainel(D, { busca: 'porteiro' }).html.includes('🟡 Trabalhando (1)'));
+    assert.equal(filtrarPainel(D, 'site').n, 2);
+    assert.equal(filtrarPainel(D, '').n, null);
+  });
+
+  test('a Fechada escondida no "e mais N" aparece (o filtro olha os dados inteiros, antes do corte)', () => {
+    const fechadas = Array.from({ length: 200 }, (_, i) => ({ titulo: i === 190 ? 'Zebra única' : `Aba ${i}`, sid: `z${i}`, grupo: 'G' }));
+    const d = { ...D, esperando: [], aguardando: [], trabalhando: [], paradas: [], fechadas };
+    const hoje = montarPainel(d);
+    assert.ok(!hoje.html.includes('Zebra') && hoje.html.includes('(e mais 50)'), 'hoje ela fica no "e mais N"');
+    const r = montarPainel(d, { busca: 'zebra unica' });
+    assert.ok(r.html.includes('Zebra única') && r.classico.includes('Zebra única'), r.classico);
+    assert.ok(r.html.includes('(1 aba)') && !r.html.includes('e mais'), r.html);
+  });
+
+  test('nada achado = "Nenhuma aba com «x»." sem grupos; a palavra escapada; o classico cabe', () => {
+    const r = montarPainel(D, { busca: 'xyz' });
+    assert.ok(r.html.startsWith('<h3>Nenhuma aba com «xyz».</h3>'), r.html);
+    assert.ok(r.classico.startsWith('<b>Nenhuma aba com «xyz».</b>'), r.classico);
+    for (const s of [r.html, r.classico]) for (const fora of ['Esperando', 'Aguardando', 'Paradas', 'Fechadas', 'Nada esperando']) assert.ok(!s.includes(fora), s);
+    const tag = montarPainel(D, { busca: '<b>' });
+    assert.ok(tag.html.includes('«&lt;b&gt;»') && !tag.html.includes('«<b>»'), tag.html);
+    const amp = montarPainel({ ...D, paradas: ['P&D'] }, { busca: 'p&d' }); // a palavra escapada tambem no topo com aba achada
+    assert.ok(amp.html.startsWith('<h3>Busca: «p&amp;d» (1 aba)</h3>') && amp.classico.startsWith('<b>Busca: «p&amp;d» (1 aba)</b>'), amp.html);
+    assert.equal(palavraDaBusca('  a   b  '), 'a b');
+    assert.equal(palavraDaBusca('x'.repeat(100)).length, 64);
+    const muitas = { ...D, fechadas: Array.from({ length: 400 }, (_, i) => ({ titulo: `Site ${i} ${'x'.repeat(40)}`, sid: `s${i}`, grupo: 'G' })) };
+    assert.ok(visivel(montarPainel(muitas, { busca: 'site' }).classico).length <= 4096);
+  });
+});

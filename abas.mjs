@@ -225,13 +225,15 @@ export function textoAbas(lista, { controle = false } = {}) {
 const FECHADAS_JANELA_MS = 14 * 24 * 60 * 60 * 1000; // ultima mensagem nos ultimos 14 dias
 const FECHADAS_MAX = 20;
 const ENTRYPOINTS_REABRIVEIS = new Set(['claude-vscode', 'cli']); // a aba do VS Code e a do terminal (o Desktop nao)
+const CAUDA_APP = 1024 * 1024; // T31: o fim lido pro app em que a conversa vive agora (o mesmo do titulo no porteiro)
 const semAcento = (s) => normalizar(s);
 
 /**
  * Conversas de aba (VS Code ou terminal) FECHADAS com a ultima mensagem (mtime do transcript) nos ultimos 14 dias, a mais
  * recente primeiro, no maximo 20: `<projects>/<pasta>/<sessionId>.jsonl` (so o nivel de cima: subagente fica de fora).
  * Fora: sessao viva (registro `^\d+\.json$` com pid vivo; .key nunca e aberto), entrypoint que nao e cli/claude-vscode
- * (Desktop, `claude -p`), conversa sem pasta (cwd) e a central (titulo igual a `nomeCentral`, sem acento e sem caso; A3a:
+ * (Desktop, `claude -p`; T31: o do FIM da conversa, lib.ultimoEntrypoint no ultimo CAUDA_APP, senao o da cabeca: a que
+ * nasceu no Desktop e segue no VS Code entra), conversa sem pasta (cwd) e a central (titulo igual a `nomeCentral`, sem acento e sem caso; A3a:
  * padrao = PADRAO_CENTRAL.nome; nao-texto ou vazio = o padrao). `busca` = todas as palavras no titulo, sem acento e sem
  * caso (sem titulo = fora). -> [{sessionId, titulo, cwd, entrypoint, ultimaEm}]. Pasta de projetos que nao existe = [];
  * outro erro lanca.
@@ -280,7 +282,9 @@ export function listarFechadas({
       const ultimaEm = Math.round(st.mtimeMs);
       if (!(agoraMs - ultimaEm <= FECHADAS_JANELA_MS)) continue;
       const cab = lib.cabecaDaConversa(arq);
-      if (!cab || !ENTRYPOINTS_REABRIVEIS.has(cab.entrypoint) || !cab.cwd) continue;
+      if (!cab || !cab.cwd || !(ENTRYPOINTS_REABRIVEIS.has(cab.entrypoint) || cab.entrypoint === 'claude-desktop')) continue;
+      const app = lib.ultimoEntrypoint(lib.lerCauda(arq, CAUDA_APP)) ?? cab.entrypoint; // T31
+      if (!ENTRYPOINTS_REABRIVEIS.has(app)) continue;
       const titulo = tituloDaAba(arq, null);
       if (titulo && semAcento(titulo) === tituloCentral) continue;
       if (palavras.length) {
@@ -288,7 +292,7 @@ export function listarFechadas({
         if (!titulo || !palavras.every((p) => t.includes(p))) continue;
       }
       ja.add(sessionId);
-      out.push({ sessionId, titulo: titulo || null, cwd: cab.cwd, entrypoint: cab.entrypoint, ultimaEm });
+      out.push({ sessionId, titulo: titulo || null, cwd: cab.cwd, entrypoint: app, ultimaEm });
     }
   }
   out.sort((a, b) => b.ultimaEm - a.ultimaEm);

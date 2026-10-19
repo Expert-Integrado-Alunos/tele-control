@@ -396,12 +396,14 @@ test('T26c1 d. "Mais informações" na tela da aba edita pro bloco completo (o o
   assert.deepEqual(desde(h, marca2).filter((c) => c.metodo === 'editarBotoes').map((c) => c.args), [[tela, null]]);
 });
 
-test('T26c1 e. texto citando a mensagem da aba com o OK aberto = a linha dos botoes (canal.sistema em cima dele); nada vai pra aba', async () => {
+// T30 (Eric 18/10/2026 19:43): so o "sim"/"nao" citando a mensagem da aba com o OK vira a linha dos botoes; o resto
+// ("pode subir sim") agora vai pra aba como comentario (tests/porteiro-t30.test.mjs).
+test('T26c1 e (T30). "sim" citando a mensagem da aba com o OK aberto = a linha dos botoes (canal.sistema em cima dele), nada vai pra aba; "pode subir sim" = comentario pra aba (com a nota), o OK segue aberto', async () => {
   const h = montar();
   const { p, tela } = await comOkNaAba(h);
   await abaResponde(h);
   const marca = h.tg.chamadas.length;
-  const x = msgTg(h, 'pode subir sim', { respondeA: tela });
+  const x = msgTg(h, 'sim', { respondeA: tela });
   h.tg.lotes.push([x]);
   await h.p.esperarTelegram(5000);
   await bombear(h.cru);
@@ -410,6 +412,12 @@ test('T26c1 e. texto citando a mensagem da aba com o OK aberto = a linha dos bot
   assert.equal(linhas.length, 1, `a linha dos botoes: ${JSON.stringify(novas.map((c) => c.metodo))}`);
   assert.equal(linhas[0].args[0].responderA, x.message.message_id, 'em cima da mensagem dele');
   assert.deepEqual(h.entregas, [], 'nada vai pra aba');
+  const y = msgTg(h, 'pode subir sim', { respondeA: tela });
+  h.tg.lotes.push([y]);
+  await h.p.esperarTelegram(5000);
+  await bombear(h.cru);
+  assert.deepEqual(h.entregas.map((r) => [r.sessionId, r.texto]), [['S1', 'pode subir sim']], 'o comentario vai pra aba');
+  assert.ok(String(h.entregas[0].nota).includes(`Comentário em cima do pedido de OK ${p.codigo}`), h.entregas[0].nota);
   assert.equal(chamado(h, 'S1').ok.cod, p.codigo, 'o OK segue aberto na aba');
   assert.equal(okDe(h, p.codigo).toque, null);
 });

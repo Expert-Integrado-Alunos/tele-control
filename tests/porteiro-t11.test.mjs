@@ -786,3 +786,43 @@ test('T14b 2. o toque no nome de uma Fechada: a situacao sem o Concluir; ela sai
   assert.equal(painel(h).listaErro, true);
   assert.ok(enviado(h).html.endsWith('</details><p>Não consegui ler a lista do VS Code agora.</p>'), enviado(h).html.slice(-200));
 });
+
+// ---------- T31: o app em que a conversa vive agora (o fim do transcript), nao o do comeco ----------
+
+// T31: a conversa que nasce num app e segue em outro: as linhas depois da 1a, 1 por entrypoint (null = sem o campo)
+function conversaMista(h, raiz, sid, eps, { titulo, minAtras = 60, pasta = projeto(raiz), cwd = raiz } = {}) {
+  const arq = conversa(h, raiz, sid, { titulo, entrypoint: eps[0], minAtras, pasta, cwd });
+  const resto = eps.slice(1).map((ep, i) => ({
+    type: 'user', sessionId: sid, ...(ep ? { entrypoint: ep } : {}), cwd, timestamp: iso(h.t - (minAtras - i - 1) * MIN), message: { role: 'user', content: 'e agora' },
+  }));
+  fs.appendFileSync(arq, resto.map((x) => `${JSON.stringify(x)}\n`).join(''));
+  const quando = new Date(h.t - minAtras * MIN);
+  fs.utimesSync(arq, quando, quando);
+  return arq;
+}
+
+test('T31 3. painel: a fechada que nasceu no Claude Desktop e segue no VS Code ou no terminal entra nas Paradas; VS Code -> Desktop, Desktop sem mais nada e Desktop -> automatica ficam fora; fim sem o campo = vale o do comeco; a do terminal numa subpasta (T21) que foi pro Desktop fica fora; a conversa que muda de app depois sai (o cache rele o fim)', async () => {
+  const h = montarT11();
+  const { repos, workspace } = h;
+  const pastaW = projeto(workspace).toLowerCase();
+  const sub = path.join(repos, 'app');
+  fs.mkdirSync(sub, { recursive: true });
+  const viagem = conversaMista(h, workspace, U(41), ['claude-desktop', 'claude-vscode'], { titulo: 'Viagem', minAtras: 5, pasta: pastaW, cwd: workspace });
+  conversaMista(h, repos, U(42), ['claude-desktop', 'cli'], { titulo: 'Do Desktop pro terminal', minAtras: 6 });
+  conversaMista(h, repos, U(43), ['claude-vscode', 'claude-desktop'], { titulo: 'Foi pro Desktop', minAtras: 7 });
+  conversaMista(h, repos, U(44), ['claude-desktop', null], { titulo: 'So Desktop', minAtras: 8 });
+  conversaMista(h, repos, U(45), ['claude-vscode', null], { titulo: 'So VS Code', minAtras: 9 });
+  conversaMista(h, repos, U(46), ['claude-desktop', 'sdk-cli'], { titulo: 'Rotina', minAtras: 10 });
+  conversaMista(h, repos, U(47), ['cli', 'claude-desktop'], { titulo: 'Terminal pro Desktop', minAtras: 11, pasta: projeto(sub), cwd: sub });
+  conversaMista(h, repos, U(48), ['cli', 'cli'], { titulo: 'Terminal na subpasta', minAtras: 12, pasta: projeto(sub), cwd: sub });
+  await falarTg(h, '/painel');
+  assert.deepEqual(fechadasDe(painel(h)), [
+    ['Viagem', U(41), true], ['Do Desktop pro terminal', U(42), true], ['So VS Code', U(45), true], ['Terminal na subpasta', U(48), true],
+  ]);
+  // a Viagem foi aberta no Desktop de novo (linha nova no fim, arquivo mais novo): sai da lista no proximo painel
+  fs.appendFileSync(viagem, `${JSON.stringify({ type: 'user', sessionId: U(41), entrypoint: 'claude-desktop', cwd: workspace, timestamp: iso(h.t - 4 * MIN), message: { role: 'user', content: 'oi' } })}\n`);
+  const quando = new Date(h.t - 4 * MIN);
+  fs.utimesSync(viagem, quando, quando);
+  await falarTg(h, '/painel');
+  assert.deepEqual(fechadasDe(painel(h)).map((x) => x[1]), [U(42), U(45), U(48)]);
+});

@@ -382,7 +382,7 @@ describe('4. reconciliacao', () => {
   });
 
   test('encerrar de aviso na tela = editar sem botoes com o final; botao dele vira obsoleto', async () => {
-    const { canal, tg, e } = novo();
+    const { canal, tg, e } = novo({ resolvidas: 'manter' }); // T29b: no limpo o encerrado apaga; a edicao do encerrado segue no manter
     canal.aviso(e, parou('aba-1'), 'Aba');
     await canal.drenar(e);
     canal.encerrar(e, 'aba-1', iso(T0 + 3 * MIN), 'pc');
@@ -407,7 +407,7 @@ describe('4. reconciliacao', () => {
   });
 
   test('encerrar de resposta que nao saiu, com outra mensagem na tela: descer desliga e a tela vira o encerrado', async () => {
-    const { canal, tg, e } = novo();
+    const { canal, tg, e } = novo({ resolvidas: 'manter' }); // T29b: no limpo o encerrado apaga; a edicao do encerrado segue no manter
     canal.aviso(e, parou('aba-1'), 'Aba');
     await canal.drenar(e);
     canal.falaRecebida(e, { sessionId: 'aba-1', fala: 'vai', hora: iso(T0 + MIN) });
@@ -444,7 +444,8 @@ describe('4. reconciliacao', () => {
     await canal.drenar(e);
     assert.deepEqual(passos(tg), [['enviar', false], ['editarBotoes', 501], ['enviar', false], ['apagar', 501]]);
     assert.deepEqual(tg.chamadas[2].args[0], { ...montarChamado(c.versao), silencioso: false });
-    // a resposta ja na tela: o encerrar "pc" segue o de hoje (edicao, sem botoes)
+    // a resposta ja na tela: o encerrar "pc" segue o de hoje. T29e: no limpo tambem e o encerrado (a edicao); ela sai
+    // pela regra da interacao dele (T29b, 60 s)
     canal.encerrar(e, 'aba-1', iso(T0 + 11 * MIN), 'pc');
     assert.deepEqual([e.tg.chamados['aba-1'].versao.estado, e.tg.chamados['aba-1'].descer], ['encerrado', false]);
   });
@@ -542,12 +543,12 @@ describe('5. 48 h e edicao que falha', () => {
 
   // T7f (F8): o entregue nao edita mais; a edicao do teste e a do encerrado (aviso na tela que a aba seguiu no PC)
   test('editar com codigo 400 = mensagem nova na hora + apagar da antiga', async () => {
-    const { canal, tg, e, logs } = novo({ roteiro: { editar: [{ ok: false, erro: 'editMessageText: Bad Request: message to edit not found', codigo: 400 }] } });
+    const { canal, tg, e, logs } = novo({ roteiro: { editar: [{ ok: false, erro: 'editMessageText: Bad Request: message to edit not found', codigo: 400 }] }, resolvidas: 'manter' }); // T29b: o encerrado que edita e o do manter (a antiga so perde os botoes)
     canal.aviso(e, parou('aba-1'), 'Aba');
     await canal.drenar(e); // 501
     canal.encerrar(e, 'aba-1', iso(T0 + 2 * MIN), 'pc');
     await canal.drenar(e); // editar 501 = 400 -> enviar 502 + apagar 501
-    assert.deepEqual(passos(tg), [['enviar', false], ['editar', 501], ['enviar', true], ['apagar', 501]]);
+    assert.deepEqual(passos(tg), [['enviar', false], ['editar', 501], ['enviar', true], ['editarBotoes', 501]]);
     const c = e.tg.chamados['aba-1'];
     assert.deepEqual(tg.chamadas[2].args[0], { ...montarChamado(c.versao), silencioso: true });
     assert.deepEqual(c.mensagem, { messageId: 502, formato: 'rich', versaoId: c.versao.id });
@@ -707,7 +708,8 @@ describe('7. sistema e problema', () => {
     assert.deepEqual(pedido, { ...montarSistema(e.tg.sistema.linhas), botoes: null, formato: 'rich' });
     assert.ok(pedido.html.includes('linha 4') && !pedido.html.includes('linha 3') && !pedido.html.includes('linha 2'), pedido.html);
     assert.deepEqual(e.tg.sistema.linhas.map((l) => l.texto), ['linha 1', 'linha 2', 'linha 3', 'linha 4']);
-    assert.deepEqual(e.tg.mensagens[501], { sessionId: 'sistema', at: iso(T0), formato: 'rich' });
+    // T29b: a edicao vinda do porteiro guarda a hora em que a mensagem ficou na tela (vistaEm)
+    assert.deepEqual(e.tg.mensagens[501], { sessionId: 'sistema', at: iso(T0), formato: 'rich', vistaEm: iso(T0 + 3 * MIN) });
     assert.equal(e.tg.sistema.mensagem.versaoId, e.tg.sistema.versaoId);
     assert.deepEqual(e.tg.saida, []);
   });
@@ -847,7 +849,7 @@ describe('8. ensaio, podar, completarTg e log', () => {
     await canal.drenar(e); // nada
     canal.resposta(e, parou('aba-1', 'Feito.'), 'Aba', { citar: 70 }); // versao 5
     await canal.drenar(e); // enviar -> -6 (em cima da 70), apagar -2
-    canal.encerrar(e, 'aba-1', iso(T0 + 3 * MIN), 'pc'); // versao 7
+    canal.abrir(e, 'aba-1'); // versao 7 (T29b: no limpo o encerrado apaga; a edicao vem do "Mais informações")
     await canal.drenar(e); // editar -6
     canal.sistema(e, 'Modo rua ligado.'); // versao 8
     await canal.drenar(e); // enviar -> -9
@@ -862,7 +864,7 @@ describe('8. ensaio, podar, completarTg e log', () => {
     assert.ok(!('responderA' in ensaios[0])); // e nao leva quando nao existe
     assert.deepEqual(ensaios[3], { acao: 'tg.apagar', messageId: -2 });
     const encerrado = montarChamado(e.tg.chamados['aba-1'].versao);
-    assert.deepEqual(ensaios[4], { acao: 'tg.editar', sessionId: 'aba-1', messageId: -6, estado: 'encerrado', ...encerrado });
+    assert.deepEqual(ensaios[4], { acao: 'tg.editar', sessionId: 'aba-1', messageId: -6, estado: 'resposta', ...encerrado });
     assert.deepEqual(ensaios[5], { acao: 'tg.enviar', sessionId: 'sistema', estado: 'sistema', silencioso: true, ...montarSistema(e.tg.sistema.linhas), botoes: null });
     assert.deepEqual(e.tg.chamados['aba-1'].mensagem, { messageId: -6, formato: 'rich', versaoId: 7 });
     assert.deepEqual(e.tg.sistema.mensagem, { messageId: -9, formato: 'rich', versaoId: 8 });
@@ -1379,7 +1381,7 @@ describe('11. T7c2: Mais informações no canal', () => {
   });
 
   test('T7c2 47. abrir em enviando, entregue, encerrado, problema, contexto (estado de antes), sem chamado, sem final ou ja completo = false e nada muda', async () => {
-    const { canal, tg, e } = novo();
+    const { canal, tg, e } = novo({ resolvidas: 'manter' }); // T29b: no limpo o encerrado apaga; a edicao do encerrado segue no manter
     canal.falaRecebida(e, { sessionId: 'a-env', titulo: 'Env', fala: 'vai', hora: iso(T0) });
     canal.aviso(e, parou('a-ent'), 'Ent');
     canal.falaRecebida(e, { sessionId: 'a-ent', fala: 'A) Sim', hora: iso(T0) });
@@ -2193,7 +2195,7 @@ describe('T9 4. painel: mensagem propria, nova a cada pedido, em cima da do dono
     assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['painel']);
     await canal.drenar(e);
     assert.deepEqual(passos(tg), [['enviar', true], ['enviar', true]]);
-    assert.deepEqual(tg.chamadas[1].args[0], { ...montarPainel(DADOS), botoes: null, silencioso: true, responderA: 90 });
+    assert.deepEqual(tg.chamadas[1].args[0], { ...montarPainel(DADOS), botoes: [[{ texto: 'Buscar', dados: 'p:b' }]], silencioso: true, responderA: 90 }); // T29d: o Buscar
     assert.deepEqual(e.tg.mensagens[502], { sessionId: 'painel', at: iso(T0), formato: 'rich', citar: 90 }); // T23a: o registro guarda o citar
     assert.equal(e.tg.sistema.mensagem.messageId, 501, 'a do sistema nao mexe');
     assert.deepEqual(e.tg.sistema.linhas.map((l) => l.texto), ['Modo rua ligado.']);
@@ -2256,7 +2258,7 @@ describe('T9 4. painel: mensagem propria, nova a cada pedido, em cima da do dono
     const { canal, e, ensaios } = novo({ ensaio: true });
     canal.painel(e, DADOS, { citar: 90 });
     await canal.drenar(e);
-    assert.deepEqual(ensaios, [{ acao: 'tg.enviar', sessionId: 'painel', estado: 'painel', silencioso: true, ...montarPainel(DADOS), botoes: null, responderA: 90 }]);
+    assert.deepEqual(ensaios, [{ acao: 'tg.enviar', sessionId: 'painel', estado: 'painel', silencioso: true, ...montarPainel(DADOS), botoes: [[{ texto: 'Buscar', dados: 'p:b' }]], responderA: 90 }]); // T29d
   });
 });
 
@@ -2273,7 +2275,8 @@ describe('T10 3. situacao da aba: mensagem propria em cima do citar, a anterior 
     assert.deepEqual(e.tg.saida.map((i) => i.sessionId), ['situacao']);
     await canal.drenar(e); // 502
     assert.deepEqual(tg.chamadas[1].args[0], { ...montarSituacao({ ...DS, chamadoId: 'ABCDEFGH' }), silencioso: true, responderA: 77 }); // T10c: os botoes do aviso
-    assert.deepEqual(e.tg.mensagens[502], { sessionId: 'situacao', aba: 'S1', at: iso(T0), formato: 'rich', citar: 77 }); // T23a: o registro guarda o citar
+    // T23a: o registro guarda o citar. T29b: a situacao sem pergunta leva a marca semNada
+    assert.deepEqual(e.tg.mensagens[502], { sessionId: 'situacao', aba: 'S1', at: iso(T0), formato: 'rich', citar: 77, semNada: true });
     assert.equal(canal.sessaoDaMensagem(e, 502), 'S1', 'resposta em cima da situacao vai pra aba');
     assert.equal(canal.sessaoDaMensagem(e, 501), null, 'em cima do painel continua solta');
     assert.equal(e.tg.situacao.citar, null, 'o reply ja saiu');
@@ -2459,7 +2462,7 @@ describe('T16 2. situacao de aba trabalhando: so o "Mais informações"; o o: de
     await canal.drenar(e);
     assert.deepEqual(passos(tg), [['enviar', true], ['editar', 501]]);
     const aberta = montarSituacao({ ...DST, chamadoId: 'ABCDEFGH', completo: true });
-    assert.equal(aberta.botoes, null);
+    assert.deepEqual(aberta.botoes, [[{ texto: 'Menos informações', dados: 'm:ABCDEFGH' }]], 'sem botao de opcao (T29c: so o "Menos informações")');
     assert.equal(tg.chamadas[1].args[1].html, aberta.html);
     assert.deepEqual(canal.lerToque(e, 'o:ABCDEFGH:0', 501), { obsoleto: true }, 'aberta');
     const lido = completarTg(JSON.parse(JSON.stringify(e.tg)));
@@ -4438,5 +4441,737 @@ describe('T28 — o OK vencido fica na tela com o botao Tentar novamente', () =>
     assert.equal(torto.forte, undefined);
     assert.equal(torto.botoesFechado, undefined);
     assert.equal(torto.depois, undefined);
+  });
+});
+
+// T29a (PLANO-TELEGRAM.md, "T29a"; pedido do dono 18/10/2026 18:58, Telegram: «pra mudar o modo de limpo (apaga as msgs)
+// pros outros modos»): o /modo do menu troca o modo das resolvidas na hora, sem religar. O canal ganha o setter
+// definirResolvidas(e, modo): vale daqui pra frente; ao ir pro manter a limpeza pendente (o `limpar`) e descartada sem
+// chamar a API; ao voltar pro limpo o que ficou no chat no manter (registro `fica`) continua la.
+describe('T29a. definirResolvidas: o modo das resolvidas troca na hora', () => {
+  const FALA_A = 'A) Sim, tudo hoje (recomendado)';
+  const R429 = { ok: false, erro: 'deleteMessage: Too Many Requests: retry after 1', codigo: 429, esperarS: 1 };
+  async function respondida({ canal, e }, sid, x, vozes = []) {
+    canal.mensagemDoDono(e, x);
+    canal.falaRecebida(e, { sessionId: sid, titulo: 'Aba', fala: 'faz só as correções', hora: iso(T0 + MIN), messageIdDono: x });
+    canal.resposta(e, parou(sid), 'Aba', { citar: x });
+    await canal.drenar(e);
+    for (const v of vozes) canal.vozEnviada(e, sid, v, { citar: x });
+    return e.tg.chamados[sid].mensagem.messageId;
+  }
+  const tocar = ({ canal, e }, sid) => canal.falaRecebida(e, { sessionId: sid, titulo: 'Aba', fala: FALA_A, hora: iso(T0 + 2 * MIN), toque: true });
+
+  test('T29a 1. apagar -> manter: o toque so tira os botoes (nada apagado, a voz e a fala ficam); manter -> apagar: o toque seguinte apaga a tela, a voz e a fala; a tela que ficou no manter (fica) continua no chat', async () => {
+    const k = novo();
+    const { canal, tg, e } = k;
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    const tela = await respondida(k, 'aba-1', 70, [905]);
+    assert.equal(canal.definirResolvidas(e, 'manter'), undefined);
+    tg.chamadas.length = 0;
+    tocar(k, 'aba-1');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editarBotoes', tela]], 'no manter a tela tocada so perde os botoes');
+    assert.equal(e.tg.mensagens[tela].fica, true);
+    assert.equal(e.tg.mensagens['905'].voz, true, 'a voz fica');
+    assert.equal(e.tg.chamados['aba-1'].limpar, undefined, 'o limpar nao nasce no manter');
+    canal.definirResolvidas(e, 'apagar');
+    const tela2 = await respondida(k, 'aba-1', 80, [906]);
+    tg.chamadas.length = 0;
+    tocar(k, 'aba-1');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', tela2], ['apagar', 906], ['apagar', 80]], 'de volta no limpo: a tela, a voz e a fala dele');
+    assert.equal(e.tg.mensagens[tela].fica, true, 'a tela que ficou no manter continua no chat');
+    assert.equal(e.tg.mensagens['905'].voz, true, 'a voz da conversa do manter continua');
+  });
+
+  test('T29a 2. a limpeza pendente (429 no meio) e descartada ao ir pro manter: o drenar seguinte nao apaga a voz nem a fala; no sistema e no painel tambem', async () => {
+    let n905 = 0;
+    const k = novo({ roteiro: { apagar: (id) => (id === 905 && n905++ === 0 ? R429 : undefined) } });
+    const { canal, tg, e, relogio } = k;
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    const tela = await respondida(k, 'aba-1', 70, [905]);
+    tg.chamadas.length = 0;
+    tocar(k, 'aba-1');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', tela], ['apagar', 905]], 'a voz pegou 429');
+    assert.deepEqual(e.tg.chamados['aba-1'].limpar.map((a) => a.messageId), [905, 70], 'a limpeza ficou pendente');
+    e.tg.sistema.limpar = [{ messageId: 71, dono: true }];
+    e.tg.painel.limpar = [{ messageId: 72, dono: true }];
+    canal.definirResolvidas(e, 'manter');
+    assert.equal(e.tg.chamados['aba-1'].limpar, undefined, 'o limpar da aba some');
+    assert.equal(e.tg.sistema.limpar, undefined, 'o do sistema tambem');
+    assert.equal(e.tg.painel.limpar, undefined, 'e o do painel');
+    relogio.t += 5000;
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.ok(!tg.chamadas.some((c) => c.metodo === 'apagar'), `nada apagado: ${JSON.stringify(passos(tg))}`);
+    assert.equal(e.tg.mensagens['905'].voz, true, 'a voz fica no chat');
+  });
+
+  test('T29a 3. valor fora de "apagar"/"manter" = TypeError e nada muda (o toque seguinte segue o modo de antes)', async () => {
+    const k = novo();
+    const { canal, tg, e } = k;
+    assert.equal(typeof canal.definirResolvidas, 'function');
+    for (const ruim of ['tudo', undefined, null, 1, 'Manter']) {
+      assert.throws(() => canal.definirResolvidas(e, ruim), TypeError, String(ruim));
+    }
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    const tela = await respondida(k, 'aba-1', 70, [905]);
+    tg.chamadas.length = 0;
+    tocar(k, 'aba-1');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', tela], ['apagar', 905], ['apagar', 70]], 'segue no limpo');
+    const m = novo({ resolvidas: 'manter' });
+    assert.throws(() => m.canal.definirResolvidas(m.e, 'limpo'), TypeError);
+    m.canal.aviso(m.e, parou('aba-1'), 'Aba');
+    await m.canal.drenar(m.e);
+    const tela3 = await respondida(m, 'aba-1', 70, [905]);
+    m.tg.chamadas.length = 0;
+    tocar(m, 'aba-1');
+    await m.canal.drenar(m.e);
+    assert.deepEqual(passos(m.tg), [['editarBotoes', tela3]], 'segue no manter');
+  });
+
+  test('T29a 5. nascido no manter -> apagar: o toque seguinte apaga a tela e a conversa resolvida leva a voz e a fala dele', async () => {
+    const k = novo({ resolvidas: 'manter' });
+    const { canal, tg, e } = k;
+    canal.definirResolvidas(e, 'apagar');
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    const tela = await respondida(k, 'aba-1', 70, [905]);
+    tg.chamadas.length = 0;
+    tocar(k, 'aba-1');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', tela], ['apagar', 905], ['apagar', 70]]);
+  });
+
+  test('T29a 4. com o drenar em curso (a limpeza esperando o apagar), ir pro manter esvazia a lista sem lancar e o resto nao e apagado', async () => {
+    let soltar = null;
+    const k = novo({ roteiro: { apagar: (id) => (id === 905 ? new Promise((ok) => { soltar = ok; }) : undefined) } });
+    const { canal, tg, e } = k;
+    canal.aviso(e, parou('aba-1'), 'Aba');
+    await canal.drenar(e);
+    const tela = await respondida(k, 'aba-1', 70, [905]);
+    tg.chamadas.length = 0;
+    tocar(k, 'aba-1');
+    const emCurso = canal.drenar(e);
+    for (let i = 0; i < 20 && !soltar; i++) await new Promise((ok) => setImmediate(ok));
+    assert.ok(soltar, 'o apagar da voz esta em voo');
+    canal.definirResolvidas(e, 'manter');
+    soltar({ ok: true });
+    await emCurso;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', tela], ['apagar', 905]], 'a fala dele (70) nao sai');
+    assert.equal(e.tg.chamados['aba-1'].limpar, undefined, 'a lista some');
+    assert.ok(!k.logs.some((l) => /TypeError|undefined|erro/i.test(l)), `o passo no meio seguiu sem lancar: ${k.logs.join('\n')}`);
+    assert.ok(k.logs.some((l) => l.endsWith('aba-1: voz 905 apagada (conversa resolvida)')), k.logs.join('\n'));
+  });
+});
+
+// T29b (PLANO-TELEGRAM.md, "T29" e "T29b"; pedido do dono 18/10/2026 18:58, Telegram, com print de 3 mensagens que
+// ficaram no chat: «Pq essas aqui nao foram apagadas?»): no modo limpo (1) o encerrado APAGA a mensagem da aba (a fala
+// dele e a voz em cima saem pela regra da T23; o chamado sai com a tela), salvo as excecoes de hoje (o OK vencido com o
+// botao, o encerrar guardado com o OK aberto, a resposta que ainda nao saiu, o encerrado pela situacao); (2) a mensagem
+// do robo que nao espera nada dele (sem botao de opcao, sem pergunta em negrito, sem OK aberto, sem o botao do OK
+// vencido; o painel nunca) sai na interacao dele (vistasSemNada) se esta na tela ha 60 s ou mais; a do proprio toque
+// fica nesse passo; mais de 48 h fica. No manter nada muda.
+describe('T29b. o limpo tira tambem o que nao espera nada dele', () => {
+  const SEM = 'Publiquei o site.'; // resposta sem pergunta nem opcao (sem "Mais informações": nada pra abrir)
+  const LONGO = 'Publiquei o site.\n\nO deploy levou 2 min e o cache foi limpo.\n\nTudo conferido no ar.'; // com "Mais informações"
+  const VISTA = (sid, id) => `${sid}: mensagem ${id} apagada (vista e sem nada pra você)`;
+  const apagados = (tg) => tg.chamadas.filter((c) => c.metodo === 'apagar').map((c) => c.args[0]);
+  const soClassico = () => {
+    let n = 600;
+    return { enviar: (p) => (p.html ? undefined : { ok: true, messageId: ++n, formato: 'classico' }) };
+  };
+  const pedidoOk = (codigo, sid) => ({
+    v: 1, codigo, sessionId: sid, titulo: 'Aba', tipo: 'publicacao', acao: 'subir o site X em produção', destinatarios: null,
+    criadoEm: iso(T0), expiraEm: iso(T0 + 30 * MIN), status: 'pendente',
+  });
+  const okDe = (codigo, sid = 'aba-1') => {
+    const p = pedidoOk(codigo, sid);
+    return { cod: codigo, bloco: { compacto: montarBlocoOk(p), completo: montarBlocoOk({ ...p, completo: true }) }, titulo: 'Aba', nome: 'aba' };
+  };
+  const vencido = (codigo, sid = 'aba-1') => {
+    const linha = 'Expirou às 12:30 sem resposta.';
+    return { texto: montarBlocoOkFechado({ ...pedidoOk(codigo, sid), linha }), some: false, forte: linha, botoes: [[{ texto: '🔄 Tentar novamente', dados: `r:${codigo}` }]] };
+  };
+  // A fala X dele -> a resposta da aba em cima de X (e as vozes em cima de X). Devolve o id da tela.
+  async function respondida(k, sid, x, final, vozes = []) {
+    const { canal, e } = k;
+    canal.mensagemDoDono(e, x);
+    canal.falaRecebida(e, { sessionId: sid, titulo: 'Aba', fala: 'publica', hora: iso(k.relogio.t), messageIdDono: x });
+    canal.resposta(e, parou(sid, final), 'Aba', { citar: x });
+    await canal.drenar(e);
+    for (const v of vozes) canal.vozEnviada(e, sid, v, { citar: x });
+    return e.tg.chamados[sid].mensagem.messageId;
+  }
+
+  test('T29e 1. encerrado no limpo (pc e whatsapp) = a edicao de hoje, nada sai na hora (caso real 18/10 22:30: a resposta da central saiu da tela 44 s depois, antes de ele ler, porque ela parou de novo pra um recado); a interacao dele 60 s depois da edicao tira a tela, a voz e a fala; antes disso fica; no manter nada sai', async () => {
+    for (const motivo of ['pc', 'whatsapp']) {
+      const k = novo();
+      const tela = await respondida(k, 'aba-1', 70, FINAL, [905]);
+      k.tg.chamadas.length = 0;
+      k.relogio.t = T0 + 44 * 1000;
+      k.canal.encerrar(k.e, 'aba-1', iso(k.relogio.t), motivo);
+      await k.canal.drenar(k.e);
+      assert.deepEqual(passos(k.tg), [['editar', tela]], `${motivo}: o encerrado edita a tela e nada sai`);
+      assert.equal(k.e.tg.chamados['aba-1'].versao.estado, 'encerrado', motivo);
+      k.tg.chamadas.length = 0;
+      k.relogio.t = T0 + 103 * 1000; // 59 s depois da edicao
+      assert.equal(k.canal.vistasSemNada(k.e), 0, `${motivo}: 59 s depois da edicao fica`);
+      await k.canal.drenar(k.e);
+      assert.deepEqual(apagados(k.tg), [], motivo);
+      k.relogio.t = T0 + 105 * 1000; // 61 s depois da edicao
+      assert.equal(k.canal.vistasSemNada(k.e), 1, motivo);
+      await k.canal.drenar(k.e);
+      assert.deepEqual(apagados(k.tg).sort(), [70, 905, tela].sort(), `${motivo}: a tela, a voz e a fala saem juntas`);
+      assert.equal(k.e.tg.chamados['aba-1'], undefined, `${motivo}: o chamado sai com a tela`);
+    }
+    const m = novo({ resolvidas: 'manter' });
+    const tela = await respondida(m, 'aba-1', 70, FINAL, [905]);
+    m.tg.chamadas.length = 0;
+    m.canal.encerrar(m.e, 'aba-1', iso(T0 + 5 * MIN), 'pc');
+    await m.canal.drenar(m.e);
+    assert.deepEqual(passos(m.tg), [['editar', tela]], 'manter: o encerrado edita a tela');
+    assert.equal(m.e.tg.chamados['aba-1'].versao.estado, 'encerrado');
+    m.relogio.t = T0 + 10 * MIN;
+    assert.equal(m.canal.vistasSemNada(m.e), 0, 'manter: nada sai');
+  });
+
+  test('T29b 2. excecoes do encerrado no limpo = como hoje: o OK vencido com o botao (edita, o bloco fica), o encerrar guardado com o OK aberto (edita), a resposta que ainda nao saiu (pc: ela sai)', async () => {
+    const a = novo({ roteiro: soClassico() });
+    a.canal.resposta(a.e, parou('aba-1'), 'Aba');
+    await a.canal.drenar(a.e); // 501
+    a.canal.okAbriu(a.e, 'aba-1', okDe('ABC234'));
+    await a.canal.drenar(a.e); // 601
+    a.canal.okFechou(a.e, 'ABC234', vencido('ABC234'));
+    await a.canal.drenar(a.e);
+    const n = a.tg.chamadas.length;
+    a.canal.encerrar(a.e, 'aba-1', iso(T0 + 40 * MIN), 'pc');
+    await a.canal.drenar(a.e);
+    assert.deepEqual(passos(a.tg).slice(n), [['editar', 601]], 'o vencido com o botao: o encerrado edita e o bloco fica');
+    assert.equal(a.e.tg.chamados['aba-1'].ok.cod, 'ABC234');
+    a.relogio.t += 10 * MIN;
+    assert.equal(a.canal.vistasSemNada(a.e), 0, 'o vencido com o botao espera ele: nunca sai pela regra dos 60 s');
+
+    const b = novo({ roteiro: soClassico() });
+    b.canal.resposta(b.e, parou('aba-1'), 'Aba');
+    await b.canal.drenar(b.e);
+    b.canal.okAbriu(b.e, 'aba-1', okDe('ABC234'));
+    await b.canal.drenar(b.e); // 601
+    b.canal.encerrar(b.e, 'aba-1', iso(T0 + 5 * MIN), 'pc');
+    assert.ok(b.e.tg.chamados['aba-1'].encerrarDepois, 'guardado');
+    const nb = b.tg.chamadas.length;
+    assert.equal(b.canal.okFechou(b.e, 'ABC234', { some: true }), true);
+    await b.canal.drenar(b.e);
+    assert.deepEqual(passos(b.tg).slice(nb), [['editar', 601]], 'o guardado: o encerrado edita (como hoje)');
+    assert.equal(b.e.tg.chamados['aba-1'].versao.estado, 'encerrado');
+
+    const c = novo();
+    c.canal.aviso(c.e, parou('aba-1', SEM), 'Aba');
+    await c.canal.drenar(c.e); // 501
+    c.canal.resposta(c.e, parou('aba-1', SEM), 'Aba');
+    c.canal.encerrar(c.e, 'aba-1', iso(T0 + 5 * MIN), 'pc');
+    await c.canal.drenar(c.e);
+    assert.deepEqual(passos(c.tg).slice(1), [['enviar', false], ['apagar', 501]], 'T27: a resposta que nao saiu sai');
+  });
+
+  test('T29b 3. resposta sem pergunta na tela ha 61 s + interacao dele = sai no mesmo passo (a fala dele em cima tambem), 1 log sem texto; ha 59 s = fica', async () => {
+    const k = novo();
+    const { canal, tg, e, relogio, logs } = k;
+    const tela = await respondida(k, 'aba-1', 70, SEM);
+    tg.chamadas.length = 0;
+    relogio.t = T0 + 59 * 1000;
+    assert.equal(canal.vistasSemNada(e), 0);
+    await canal.drenar(e);
+    assert.deepEqual(apagados(tg), [], '59 s: fica');
+    relogio.t = T0 + 61 * 1000;
+    assert.equal(canal.vistasSemNada(e), 1);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', tela], ['apagar', 70]]);
+    assert.equal(e.tg.chamados['aba-1'], undefined, 'o chamado sai com a tela');
+    assert.ok(logs.includes(`telegram ${VISTA('aba-1', tela)}`), logs.join('\n'));
+    assert.ok(!logs.some((l) => l.includes('Publiquei')), 'log sem texto');
+    assert.equal(canal.vistasSemNada(e), 0, 'nada mais na tela');
+  });
+
+  test('T29b 4. ficam: aviso com opcao, aviso com pergunta, OK aberto, OK vencido com o botao e o painel', async () => {
+    const k = novo({ roteiro: soClassico() });
+    const { canal, tg, e, relogio } = k;
+    canal.aviso(e, parou('aba-a'), 'A'); // opcoes
+    canal.aviso(e, parou('aba-b', 'Terminei a revisão.\n\nPublico agora?'), 'B'); // pergunta em negrito
+    canal.aviso(e, parou('aba-c', 'Terminei a revisão e sigo depois do seu OK, que continua com você.'), 'C'); // o que esta com ele
+    canal.okAbriu(e, 'aba-d', okDe('ABC234', 'aba-d')); // OK aberto
+    canal.okAbriu(e, 'aba-v', okDe('DEF567', 'aba-v'));
+    canal.painel(e, { hora: iso(T0), modoRua: true, abertas: 3, esperando: [], trabalhando: [], paradas: [] }, { citar: 80 });
+    await canal.drenar(e);
+    canal.okFechou(e, 'DEF567', vencido('DEF567', 'aba-v'));
+    await canal.drenar(e);
+    relogio.t = T0 + 10 * MIN;
+    tg.chamadas.length = 0;
+    assert.equal(canal.vistasSemNada(e), 0);
+    await canal.drenar(e);
+    assert.deepEqual(tg.chamadas, [], 'nada sai');
+  });
+
+  test('T29b 5. a mensagem do proprio toque fica nesse passo e sai na interacao seguinte (Mais informações e toque velho); a edicao do "Mais informações" nao conta como vista', async () => {
+    const k = novo();
+    const { canal, tg, e, relogio } = k;
+    const tela = await respondida(k, 'aba-1', 70, LONGO);
+    relogio.t = T0 + 61 * 1000;
+    assert.equal(canal.abrir(e, 'aba-1'), true);
+    assert.equal(canal.vistasSemNada(e, { tocada: tela }), 0);
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editar', tela]], 'o toque so abre');
+    relogio.t += 5000;
+    assert.equal(canal.vistasSemNada(e), 1, 'a interacao seguinte: sai (o "Mais informações" nao renovou a hora)');
+    await canal.drenar(e);
+    assert.deepEqual(apagados(tg), [tela, 70]);
+
+    const v = novo();
+    const tela2 = await respondida(v, 'aba-1', 70, SEM);
+    v.relogio.t = T0 + 2 * MIN;
+    assert.equal(v.canal.vistasSemNada(v.e, { tocada: tela2 }), 0, 'toque velho nela: fica nesse passo');
+    assert.equal(v.canal.vistasSemNada(v.e, { tocada: 999 }), 1, 'toque em outra: sai');
+  });
+
+  test('T29b 5c. o "Mais informações" da situacao tambem nao renova a hora: fica no passo do toque e sai na interacao seguinte', async () => {
+    const k = novo();
+    const { canal, tg, e, relogio } = k;
+    canal.situacao(e, 'aba-2', { titulo: 'Ana', situacao: 'Parada.', final: LONGO });
+    await canal.drenar(e);
+    const u = e.tg.situacao.mensagem.messageId;
+    relogio.t = T0 + 61 * 1000;
+    assert.equal(canal.abrirSituacao(e), true);
+    assert.equal(canal.vistasSemNada(e, { tocada: u }), 0);
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editar', u]]);
+    relogio.t += 5000;
+    assert.equal(canal.vistasSemNada(e), 1);
+    await canal.drenar(e);
+    assert.deepEqual(apagados(tg), [u]);
+  });
+
+  test('T29b 5b. a edicao vinda da aba/porteiro renova a hora (o OK que fecha e sai da mensagem): 61 s depois do envio e 11 s depois da edicao = fica', async () => {
+    const k = novo({ roteiro: soClassico() });
+    const { canal, tg, e, relogio } = k;
+    canal.resposta(e, parou('aba-1', SEM), 'Aba');
+    canal.okAbriu(e, 'aba-1', okDe('ABC234'));
+    await canal.drenar(e); // 601 (a resposta e o OK juntos)
+    const tela = e.tg.chamados['aba-1'].mensagem.messageId;
+    relogio.t = T0 + 50 * 1000;
+    canal.okFechou(e, 'ABC234', { some: true });
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg).at(-1), ['editar', tela]);
+    relogio.t = T0 + 61 * 1000;
+    assert.equal(canal.vistasSemNada(e), 0, 'editada ha 11 s');
+    relogio.t = T0 + 111 * 1000;
+    assert.equal(canal.vistasSemNada(e), 1, 'editada ha 61 s');
+  });
+
+  test('T29b 6. a linha do sistema e a situacao sem pergunta saem pela mesma regra (com o rotulo deles no log); a do sistema que volta nao repete a linha que saiu; a situacao nao volta', async () => {
+    const k = novo();
+    const { canal, tg, e, relogio, logs } = k;
+    canal.mensagemDoDono(e, 71);
+    canal.sistema(e, 'Modo rua ligado.', { citar: 71 });
+    canal.situacao(e, 'aba-2', { titulo: 'Ana', situacao: 'Fechada.', final: SEM });
+    await canal.drenar(e);
+    const s = e.tg.sistema.mensagem.messageId;
+    const u = e.tg.situacao.mensagem.messageId;
+    relogio.t = T0 + 61 * 1000;
+    tg.chamadas.length = 0;
+    assert.equal(canal.vistasSemNada(e), 2);
+    await canal.drenar(e);
+    assert.deepEqual(apagados(tg).sort(), [71, s, u].sort(), JSON.stringify(passos(tg)));
+    assert.ok(!tg.chamadas.some((c) => c.metodo === 'enviar' || c.metodo === 'editar'), 'nada novo nem editado');
+    assert.ok(logs.includes(`telegram ${VISTA('sistema', s)}`), logs.join('\n'));
+    assert.ok(logs.includes(`telegram ${VISTA('situacao', u)}`), logs.join('\n'));
+    // a do sistema em dia sem tela passa pelo disco (completarTg) e o drenar seguinte nao a manda de novo
+    e.tg = completarTg(JSON.parse(JSON.stringify(e.tg)));
+    assert.equal(e.tg.sistema.semTela, e.tg.sistema.versaoId);
+    canal.mensagemDoDono(e, 72);
+    canal.painel(e, { hora: iso(T0), modoRua: true, abertas: 0, esperando: [], trabalhando: [], paradas: [] }, { citar: 72 });
+    e.tg.saida.push({ sessionId: 'sistema', entrouEm: iso(relogio.t), falhas: 0 });
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', true]], 'so o painel sai');
+    tg.chamadas.length = 0;
+    canal.sistema(e, 'Modo rua desligado.');
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['enviar', true]], 'a linha nova = mensagem nova');
+    assert.ok(tg.chamadas[0].args[0].html.includes('Modo rua desligado.'));
+    assert.ok(!tg.chamadas[0].args[0].html.includes('Modo rua ligado.'), 'a linha que saiu nao volta');
+  });
+
+  test('T29b 6b. a situacao substituida que ficou como mensagem da aba (T26d) sai pela regra; com pergunta, fica', async () => {
+    for (const [final, sai] of [[SEM, true], ['Terminei.\n\nPublico?', false]]) {
+      const k = novo();
+      const { canal, tg, e, relogio } = k;
+      canal.situacao(e, 'aba-2', { titulo: 'Ana', situacao: 'Parada.', final });
+      await canal.drenar(e);
+      const u1 = e.tg.situacao.mensagem.messageId;
+      canal.situacao(e, 'aba-3', { titulo: 'Bia', situacao: 'Parada.', final: 'Terminei.\n\nPublico?' });
+      await canal.drenar(e);
+      assert.equal(e.tg.mensagens[u1].exSituacao, true, 'ficou como mensagem da aba');
+      relogio.t = T0 + 61 * 1000;
+      tg.chamadas.length = 0;
+      assert.equal(canal.vistasSemNada(e), sai ? 1 : 0);
+      await canal.drenar(e);
+      assert.deepEqual(apagados(tg), sai ? [u1] : []);
+    }
+  });
+
+  test('T29b 7. no manter nada sai; ir pro manter com a saida marcada = a mensagem so perde os botoes', async () => {
+    const m = novo({ resolvidas: 'manter' });
+    await respondida(m, 'aba-1', 70, SEM);
+    m.relogio.t = T0 + 5 * MIN;
+    m.tg.chamadas.length = 0;
+    assert.equal(m.canal.vistasSemNada(m.e), 0);
+    await m.canal.drenar(m.e);
+    assert.deepEqual(m.tg.chamadas, []);
+
+    const k = novo();
+    const tela = await respondida(k, 'aba-1', 70, SEM);
+    k.relogio.t = T0 + 5 * MIN;
+    assert.equal(k.canal.vistasSemNada(k.e), 1);
+    k.canal.definirResolvidas(k.e, 'manter');
+    k.tg.chamadas.length = 0;
+    await k.canal.drenar(k.e);
+    assert.deepEqual(passos(k.tg), [['editarBotoes', tela]], 'nada mais sai');
+  });
+
+  test('T29b 8. mais de 48 h = fica (nem tenta); o apagar que volta "velha" nao vira "movido"', async () => {
+    const k = novo();
+    await respondida(k, 'aba-1', 70, SEM);
+    k.relogio.t = T0 + 48 * H + MIN;
+    k.tg.chamadas.length = 0;
+    assert.equal(k.canal.vistasSemNada(k.e), 0);
+    await k.canal.drenar(k.e);
+    assert.deepEqual(k.tg.chamadas, [], 'nem tenta');
+
+    const v = novo({ roteiro: { apagar: [{ ok: false, velha: true, erro: 'message can\'t be deleted' }] } });
+    v.canal.sistema(v.e, 'Modo rua ligado.');
+    await v.canal.drenar(v.e);
+    const s = v.e.tg.sistema.mensagem.messageId;
+    v.relogio.t = T0 + 61 * 1000;
+    v.tg.chamadas.length = 0;
+    assert.equal(v.canal.vistasSemNada(v.e), 1);
+    await v.canal.drenar(v.e);
+    assert.deepEqual(passos(v.tg), [['apagar', s]], 'sem editar pra "movido"');
+  });
+
+  test('T29b 9. T30: a fala recusada (falaFica) nunca sai, nem quando a linha do sistema que a cita sai pela regra', async () => {
+    const k = novo();
+    const { canal, tg, e, relogio } = k;
+    canal.mensagemDoDono(e, 71);
+    canal.sistema(e, 'O OK se responde nos botões.', { citar: 71, notificar: true, falaFica: true });
+    await canal.drenar(e);
+    const s = e.tg.sistema.mensagem.messageId;
+    relogio.t = T0 + 61 * 1000;
+    tg.chamadas.length = 0;
+    assert.equal(canal.vistasSemNada(e), 1);
+    await canal.drenar(e);
+    assert.deepEqual(apagados(tg), [s], 'a fala 71 fica');
+  });
+});
+
+// ---------- T29c: "Menos informações" (PLANO-TELEGRAM.md, "T29c") ----------
+// Pedido do dono (18/10/2026 19:04, audio no Telegram): «eu queria que tivesse um botão de comprimir de volta, a não ser
+// quando tem um botão de pergunta e resposta». O toque no "Menos informações" (m:<ID>) volta a MESMA mensagem pro
+// compacto por edicao (sem notificar, sem ida ate a aba), com o "Mais informações" de volta; abre e fecha quantas vezes
+// ele quiser. Vale no aviso/resposta (versao nova com completo false, mesmo chamadoId) e na situacao (inclusive a de aba
+// trabalhando). Toque velho (ja compacta, outro chamadoId, aberta com opcao, o OK na mensagem) = obsoleto.
+
+describe('T29c. recolher: o "Menos informações" no canal', () => {
+  const LONGO = 'Publiquei o site.\n\nO deploy levou 2 min e o cache foi limpo.\n\nTudo conferido no ar.';
+  const MENOS = (id) => [[{ texto: 'Menos informações', dados: `m:${id}` }]];
+  const MAIS = (id) => [[{ texto: 'Mais informações', dados: `i:${id}` }]];
+  const pedidoOk = (codigo) => ({
+    v: 1, codigo, sessionId: 'aba-1', titulo: 'Aba', tipo: 'publicacao', acao: 'subir o site X em produção', destinatarios: null,
+    criadoEm: iso(T0), expiraEm: iso(T0 + 30 * MIN), status: 'pendente',
+  });
+  const okDe = (codigo) => ({ cod: codigo, bloco: { compacto: montarBlocoOk(pedidoOk(codigo)), completo: montarBlocoOk({ ...pedidoOk(codigo), completo: true }) }, titulo: 'Aba', nome: 'aba' });
+
+  test('chamado sem opcao: abrir -> o "Menos informações"; lerToque m: = menos; recolher = versao nova compacta (mesmo chamadoId), edicao sem notificar com o "Mais informações"; abre e fecha de novo', async () => {
+    for (const estado of ['aviso', 'resposta']) {
+      const { canal, tg, e, logs, relogio } = novo();
+      canal[estado](e, parou('aba-1', LONGO), 'Aba');
+      await canal.drenar(e); // 501, ABCDEFGH
+      const c = e.tg.chamados['aba-1'];
+      const compacto = structuredClone(c.versao);
+      assert.equal(canal.abrir(e, 'aba-1'), true);
+      tg.chamadas.length = 0;
+      await canal.drenar(e);
+      assert.deepEqual(passos(tg), [['editar', 501]]);
+      assert.deepEqual(tg.chamadas[0].args[1].botoes, MENOS('ABCDEFGH'), 'aberto sem opcao: o "Menos informações"');
+      assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { sessionId: 'aba-1', acao: 'menos' });
+      assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 999), { obsoleto: true }, 'outra mensagem');
+      assert.deepEqual(canal.lerToque(e, 'm:JKMNPQRS', 501), { obsoleto: true }, 'outro chamadoId');
+      const aberto = structuredClone(c.versao);
+      relogio.t = T0 + 2 * MIN;
+      assert.equal(canal.recolher(e, 'aba-1'), true);
+      assert.ok(c.versao.id > aberto.id, 'versao nova (++seq)');
+      assert.equal(c.versao.id, e.tg.seq);
+      assert.deepEqual({ ...c.versao, id: compacto.id }, compacto, 'os mesmos campos, completo false');
+      assert.equal(c.versao.chamadoId, 'ABCDEFGH');
+      assert.equal(c.descer, false, 'edicao: nada desce');
+      assert.equal(c.mudouEm, iso(T0 + 2 * MIN));
+      assert.equal(e.tg.mensagens[501].porToque, c.versao.id, 'T29b: a edicao do toque nao renova a hora');
+      assert.ok(logs.includes(`telegram aba-1 ${estado}: recolhido (compacto)`), logs.join('\n'));
+      assert.ok(!logs.some((l) => l.includes('Publiquei')), 'log sem texto');
+      tg.chamadas.length = 0;
+      await canal.drenar(e);
+      assert.deepEqual(passos(tg), [['editar', 501]], 'sem enviar, sem apagar');
+      const ed = tg.chamadas[0].args[1];
+      assert.deepEqual(ed, { ...montarChamado(compacto), formato: 'rich' });
+      assert.ok(!('silencioso' in ed), 'edicao nao notifica');
+      assert.deepEqual(ed.botoes, MAIS('ABCDEFGH'), 'o "Mais informações" de volta');
+      assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { obsoleto: true }, 'ja compacta = toque velho');
+      const antes = structuredClone(e.tg);
+      assert.equal(canal.recolher(e, 'aba-1'), false, 'ja compacta');
+      assert.deepEqual(e.tg, antes, 'nada muda');
+      // abre e fecha de novo
+      assert.deepEqual(canal.lerToque(e, 'i:ABCDEFGH', 501), { sessionId: 'aba-1', acao: 'informacoes' });
+      assert.equal(canal.abrir(e, 'aba-1'), true);
+      await canal.drenar(e);
+      assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { sessionId: 'aba-1', acao: 'menos' });
+      assert.equal(canal.recolher(e, 'aba-1'), true);
+      tg.chamadas.length = 0;
+      await canal.drenar(e);
+      assert.deepEqual(passos(tg), [['editar', 501]]);
+      assert.deepEqual(tg.chamadas[0].args[1].botoes, MAIS('ABCDEFGH'));
+    }
+  });
+
+  test('aberto com opcao: sem o "Menos informações", m: = obsoleto e recolher = false; outros estados, sem chamado e o OK na mensagem = false', async () => {
+    const { canal, tg, e } = novo();
+    canal.aviso(e, parou('aba-1'), 'Aba'); // FINAL: com opcoes
+    await canal.drenar(e);
+    assert.equal(canal.abrir(e, 'aba-1'), true);
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(tg.chamadas[0].args[1].botoes.flat().map((b) => b.dados), ['o:ABCDEFGH:0', 'o:ABCDEFGH:1']);
+    assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { obsoleto: true });
+    const antes = structuredClone(e.tg);
+    assert.equal(canal.recolher(e, 'aba-1'), false);
+    assert.deepEqual(e.tg, antes, 'nada muda');
+    assert.equal(canal.recolher(e, 'aba-sem-chamado'), false);
+    // o OK dentro da mensagem: fica de fora
+    const k = novo();
+    k.canal.resposta(k.e, parou('aba-1', LONGO), 'Aba', { completo: true });
+    k.canal.okAbriu(k.e, 'aba-1', okDe('ABC234'));
+    await k.canal.drenar(k.e);
+    const id = k.e.tg.chamados['aba-1'].mensagem.messageId;
+    assert.ok(!JSON.stringify(k.tg.chamadas.map((x) => x.args.at(-1).botoes ?? null)).includes('m:'), 'sem o "Menos informações"');
+    assert.deepEqual(k.canal.lerToque(k.e, `m:${k.e.tg.chamados['aba-1'].versao.chamadoId}`, id), { obsoleto: true });
+    assert.equal(k.canal.recolher(k.e, 'aba-1'), false);
+    // encerrado (manter: a tela fica) e enviando
+    const m = novo({ resolvidas: 'manter' });
+    m.canal.aviso(m.e, parou('a-enc', LONGO), 'Enc');
+    await m.canal.drenar(m.e);
+    m.canal.abrir(m.e, 'a-enc');
+    m.canal.encerrar(m.e, 'a-enc', iso(T0), 'pc');
+    m.canal.falaRecebida(m.e, { sessionId: 'a-env', titulo: 'Env', fala: 'vai', hora: iso(T0) });
+    for (const sid of ['a-enc', 'a-env']) assert.equal(m.canal.recolher(m.e, sid), false, sid);
+  });
+
+  test('situacao: aberta sem opcao -> "Menos informações"; recolherSituacao = edicao compacta sem notificar com o "Mais informações"; m: velho = obsoleto; abre e fecha de novo', async () => {
+    const { canal, tg, e, logs } = novo();
+    assert.equal(canal.recolherSituacao(e), false, 'sem situacao');
+    canal.situacao(e, 'S1', { titulo: 'Faro', situacao: 'Parada.', final: LONGO }, { citar: 77 });
+    await canal.drenar(e); // 501, ABCDEFGH
+    assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { obsoleto: true }, 'compacta: toque velho');
+    assert.equal(canal.recolherSituacao(e), false, 'compacta');
+    assert.equal(canal.abrirSituacao(e), true);
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(tg.chamadas[0].args[1].botoes, MENOS('ABCDEFGH'));
+    assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { sessionId: 'S1', acao: 'menos', situacao: true });
+    assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 502), { obsoleto: true });
+    const s = e.tg.situacao;
+    const v0 = s.versaoId;
+    assert.equal(canal.recolherSituacao(e), true);
+    assert.equal(s.completo, false);
+    assert.ok(s.versaoId > v0);
+    assert.equal(s.descer, false);
+    assert.equal(s.chamadoId, 'ABCDEFGH', 'o id fica');
+    assert.equal(e.tg.mensagens[501].porToque, s.versaoId, 'T29b: a edicao do toque nao renova a hora');
+    assert.ok(logs.includes('telegram situacao: recolhida (compacto)'), logs.join('\n'));
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editar', 501]]);
+    const ed = tg.chamadas[0].args[1];
+    const compacta = montarSituacao({ titulo: 'Faro', situacao: 'Parada.', final: LONGO, chamadoId: 'ABCDEFGH' });
+    assert.equal(ed.html, compacta.html);
+    assert.deepEqual(ed.botoes, MAIS('ABCDEFGH'));
+    assert.ok(!('silencioso' in ed));
+    assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { obsoleto: true }, 'ja compacta');
+    assert.equal(canal.recolherSituacao(e), false);
+    assert.equal(canal.abrirSituacao(e), true, 'abre de novo');
+    await canal.drenar(e);
+    assert.equal(canal.recolherSituacao(e), true, 'e fecha de novo');
+  });
+
+  test('situacao: aberta com opcao = sem o Menos (m: obsoleto, recolherSituacao false); a de aba trabalhando (opcoes em texto) abre e fecha', async () => {
+    const { canal, tg, e } = novo();
+    canal.situacao(e, 'S1', { titulo: 'Faro', situacao: 'Parada.', final: FINAL }, { citar: 77 });
+    await canal.drenar(e);
+    assert.equal(canal.abrirSituacao(e), true);
+    await canal.drenar(e);
+    assert.ok(!JSON.stringify(tg.chamadas.at(-1).args[1].botoes).includes('m:'));
+    assert.deepEqual(canal.lerToque(e, 'm:ABCDEFGH', 501), { obsoleto: true });
+    assert.equal(canal.recolherSituacao(e), false);
+    // T16: a da aba trabalhando
+    canal.situacao(e, 'S2', { titulo: 'Aula', situacao: 'Trabalhando agora.', final: FINAL, trabalhando: true }, { citar: 78 });
+    await canal.drenar(e); // 502, JKMNPQRS
+    assert.equal(canal.abrirSituacao(e), true);
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(tg.chamadas[0].args[1].botoes, MENOS('JKMNPQRS'));
+    assert.deepEqual(canal.lerToque(e, 'm:JKMNPQRS', 502), { sessionId: 'S2', acao: 'menos', situacao: true });
+    assert.equal(canal.recolherSituacao(e), true);
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editar', 502]]);
+    assert.deepEqual(tg.chamadas[0].args[1].botoes, MAIS('JKMNPQRS'));
+  });
+});
+
+// ---------- T29d: a busca no painel (PLANO-TELEGRAM.md, "T29d") ----------
+// Pedido do dono (18/10/2026 19:04, audio no Telegram): «uma função de buscar alguma palavra dentro daquela própria
+// mensagem». O painel sai com o "Buscar"; o toque manda "Qual palavra?" com resposta forcada; a palavra edita o painel
+// (so as que batem) com o "Limpar busca"; a pergunta sai do chat nos 2 modos; o filtro fica nas edicoes do painel vivo
+// ate o Limpar, um painel novo ou 15 min sem uso.
+
+describe('T29d. a busca no painel (canal)', () => {
+  const temLog = (logs, x) => logs.some((l) => l.endsWith(x)); // o log do canal leva o prefixo 'telegram '
+  const BUSCAR = [[{ texto: 'Buscar', dados: 'p:b' }]];
+  const LIMPAR = [[{ texto: 'Limpar busca', dados: 'p:l' }]];
+  const PERGUNTA = { classico: 'Qual palavra?', respostaForcada: 'nome da aba ou palavra', silencioso: true };
+  async function comPainel(o) {
+    const k = novo(o);
+    k.canal.painel(k.e, DADOS, { citar: 90 });
+    await k.canal.drenar(k.e); // 501 = o painel
+    return k;
+  }
+
+  test('o painel sai com o botao "Buscar"; o toque (pedirBusca) manda "Qual palavra?" com resposta forcada, fora das mensagens do bot', async () => {
+    const { canal, tg, e, logs, relogio } = await comPainel();
+    assert.deepEqual(tg.chamadas[0].args[0], { ...montarPainel(DADOS), botoes: BUSCAR, silencioso: true, responderA: 90 });
+    assert.equal(canal.perguntaDaBusca(e), null);
+    canal.pedirBusca(e);
+    await canal.drenar(e); // 502 = a pergunta
+    assert.deepEqual(tg.chamadas[1], { metodo: 'enviar', args: [PERGUNTA] });
+    assert.equal(canal.perguntaDaBusca(e), 502);
+    assert.equal(e.tg.mensagens[502], undefined, 'a pergunta nao e mensagem de aba (resposta em cima dela nao vai pra aba)');
+    assert.equal(canal.sessaoDaMensagem(e, 502), null);
+    assert.ok(temLog(logs, 'painel: pergunta da busca enviada (mensagem 502)'), logs.join('\n'));
+    assert.equal(canal.lerToque(e, 'p:b', 501).obsoleto, true, 'o lerToque nao trata o botao do painel');
+    relogio.t += 15 * MIN - 1;
+    assert.equal(canal.perguntaDaBusca(e), 502);
+    relogio.t += 1;
+    assert.equal(canal.perguntaDaBusca(e), null, 'vencida nao vale, mesmo antes do vencerBusca');
+  });
+
+  test('a palavra: a pergunta sai, o painel e EDITADO (sem mensagem nova) so com as que batem e o "Limpar busca"; log sem a palavra', async () => {
+    const { canal, tg, e, logs } = await comPainel();
+    canal.pedirBusca(e);
+    await canal.drenar(e); // 502
+    tg.chamadas.length = 0;
+    assert.equal(canal.buscar(e, 'OUTRA'), 1);
+    assert.equal(canal.perguntaDaBusca(e), null);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', 502], ['editar', 501]]);
+    assert.deepEqual(tg.chamadas[1].args[1], { ...montarPainel(DADOS, { busca: 'OUTRA' }), botoes: LIMPAR, formato: 'rich' });
+    assert.ok(tg.chamadas[1].args[1].html.startsWith('<h3>Busca: «OUTRA» (1 aba)</h3>'));
+    assert.ok(temLog(logs, 'painel: busca com 1 abas'), logs.join('\n'));
+    assert.ok(!logs.join('\n').toLowerCase().includes('outra'), 'a palavra nunca vai pro log');
+    // o painel vivo (T12) mantem o filtro
+    tg.chamadas.length = 0;
+    assert.equal(canal.atualizarPainel(e, { ...DADOS, abertas: 5, paradas: ['Outra', 'Mais outra', 'Nada'] }), true);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editar', 501]]);
+    assert.ok(tg.chamadas[0].args[1].html.startsWith('<h3>Busca: «OUTRA» (2 abas)</h3>'), tg.chamadas[0].args[1].html);
+    assert.deepEqual(tg.chamadas[0].args[1].botoes, LIMPAR);
+    assert.deepEqual(canal.painelNaTela(e).paradas, ['Outra', 'Mais outra', 'Nada'], 'os dados guardados sao os inteiros');
+  });
+
+  test('"Limpar busca" volta ao painel inteiro e o "Buscar" volta; sem busca = false e nada na fila', async () => {
+    const { canal, tg, e, logs } = await comPainel();
+    assert.equal(canal.limparBusca(e), false);
+    assert.deepEqual(e.tg.saida, []);
+    canal.buscar(e, 'aba');
+    await canal.drenar(e);
+    tg.chamadas.length = 0;
+    assert.equal(canal.limparBusca(e), true);
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['editar', 501]]);
+    assert.deepEqual(tg.chamadas[0].args[1], { ...montarPainel(DADOS), botoes: BUSCAR, formato: 'rich' });
+    assert.ok(temLog(logs, 'painel: busca limpa'));
+    assert.equal(e.tg.painel.busca, undefined);
+  });
+
+  test('um painel novo pedido (/painel) volta ao inteiro; sem painel na tela a busca sai como mensagem nova filtrada', async () => {
+    const { canal, tg, e } = await comPainel();
+    canal.buscar(e, 'aba');
+    await canal.drenar(e);
+    canal.painel(e, DADOS, { citar: 91 });
+    await canal.drenar(e);
+    const nova = tg.chamadas.find((c) => c.metodo === 'enviar' && c.args[0].responderA === 91);
+    assert.deepEqual(nova.args[0], { ...montarPainel(DADOS), botoes: BUSCAR, silencioso: true, responderA: 91 });
+    // sem painel na tela
+    const k = novo();
+    assert.equal(k.canal.buscar(k.e, 'aba'), null, 'sem painel e sem dados = nada');
+    assert.deepEqual(k.e.tg.saida, []);
+    assert.equal(k.canal.buscar(k.e, 'aba', { dados: DADOS }), 1);
+    await k.canal.drenar(k.e);
+    assert.deepEqual(passos(k.tg), [['enviar', true]]);
+    assert.deepEqual(k.tg.chamadas[0].args[0], { ...montarPainel(DADOS, { busca: 'aba' }), botoes: LIMPAR, silencioso: true });
+    for (const ruim of [null, '', '   ', 3]) assert.throws(() => k.canal.buscar(k.e, ruim), TypeError);
+  });
+
+  test('15 min sem uso: a busca volta ao inteiro; a pergunta sem resposta sai e nada muda (nos 2 modos)', async () => {
+    for (const resolvidas of ['apagar', 'manter']) {
+      const { canal, tg, e, logs, relogio } = await comPainel({ resolvidas });
+      canal.buscar(e, 'aba');
+      canal.pedirBusca(e);
+      await canal.drenar(e); // edita 501 e manda a pergunta 502
+      tg.chamadas.length = 0;
+      relogio.t += 15 * MIN - 1;
+      canal.vencerBusca(e);
+      assert.deepEqual(e.tg.saida, [], 'antes dos 15 min nada');
+      relogio.t += 1;
+      canal.vencerBusca(e);
+      assert.equal(canal.perguntaDaBusca(e), null);
+      await canal.drenar(e);
+      assert.deepEqual(passos(tg), [['apagar', 502], ['editar', 501]], resolvidas);
+      assert.deepEqual(tg.chamadas[1].args[1].botoes, BUSCAR);
+      assert.ok(temLog(logs, 'painel: busca limpa') && temLog(logs, 'painel: pergunta da busca sem resposta em 15 min; sai'), logs.join('\n'));
+    }
+  });
+
+  test('a pergunta sai nos 2 modos quando a palavra chega (no manter tambem); a pergunta nova tira a anterior; estado do disco', async () => {
+    const { canal, tg, e } = await comPainel({ resolvidas: 'manter' });
+    canal.pedirBusca(e);
+    await canal.drenar(e); // 502
+    canal.pedirBusca(e);
+    await canal.drenar(e); // apaga 502, manda 503
+    assert.deepEqual(passos(tg).slice(1), [['enviar', true], ['apagar', 502], ['enviar', true]]);
+    assert.equal(canal.perguntaDaBusca(e), 503);
+    const disco = completarTg(JSON.parse(JSON.stringify(e.tg)));
+    assert.equal(disco.painel.pergunta.messageId, 503);
+    canal.buscar(e, 'aba');
+    const disco2 = completarTg(JSON.parse(JSON.stringify(e.tg)));
+    assert.deepEqual(disco2.painel.apagarPergunta, [503]);
+    assert.equal(disco2.painel.busca.palavra, 'aba');
+    tg.chamadas.length = 0;
+    await canal.drenar(e);
+    assert.deepEqual(passos(tg), [['apagar', 503], ['editar', 501]]);
   });
 });

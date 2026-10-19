@@ -9,7 +9,8 @@
  * de MB, qual e o titulo salvo, qual foi a ultima resposta e quais marcas ela tem. Uma copia so
  * dessas regras evita que hook e porteiro discordem sobre a mesma sessao.
  *
- * Contratos que o porteiro usa (nomes fixos): caminhos, acharRegistro, lerCauda, cabecaDaConversa (T8), tituloDe,
+ * Contratos que o porteiro usa (nomes fixos): caminhos, acharRegistro, lerCauda, cabecaDaConversa (T8), ultimoEntrypoint
+ * (T31), tituloDe,
  * ultimaResposta, respostaFresca, marcas, lerModoRua, anexarEvento, log.
  *
  * Seguranca: os arquivos `<pid>.<sha>.key` da pasta de registro sao SEGREDO. So nomes
@@ -160,6 +161,19 @@ function cabecaDaConversa(arquivo) {
     try { fs.closeSync(fd); } catch (_) { /* nada */ }
   }
   return out;
+}
+
+// T31 (PLANO-TELEGRAM.md, "T31"): o app em que a conversa vive AGORA = o `entrypoint` da ULTIMA linha que tem o campo
+// entre as linhas do fim (as do lerCauda). A cabeca (cabecaDaConversa) diz onde ela NASCEU: caso real 18/10/2026, uma
+// aba nasceu no Claude Desktop e seguiu 6 semanas no VS Code; pela cabeca, o porteiro recusava reabrir ("ela e do
+// Claude Desktop"). -> string | null (nenhuma linha do fim tem o campo: quem chama usa o da cabeca).
+function ultimoEntrypoint(linhas) {
+  if (!Array.isArray(linhas)) return null;
+  for (let i = linhas.length - 1; i >= 0; i--) {
+    const x = linhas[i];
+    if (x && typeof x === 'object' && typeof x.entrypoint === 'string' && x.entrypoint) return x.entrypoint;
+  }
+  return null;
 }
 
 // Titulo da aba: ultimo custom-title; senao name do registro quando o proprio dono nomeou; senao ultimo ai-title.
@@ -325,6 +339,7 @@ module.exports = {
   acharRegistro,
   lerCauda,
   cabecaDaConversa,
+  ultimoEntrypoint,
   tituloDe,
   ultimaResposta,
   respostaFresca,

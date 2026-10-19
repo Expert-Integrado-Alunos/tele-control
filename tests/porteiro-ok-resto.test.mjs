@@ -393,17 +393,15 @@ test('T7b2b 87d. EM CIMA da mensagem do pedido de OK (o gesto de citar do WhatsA
   }
 });
 
-test('T7b2b 87e (revisao da etapa D, item 15). QUALQUER texto em cima da mensagem aberta de um pedido de OK aberto, com o OK pelo botao ligado = a linha dos botoes em cima da mensagem dele, notificando; nunca vai pra central nem pra aba (nem com o nome da aba); OK desligado = o roteamento de hoje', async () => {
+// T30 (Eric 18/10/2026 19:43): o contrato do 87e mudou de sentido: o texto que nao e "sim"/"nao" em cima do pedido agora
+// vai pra aba do pedido como comentario (com a nota), nunca pra central nem vira a linha dos botoes.
+test('T7b2b 87e (revisao da etapa D, item 15; T30). texto que nao e "sim"/"nao" em cima da mensagem aberta de um pedido de OK aberto, com o OK pelo botao ligado = vai pra aba DO PEDIDO com a nota do comentario (nunca pra central, nem com o nome de outra aba), sem a linha dos botoes; OK desligado = o roteamento de hoje', async () => {
   for (const texto of ['beleza', 'o que vai sair?', 'ok', 'Faro: publica']) {
     const h = await cena87(OK_LIGADO);
     const u = msgTg(h, texto, { respondeA: msgDoOk(h) });
     await lerTg(h, [u]);
-    assert.deepEqual(linhasSistema(h), [TXT.okBotoes], texto);
-    assert.equal(h.entregas.length, 0, `${texto}: nada repassado (nem pra central nem pra aba)`);
-    const env = h.tg.de('enviar').map((x) => x.args[0]);
-    assert.equal(env.length, 1, texto);
-    assert.equal(env[0].responderA, mid(u), `${texto}: em cima da mensagem dele`);
-    assert.equal(env[0].silencioso, false, `${texto}: notifica`);
+    assert.ok(!linhasSistema(h).includes(TXT.okBotoes), texto);
+    assert.deepEqual(h.entregas.map((p) => [p.sessionId, p.texto, p.nota]), [['S1', texto, `Comentário em cima do pedido de OK ABC234: não é resposta ao OK; o OK só vale pelo botão e segue pendente.`]], `${texto}: pra aba do pedido`);
     assert.deepEqual(apagadas(h), [], `${texto}: a mensagem dele fica`);
   }
   // OK desligado com uma entrada aberta no estado (o OK foi desligado depois): o roteamento de hoje
@@ -417,7 +415,8 @@ test('T7b2b 87e (revisao da etapa D, item 15). QUALQUER texto em cima da mensage
 });
 
 test('T7i 117. passo 4 com o toque ja anotado (os botoes sairam no toque): "sim"/"não" solto ou qualquer texto em cima da mensagem do pedido = "Você já tocou em Sim às HH:MM. Pra desistir, ..." (Nao: "Você já tocou em Não às HH:MM."), em cima da mensagem dele, notificando, nada repassado e o toque fica; 2 pedidos: algum sem toque = a linha dos botoes; os 2 tocados = o toque mais recente', async () => {
-  for (const [acao, texto, citar] of [['sim', 'não', false], ['sim', 'espera', true], ['nao', 'sim', false], ['nao', 'sim', true]]) {
+  // T30: o "espera" em cima do pedido saiu daqui (texto que nao e "sim"/"nao" vira comentario pra aba: tests/porteiro-t30)
+  for (const [acao, texto, citar] of [['sim', 'não', false], ['sim', 'n', true], ['nao', 'sim', false], ['nao', 'sim', true]]) {
     const nome = `${acao} / ${texto} / ${citar ? 'em cima' : 'solto'}`;
     const h = await cena87(OK_LIGADO);
     const id = msgDoOk(h);

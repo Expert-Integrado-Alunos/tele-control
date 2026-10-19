@@ -159,3 +159,35 @@ test('pasta-temp 5. o sabotar roda o mutante com o TEMP numa pasta propria e apa
   assert.match(path.basename(tmpMutante), /^sessoes-wpp-sabotagem-/, `TEMP do mutante: ${tmpMutante}`);
   assert.equal(fs.existsSync(tmpMutante), false, 'o TEMP do mutante saiu com a sobra dele');
 });
+
+// 18/10/2026 (t30, mutantes 22-24): o mutante com erro de sintaxe derrubava o arquivo de teste ao carregar e contava como
+// VERMELHO sem teste nenhum pegar. Agora sai "MUTANTE QUEBRADO", nao roda, conta como ruim (e o --checar ja acusa).
+test('pasta-temp 5b. o sabotar recusa o mutante com erro de sintaxe (nunca conta como vermelho), no --checar tambem', { skip: SEM_SABOTAR }, () => {
+  const co = pastaTemp('sabotar-sintaxe-');
+  fs.mkdirSync(path.join(co, 'tests'));
+  const original = 'export const VALOR = 1; // um: comentario\n';
+  fs.writeFileSync(path.join(co, 'alvo.mjs'), original);
+  fs.writeFileSync(path.join(co, 'tests', 'alvo.test.mjs'), [
+    "import { test } from 'node:test';",
+    "import assert from 'node:assert/strict';",
+    "import { VALOR } from '../alvo.mjs';",
+    "test('alvo', () => assert.equal(VALOR, 1));",
+    '',
+  ].join('\n'));
+  const lista = path.join(co, 'lista.mjs');
+  // a ancora corta o comentario no meio: sobra ": comentario" depois do codigo novo
+  fs.writeFileSync(lista, [
+    "export const TESTES = { 'alvo.mjs': ['tests/alvo.test.mjs'] };",
+    "export const S = [['comentario cortado', 'alvo.mjs', [['VALOR = 1; // um', 'VALOR = 2,']]]];",
+    '',
+  ].join('\n'));
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  for (const extra of [[], ['--checar']]) {
+    const r = spawnSync(process.execPath, [SABOTAR, co, lista, ...extra], { encoding: 'utf8', timeout: 120000, env });
+    assert.match(r.stdout, /comentario cortado: MUTANTE QUEBRADO \(erro de sintaxe/, r.stdout + r.stderr);
+    assert.doesNotMatch(r.stdout, /VERMELHO|todas vermelhas|alvos conferidos/, r.stdout);
+    assert.match(r.stdout, /== 1 sabotagem\(ns\) sem pegar/, r.stdout);
+    assert.equal(fs.readFileSync(path.join(co, 'alvo.mjs'), 'utf8'), original, 'o alvo nao foi tocado');
+  }
+});

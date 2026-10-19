@@ -89,3 +89,17 @@ test('A1 3. botIdDaChave: o numero antes do 1o ":" ou null; nunca devolve o rest
   assert.equal(typeof r, 'number');
   assert.ok(!String(r).includes('SEGREDO'));
 });
+
+// T29a (PLANO-TELEGRAM.md, "T29a"; pedido do dono 18/10/2026 18:58, Telegram: «um botão no menu pra ligar ou desligar a
+// resposta por voz»): o /voz grava `voz.ligada`; na subida so `false` desliga (ausente ou outro valor = ligada).
+test('T29a. vozLigadaDoConfig: so voz.ligada === false desliga; ausente, outro valor, bloco torto ou cfg torto = ligada', async () => {
+  const { vozLigadaDoConfig } = await modulo();
+  assert.deepEqual(vozLigadaDoConfig({ voz: { ligada: false } }), { ligada: false });
+  assert.deepEqual(vozLigadaDoConfig({ voz: { nome: 'pt-BR-AntonioNeural', ligada: false } }), { ligada: false });
+  for (const cfg of [
+    {}, null, undefined, [], 'x', { voz: {} }, { voz: { ligada: true } }, { voz: { ligada: 'false' } }, { voz: { ligada: 0 } },
+    { voz: { ligada: null } }, { voz: 'desligada' }, { voz: [false] }, { voz: null }, { telegram: { voz: { ligada: false } } },
+  ]) {
+    assert.deepEqual(vozLigadaDoConfig(cfg), { ligada: true }, JSON.stringify(cfg) ?? String(cfg));
+  }
+});

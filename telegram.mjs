@@ -186,9 +186,17 @@ export function criarTelegram({ token, chatId, fetch = globalThis.fetch, dormir 
    * dono ganha 2 mensagens). Nunca lanca: {ok:true, messageId, formato:'rich'|'classico'|'texto'} |
    * {ok:false, erro, codigo, incerto?, esperarS?}.
    */
-  async function enviar({ html, classico, botoes, silencioso, responderA } = {}) {
+  // T29d (PLANO-TELEGRAM.md, "T29d"): `respostaForcada` (true ou o texto de exemplo do campo, ate 64) = reply_markup
+  // {force_reply: true, input_field_placeholder?}: o campo de digitacao ja abre respondendo a ela. Junto com botoes = erro.
+  async function enviar({ html, classico, botoes, silencioso, responderA, respostaForcada } = {}) {
     const t = botoes == null ? {} : teclado(botoes);
     if (t.erro) return { ok: false, erro: `enviar: ${t.erro}` };
+    const forcada = respostaForcada != null && respostaForcada !== false;
+    if (forcada && botoes != null) return { ok: false, erro: 'enviar: botoes e resposta forcada juntos' };
+    if (forcada) {
+      t.markup = { force_reply: true };
+      if (typeof respostaForcada === 'string' && respostaForcada.trim()) t.markup.input_field_placeholder = cortar(respostaForcada.trim(), 64);
+    }
     const temHtml = typeof html === 'string' && html !== '';
     const temClassico = typeof classico === 'string' && classico !== '';
     if (!temHtml && !temClassico) return { ok: false, erro: 'enviar: sem texto' };

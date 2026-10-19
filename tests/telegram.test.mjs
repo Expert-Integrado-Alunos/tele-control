@@ -854,3 +854,39 @@ describe('T17a: enviarVoz', () => {
     assert.deepEqual(esperas, [1100], 'a voz entrou na fila do adaptador');
   });
 });
+
+// ---------- T29d: a pergunta da busca com resposta forcada (PLANO-TELEGRAM.md, "T29d") ----------
+
+describe('T29d: enviar com respostaForcada', () => {
+  test('respostaForcada (texto) = reply_markup {force_reply: true, input_field_placeholder}; o resto do corpo igual', async () => {
+    const { tg, fetch } = novo([ok({ message_id: 77 })]);
+    const r = await tg.enviar({ classico: 'Qual palavra?', silencioso: true, respostaForcada: 'nome da aba ou palavra' });
+    assert.deepEqual(r, { ok: true, messageId: 77, formato: 'classico' });
+    assert.equal(fetch.chamadas.length, 1);
+    assert.equal(fetch.chamadas[0].metodo, 'sendMessage');
+    assert.deepEqual(fetch.chamadas[0].corpo, {
+      chat_id: CHAT_ID_DONO, text: 'Qual palavra?', parse_mode: 'HTML', disable_notification: true,
+      reply_markup: { force_reply: true, input_field_placeholder: 'nome da aba ou palavra' },
+    });
+  });
+
+  test('respostaForcada true = so o force_reply; exemplo longo corta em 64; com botoes = erro sem chamar a API; sem ela = como antes', async () => {
+    const a = novo([ok({ message_id: 1 })]);
+    await a.tg.enviar({ classico: 'x', respostaForcada: true });
+    assert.deepEqual(a.fetch.chamadas[0].corpo.reply_markup, { force_reply: true });
+    const b = novo([ok({ message_id: 2 })]);
+    await b.tg.enviar({ classico: 'x', respostaForcada: 'y'.repeat(100) });
+    assert.equal(b.fetch.chamadas[0].corpo.reply_markup.input_field_placeholder, 'y'.repeat(64));
+    const c = novo();
+    const r = await c.tg.enviar({ classico: 'x', respostaForcada: 'z', botoes: [[{ texto: 'B', dados: 'p:b' }]] });
+    assert.equal(r.ok, false);
+    assert.match(r.erro, /^enviar: /);
+    assert.equal(c.fetch.chamadas.length, 0);
+    const d = novo([ok({ message_id: 3 })]);
+    await d.tg.enviar({ classico: 'x', botoes: [[{ texto: 'B', dados: 'p:b' }]] });
+    assert.deepEqual(d.fetch.chamadas[0].corpo.reply_markup, { inline_keyboard: [[{ text: 'B', callback_data: 'p:b' }]] });
+    const f = novo([ok({ message_id: 4 })]);
+    await f.tg.enviar({ classico: 'x' });
+    assert.equal(f.fetch.chamadas[0].corpo.reply_markup, undefined);
+  });
+});

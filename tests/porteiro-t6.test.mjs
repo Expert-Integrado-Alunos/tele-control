@@ -334,7 +334,7 @@ async function receber(h, sessionId, pedido) {
 
 // ---------- T6 1 a 3 ----------
 
-test('T6 1. feliz: fala do Telegram -> central -> abrir-sessao com o tg-u = a sessao escondida abre sem ler o grupo; item e pedido com canal telegram e a fala dele (messageId da original); recado "Telegram do Davi"; o nome entra no transcript sem frase nenhuma', async () => {
+test('T6 1. feliz: fala do Telegram -> central -> abrir-sessao com o tg-u = a sessao escondida abre sem ler o grupo; item e pedido com canal telegram e a fala dele (messageId da original); recado "Telegram do Davi"; o nome entra no transcript e (T32) o "Abri a sessão" sai na linha do sistema SEM notificar, em cima da fala dele', async () => {
   const { h, A, u } = await cenaT6();
   const linhasAntes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
@@ -356,16 +356,27 @@ test('T6 1. feliz: fala do Telegram -> central -> abrir-sessao com o tg-u = a se
   });
   assert.match(montarRecado(h.entregas[1]), new RegExp(`^Telegram do dono \\(12:00, id ${A}-E1\\)`));
   assert.deepEqual(estado(h).sessoesNovas, [], 'o item saiu');
+  // a fala chegou e o transcript ainda nao existe: o nome fica pendente com o canal e a fala dele (T32: vai pro disco)
+  assert.deepEqual(estado(h).nomesPendentes.map((x) => [x.sessionId, x.canal, x.citar]), [['E1', 'telegram', mid(u)]]);
+  assert.deepEqual(linhasSistema(h), linhasAntes, 'antes do nome, nada');
 
   const arq = await receber(h, 'E1', h.entregas[1]);
   assert.ok(fs.readFileSync(arq, 'utf8').endsWith(`${JSON.stringify({ type: 'custom-title', customTitle: NOME, sessionId: 'E1' })}\n`), 'o nome gravado');
   assert.ok(logs(h).some((l) => l.includes(`sessao E1 nomeada ${NOME}`)));
-  assert.deepEqual(h.enviados, [], 'nada no grupo ("Abri a sessão" calado no Telegram)');
-  assert.deepEqual(linhasSistema(h), linhasAntes, 'nenhuma linha nova no sistema');
+  assert.deepEqual(h.enviados, [], 'nada no grupo');
+  // T32 (caso real 18/10/2026: o silencio de minutos virou o mesmo pedido de novo)
+  assert.deepEqual(linhasSistema(h), [...linhasAntes, TXT6.aberta(CURTA)], '1 linha nova no sistema');
+  assert.equal(estado(h).tg.sistema.notificar, false, 'sem notificar');
+  assert.equal(estado(h).tg.sistema.citar, mid(u), 'em cima da fala dele');
+  assert.equal(chamado(h, 'E1'), undefined, 'nunca o chamado da sessao nova');
   assert.equal(h.leituras, 0);
   h.tg.zerar();
   await h.p.esperarTelegram(15000);
-  assert.deepEqual(h.tg.tela(), [], 'nada no Telegram');
+  const envios = h.tg.de('enviar').map((c) => c.args[0]);
+  assert.equal(envios.length, 1, 'so a mensagem do sistema');
+  assert.equal(envios[0].silencioso, true, 'sem notificar');
+  assert.equal(envios[0].responderA, mid(u), 'em cima da fala dele');
+  assert.ok(envios[0].html.includes(TXT6.aberta(CURTA)), envios[0].html);
 });
 
 test('T6 2. a resposta da sessao nova volta pelo Telegram: conferida e respondida, 1 mensagem nova com notificacao em cima da fala dele, o nome da sessao no titulo, a DECISAO em botoes; nada no grupo', async () => {
@@ -374,6 +385,7 @@ test('T6 2. a resposta da sessao nova volta pelo Telegram: conferida e respondid
   await h.p.passoEventos();
   await firmar(h, 'E1');
   await receber(h, 'E1', h.entregas[1]);
+  await h.p.esperarTelegram(15000); // T32: a linha "Abri a sessão" sai antes
   h.t += MIN;
   const final = `${LINHA}\n\nRevisei o porteiro.\n\n---\n🔴 **DECISÃO:** Publico? A) Sim (recomendado) / B) Não`;
   evento(h, parou(h, 'E1', { nome: NOME, final, marcas: DECISAO }));
@@ -394,7 +406,7 @@ test('T6 2. a resposta da sessao nova volta pelo Telegram: conferida e respondid
   assert.deepEqual(h.enviados, [], 'nada no grupo');
 });
 
-test('T6 3. so o resultado (T7f, F8): a resposta da central que so pediu a sessao nova (item esperando) nao vai pro Telegram e o chamado dela encerra calado; depois sai so o resultado da sessao nova; a central que precisa dele sai como hoje', async () => {
+test('T6 3. so o resultado (T7f, F8): a resposta da central que so pediu a sessao nova (item esperando) nao vai pro Telegram e o chamado dela encerra calado; depois sai a linha "Abri a sessão" sem notificar (T32) e o resultado da sessao nova; a central que precisa dele sai como hoje', async () => {
   let { h, A } = await cenaT6();
   pedirEv(h, { providerMsgId: A });
   abaResponde(h, 'SC', [h.entregas[0]], { nome: 'repos-99', final: `${LINHA}\n\nPedi pro porteiro abrir a sessão ${NOME} em repos.` });
@@ -410,6 +422,10 @@ test('T6 3. so o resultado (T7f, F8): a resposta da central que so pediu a sessa
 
   await firmar(h, 'E1');
   await receber(h, 'E1', h.entregas[1]);
+  h.tg.zerar();
+  await h.p.esperarTelegram(15000);
+  assert.deepEqual(h.tg.de('enviar').map((c) => [c.args[0].silencioso, c.args[0].html.includes('Abri a sessão')]), [[true, true]],
+    'T32: so a linha "Abri a sessão", sem notificar');
   h.t += MIN;
   evento(h, parou(h, 'E1', { nome: NOME, final: `${LINHA}\n\nRevisei o porteiro.` }));
   await h.p.passoEventos();
@@ -625,6 +641,7 @@ test('T6 9. regressao (F4f) com o Telegram ligado: fala do grupo = le o grupo; i
     messageId: m.id, anexos: [], encaminhado: true, nomear: NOME, pasta: h.pasta,
   });
   assert.match(montarRecado(h.entregas[1]), /^WhatsApp do dono \(/);
+  assert.deepEqual(estado(h).nomesPendentes.map((x) => [x.sessionId, 'canal' in x, 'citar' in x]), [['E1', false, false]], 'T32: o do WhatsApp nunca guarda citar');
   await receber(h, 'E1', h.entregas[1]);
   assert.deepEqual(h.enviados.map((x) => x.texto), [`${CAB}\n${TXT6.aberta(CURTA)}`]);
   assert.deepEqual(linhasSistema(h), []);
@@ -635,8 +652,8 @@ test('T6 9. regressao (F4f) com o Telegram ligado: fala do grupo = le o grupo; i
 
 // ---------- T6 10 a 12 ----------
 
-test('T6 10. o nome nao pegou em 2 min (sessao sem transcript): a linha do sistema do Telegram SEM notificar (o titulo ja vem do -n), nada no grupo e nenhum chamado da sessao nova', async () => {
-  const { h, A } = await cenaT6();
+test('T6 10. o nome nao pegou em 2 min (sessao sem transcript): a linha do sistema do Telegram SEM notificar (o titulo ja vem do -n), em cima da fala dele (T32), nada no grupo e nenhum chamado da sessao nova', async () => {
+  const { h, A, u } = await cenaT6();
   const antes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
   await h.p.passoEventos();
@@ -648,12 +665,13 @@ test('T6 10. o nome nao pegou em 2 min (sessao sem transcript): a linha do siste
   assert.deepEqual(e.nomesPendentes, []);
   assert.deepEqual(linhasSistema(h), [...antes, TXT6.semNome(CURTA)]);
   assert.equal(e.tg.sistema.notificar, false, 'sem notificar');
+  assert.equal(e.tg.sistema.citar, mid(u), 'em cima da fala dele (T32)');
   assert.equal(e.tg.chamados.E1, undefined, 'nunca o chamado problema');
   assert.deepEqual(h.enviados, []);
 });
 
-test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pendente sobrevive no disco (a entrega e a frase do nome seguem pro Telegram); item gravado sem canal = WhatsApp', async () => {
-  let { h, A } = await cenaT6();
+test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pendente sobrevive no disco (a entrega e a frase do nome seguem pro Telegram, em cima da fala dele: T32); item gravado sem canal = WhatsApp', async () => {
+  let { h, A, u } = await cenaT6();
   const antes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
   await h.p.passoEventos();
@@ -664,6 +682,7 @@ test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pend
   h.t += 2 * MIN + 1000;
   await h.p.passoSessoes();
   assert.deepEqual(linhasSistema(h), [...antes, TXT6.semNome(CURTA)]);
+  assert.equal(estado(h).tg.sistema.citar, mid(u), 'o citar do nome pendente sobreviveu no disco');
   assert.deepEqual(h.enviados, []);
 
   // item de antes da T6 (sem o campo) = o WhatsApp de hoje: pedido sem canal, o nome no grupo
@@ -675,6 +694,20 @@ test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pend
   assert.equal(Object.hasOwn(h.entregas[1], 'canal'), false);
   await receber(h, 'E1', h.entregas[1]);
   assert.deepEqual(h.enviados.map((x) => x.texto), [`${CAB}\n${TXT6.aberta(CURTA)}`]);
+});
+
+test('T32 1. o citar do nome pendente que volta torto do disco nao vale: a linha "Abri a sessão" sai sem citar novo, ainda sem notificar', async () => {
+  const { h, A } = await cenaT6();
+  const antes = linhasSistema(h);
+  pedirEv(h, { providerMsgId: A });
+  await h.p.passoEventos();
+  await firmar(h, 'E1');
+  const citarAntes = estado(h).tg.sistema.citar ?? null;
+  mexer(h, (e) => { e.nomesPendentes[0].citar = String(e.nomesPendentes[0].citar); });
+  await receber(h, 'E1', h.entregas[1]);
+  assert.deepEqual(linhasSistema(h), [...antes, TXT6.aberta(CURTA)]);
+  assert.equal(estado(h).tg.sistema.citar ?? null, citarAntes, 'sem citar novo');
+  assert.equal(estado(h).tg.sistema.notificar, false, 'sem notificar');
 });
 
 test('T6 12. fala do Telegram com audio transcrito e anexo: item e pedido levam audio true e o anexo que ainda existe no PC; o recado diz "áudio transcrito"', async () => {

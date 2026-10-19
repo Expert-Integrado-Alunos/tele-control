@@ -392,24 +392,26 @@ test('T23c 1. modo padrao, ponta a ponta: audio X do dono -> a resposta da aba e
   assert.equal(h.entregas.at(-1).texto, 'A) Sim (recomendado)', 'o toque foi pra aba');
 });
 
-test('T23c 2. modo padrao: texto do dono em cima do pedido de OK -> a linha okNosBotoes em cima dele; trocada pela versao nova do sistema -> o texto dele sai (o pedido de OK e a fala nova ficam)', async () => {
+// T30 (Eric 18/10/2026 19:43): so o "sim"/"nao" em cima do pedido vira a linha dos botoes (o resto vai pra aba) e a fala
+// recusada (que nao chegou a aba nenhuma) FICA no chat quando a linha troca: o "texto dele sai" deste teste virou "fica".
+test('T23c 2 (T30). modo padrao: "sim" do dono em cima do pedido de OK -> a linha okNosBotoes em cima dele; trocada pela versao nova do sistema -> a linha antiga sai e o "sim" dele FICA (nao chegou a aba nenhuma); o pedido de OK e a fala nova ficam', async () => {
   const h = montar({ ok: true });
   const { id } = await comPedidoNoChat(h);
-  const y = msgTg(h, 'pode subir', { respondeA: id });
+  const y = msgTg(h, 'sim', { respondeA: id });
   await lerTg(h, [y]);
   const [linha1] = h.tg.de('enviar');
   assert.ok(linha1 && linha1.args[0].html.includes(OK_NOS_BOTOES), JSON.stringify(h.tg.chamadas.map((c) => c.metodo)));
   assert.equal(linha1.args[0].responderA, mid(y), 'a linha em cima do texto dele');
   assert.deepEqual(apagadas(h), [], 'nada sai ainda');
   h.tg.zerar();
-  const z = msgTg(h, 'e agora?', { respondeA: id });
+  const z = msgTg(h, 'n', { respondeA: id });
   await lerTg(h, [z]);
   await h.p.esperarTelegram(15000);
   const [linha2] = h.tg.de('enviar');
   assert.ok(linha2 && linha2.args[0].html.includes(OK_NOS_BOTOES));
   assert.equal(linha2.args[0].responderA, mid(z), 'a versao nova em cima da fala nova');
-  assert.deepEqual(apagadas(h), [linha1.id, mid(y)], 'a linha antiga sai e leva o texto dele em cima do pedido');
-  assert.ok(logs(h).some((l) => l.endsWith(`mensagem ${mid(y)} do dono apagada (conversa resolvida)`)), logs(h).join('\n'));
+  assert.deepEqual(apagadas(h), [linha1.id], 'a linha antiga sai; o "sim" dele fica (T30)');
+  assert.ok(!logs(h).some((l) => l.endsWith(`mensagem ${mid(y)} do dono apagada (conversa resolvida)`)), logs(h).join('\n'));
   assert.equal(okDe(h, 'ABC234').fechadoEm ?? null, null, 'o pedido de OK segue aberto no chat');
 });
 

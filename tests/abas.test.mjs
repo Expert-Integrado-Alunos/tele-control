@@ -353,3 +353,27 @@ test('T8 4. CLI --fechadas [palavras]: a lista (a busca junta as palavras), exit
   assert.doesNotMatch(`${r.stdout}\n${r.stderr}`, /\bat |Error|ENOTDIR/);
   fs.rmSync(raiz, { recursive: true, force: true });
 });
+
+test('T31. listarFechadas: vale o app do FIM da conversa (a que nasceu no Claude Desktop e segue no VS Code ou no terminal entra, com esse entrypoint; VS Code -> Desktop e Desktop sem mais nada ficam fora; fim sem o campo = o do comeco)', () => {
+  const raiz = pastaTemp('abas-t31-');
+  const sessions = path.join(raiz, 'sessions');
+  const projects = path.join(raiz, 'projects');
+  fs.mkdirSync(sessions, { recursive: true });
+  const env = { CLAUDE_SESSIONS_DIR: sessions, CLAUDE_PROJECTS_DIR: projects };
+  const mais = (arq, sid, ep) => fs.appendFileSync(arq, `${JSON.stringify({ type: 'user', sessionId: sid, ...(ep ? { entrypoint: ep } : {}), cwd: 'c:\\projetos', message: { role: 'user', content: 'e agora' } })}\n`);
+  const cena = [
+    ['DV', 'claude-desktop', 'claude-vscode', 10],
+    ['DC', 'claude-desktop', 'cli', 20],
+    ['VD', 'claude-vscode', 'claude-desktop', 30],
+    ['DN', 'claude-desktop', null, 40],
+    ['VN', 'claude-vscode', null, 50],
+  ];
+  for (const [sid, ep1, ep2, min] of cena) {
+    const arq = conversaFechada(projects, 'c--projetos', sid, { titulo: `Aba ${sid}`, entrypoint: ep1, ultima: T0 - min * MIN });
+    mais(arq, sid, ep2);
+    fs.utimesSync(arq, new Date(T0 - min * MIN), new Date(T0 - min * MIN));
+  }
+  const lista = listarFechadas({ env, agora: T0, pidVivo: () => false, nomeCentral: CENTRAL_TESTE.nome });
+  assert.deepEqual(lista.map((x) => [x.sessionId, x.entrypoint]), [['DV', 'claude-vscode'], ['DC', 'cli'], ['VN', 'claude-vscode']]);
+  fs.rmSync(raiz, { recursive: true, force: true });
+});

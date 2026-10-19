@@ -58,6 +58,7 @@ const TXT8 = {
   naoApareceu: `Não consegui reabrir a aba ${TIT} no PC: ela não apareceu em 3 min.`,
   naoDa: (t, motivo) => (t ? `Não dá pra reabrir a aba ${t} pelo celular: ${motivo}.` : `Não dá pra reabrir essa aba pelo celular: ${motivo}.`),
   naoAcheiMsg: `Não achei a mensagem pra passar pra ${TIT}.`,
+  reaberta: (t) => (t ? `Reabri a aba ${t} e passei o seu pedido.` : 'Reabri essa aba e passei o seu pedido.'), // T32
 };
 
 // ---------- harness (copia do tests/porteiro-t6.test.mjs) ----------
@@ -349,7 +350,7 @@ const PROJ = 'c--projetos-sessoes-wpp'; // a pasta de projeto da conversa() (o t
 
 // ---------- 1. o "nao achei" que reabre ----------
 
-test('T8 1 (T18). resposta em cima do chamado de uma aba fechada: o "não achei" retoma a MESMA conversa escondida (pasta da conversa, -n com o titulo dado, so o sessionId dela: nenhum id novo), sem frase; ela firma e recebe a MESMA fala; o chamado e as mensagens ficam nela (sem trocarAba, sem entrada nova na cadeia); a resposta volta pelo Telegram em cima da fala', async () => {
+test('T8 1 (T18). resposta em cima do chamado de uma aba fechada: o "não achei" retoma a MESMA conversa escondida (pasta da conversa, -n com o titulo dado, so o sessionId dela: nenhum id novo), sem frase; ela firma e recebe a MESMA fala (T32: com a linha "Reabri a aba" sem notificar, em cima dela); o chamado e as mensagens ficam nela (sem trocarAba, sem entrada nova na cadeia); a resposta volta pelo Telegram em cima da fala', async () => {
   const h = montarT8();
   const { messageId: tela } = await cenaFechada(h);
   const u = await falarTg(h, 'sim, manda', { respondeA: tela });
@@ -378,7 +379,7 @@ test('T8 1 (T18). resposta em cima do chamado de uma aba fechada: o "não achei"
   assert.equal(h.entregas.length, 2);
   assert.deepEqual(h.entregas[1], {
     sessionId: S1, nome: TIT, titulo: TIT, texto: 'sim, manda', audio: false, hora: '12:00', providerMsgId: pid(u),
-    messageId: mid(u), anexos: [], canal: 'telegram', reaberta: S1,
+    messageId: mid(u), anexos: [], canal: 'telegram', reaberta: S1, avisarReaberta: true,
   });
   e = estado(h);
   assert.deepEqual(e.reaberturas, []);
@@ -387,6 +388,17 @@ test('T8 1 (T18). resposta em cima do chamado de uma aba fechada: o "não achei"
   assert.equal(e.tg.mensagens[tela].sessionId, S1);
   assert.equal(comLog(h, 'a aba voltou como'), 0, 'sem trocarAba');
   assert.equal(comLog(h, `reabrir: a aba ${S1} voltou (a mesma conversa); passando 1 fala(s)`), 1);
+  // T32: a fala chegou na aba reaberta = 1 linha do sistema sem notificar, em cima da fala dele
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)]);
+  assert.equal(e.tg.sistema.notificar, false, 'sem notificar');
+  assert.equal(e.tg.sistema.citar, mid(u), 'em cima da fala dele');
+  h.tg.zerar();
+  await h.p.esperarTelegram(15000);
+  const sist = h.tg.de('enviar').map((c) => c.args[0]);
+  assert.equal(sist.length, 1, 'so a mensagem do sistema');
+  assert.equal(sist[0].silencioso, true, 'sem notificar');
+  assert.equal(sist[0].responderA, mid(u));
+  assert.ok(sist[0].html.includes(TXT8.reaberta(TIT)), sist[0].html);
 
   // ela responde: o resultado sai no Telegram em cima da fala dele; nada no grupo
   abaResponde(h, S1, [h.entregas[1]], { nome: TIT, projeto: PROJ, final: '> Telegram do Davi (12:00): «sim, manda»\n\nMandei pro Caio.' });
@@ -579,7 +591,7 @@ async function cenaCentral(o = {}) {
 }
 const reabrirEv = (h, o = {}) => evento(h, { v: 1, tipo: 'reabrir-sessao', at: iso(h.t), sessao: S1, providerMsgId: null, por: 'SC', ...o });
 
-test('T8 7 (T18). reabrir-sessao da central: retoma a mesma conversa da aba fechada e passa a fala como encaminhada; a central que so pediu fica calada; a resposta dela volta em cima da fala', async () => {
+test('T8 7 (T18). reabrir-sessao da central: retoma a mesma conversa da aba fechada e passa a fala como encaminhada; a central que so pediu fica calada; a linha "Reabri a aba" sem notificar (T32); a resposta dela volta em cima da fala', async () => {
   const { h, A, u } = await cenaCentral();
   conversa(h, S1);
   reabrirEv(h, { providerMsgId: A });
@@ -597,9 +609,15 @@ test('T8 7 (T18). reabrir-sessao da central: retoma a mesma conversa da aba fech
   await firmarRetomada(h);
   const p = h.entregas.at(-1);
   assert.deepEqual(
-    [p.sessionId, p.providerMsgId, p.encaminhado, p.canal, p.texto, p.reaberta],
-    [S1, `${A}-E1`, true, 'telegram', 'abre a aba da Campanha Verão e vê como ficou o KV', S1],
+    [p.sessionId, p.providerMsgId, p.encaminhado, p.canal, p.texto, p.reaberta, p.avisarReaberta],
+    [S1, `${A}-E1`, true, 'telegram', 'abre a aba da Campanha Verão e vê como ficou o KV', S1, true],
   );
+  // T32 (caso real 18/10/2026: 3 min de silencio entre o pedido e a resposta da aba reaberta): a linha sem notificar,
+  // em cima da fala dele
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)]);
+  h.tg.zerar();
+  await h.p.esperarTelegram(15000);
+  assert.deepEqual(h.tg.de('enviar').map((c) => [c.args[0].silencioso, c.args[0].responderA]), [[true, mid(u)]]);
   abaResponde(h, S1, [p], { nome: TIT, projeto: PROJ, final: '> Telegram do Davi (12:00): «abre a aba»\n\nO KV entrou na página.' });
   await h.p.passoEventos();
   h.tg.zerar();
@@ -1038,4 +1056,174 @@ test('T8 16. instrucoes: a central reabre a dona fechada (abas.mjs --fechadas + 
   const sessao = fs.readFileSync(path.join(CENTRAL_DIR, 'instrucoes-sessao.md'), 'utf8');
   assert.match(sessao, /reaberta pelo celular/);
   assert.match(sessao, /siga de onde parou/);
+});
+
+// ---------- T31: o app em que a conversa vive agora (o fim do transcript), nao o do comeco ----------
+
+// T31: a conversa que nasce num app e segue em outro: 1 linha por entrypoint, na ordem (null = linha sem o campo)
+function conversaMista(h, sid, eps, { titulo = TIT, cwd = h.pasta, projeto = 'c--projetos-sessoes-wpp' } = {}) {
+  const linhas = [];
+  if (titulo) linhas.push(custom(titulo));
+  eps.forEach((ep, i) => {
+    const x = { type: 'user', sessionId: sid, cwd, timestamp: iso(h.t - (60 - i) * MIN), message: { role: 'user', content: `fala ${i}` } };
+    if (ep) x.entrypoint = ep;
+    linhas.push(x);
+  });
+  transcript(h, sid, linhas, projeto);
+}
+
+test('T31 1. reabrir vale pelo app do FIM da conversa (caso real 18/10/2026: uma aba nasceu no Claude Desktop e seguiu 6 semanas no VS Code): Desktop -> VS Code ou terminal retoma a mesma conversa; VS Code -> Desktop e Desktop -> automatica = o "Não achei"; fim sem o campo = vale o do comeco', async () => {
+  const cenas = [
+    ['desktop -> vscode', ['claude-desktop', 'claude-vscode'], true],
+    ['desktop -> cli', ['claude-desktop', 'cli'], true],
+    ['vscode -> fim sem o campo', ['claude-vscode', null], true],
+    ['vscode -> desktop', ['claude-vscode', 'claude-desktop'], false],
+    ['desktop -> fim sem o campo', ['claude-desktop', null], false],
+    ['desktop -> automatica', ['claude-desktop', 'sdk-cli'], false],
+  ];
+  for (const [quem, eps, reabre] of cenas) {
+    const h = montarT8();
+    conversaMista(h, S1, eps);
+    const { messageId: tela } = await chamadoNaTela(h, S1, TIT);
+    ligarTg(h);
+    h.mortas.add(S1);
+    await falarTg(h, 'confirma o pagamento', { respondeA: tela });
+    if (reabre) {
+      assert.equal(h.escondidas.length, 1, quem);
+      assert.deepEqual([h.escondidas[0][0], h.escondidas[0][2]], [h.pasta, { retomar: S1 }], quem);
+      assert.equal(chamado(h, S1).versao.estado, 'enviando', quem);
+    } else {
+      assert.deepEqual(h.escondidas, [], quem);
+      assert.deepEqual([chamado(h, S1).versao.estado, chamado(h, S1).versao.frase], ['problema', TXT8.naoAchei], quem);
+    }
+  }
+});
+
+test('T31 2. reabrir-sessao da central: a conversa Desktop -> VS Code reabre; VS Code -> Desktop = "Não dá pra reabrir a aba X pelo celular: ela é do Claude Desktop."', async () => {
+  let { h, A } = await cenaCentral();
+  conversaMista(h, S1, ['claude-desktop', 'claude-vscode']);
+  reabrirEv(h, { providerMsgId: A });
+  await h.p.passoEventos();
+  assert.deepEqual(h.escondidas.map((x) => [x[0], x[2]]), [[h.pasta, { retomar: S1 }]]);
+  assert.deepEqual(linhasSistema(h), []);
+  ({ h, A } = await cenaCentral());
+  conversaMista(h, S1, ['claude-vscode', 'claude-desktop']);
+  reabrirEv(h, { providerMsgId: A });
+  await h.p.passoEventos();
+  assert.deepEqual(h.escondidas, []);
+  assert.deepEqual(linhasSistema(h), [TXT8.naoDa(TIT, 'ela é do Claude Desktop')]);
+});
+
+// ---------- T32: a linha "Reabri a aba" (PLANO-TELEGRAM.md, "T32") ----------
+
+test('T32 2. 2 falas na mesma retomada: 1 linha so, em cima da mais nova (so ela leva a marca); a fala depois, com a aba ja aberta, nao diz nada', async () => {
+  const h = montarT8();
+  const { messageId: tela } = await cenaFechada(h);
+  const u1 = await falarTg(h, 'sim', { respondeA: tela });
+  h.t += 5000;
+  const u2 = await falarTg(h, 'e manda o PDF também', { respondeA: tela });
+  await firmarRetomada(h);
+  assert.deepEqual(h.entregas.slice(2).map((p) => [p.providerMsgId, p.avisarReaberta]), [[pid(u1), undefined], [pid(u2), true]]);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)], '1 linha so');
+  assert.equal(estado(h).tg.sistema.citar, mid(u2), 'em cima da mais nova');
+  assert.equal(estado(h).tg.sistema.notificar, false);
+  assert.equal(comLog(h, 'reaberta recebeu a fala; aviso na linha do sistema'), 1);
+  h.t += 5000;
+  await falarTg(h, 'valeu', { respondeA: tela });
+  assert.equal(h.entregas.at(-1).avisarReaberta, undefined);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)], 'a fala com a aba aberta nao diz nada');
+});
+
+test('T32 3. a fala que nao chega na aba reaberta (ela fecha bem na hora) = o "Não achei" de antes, sem a linha "Reabri a aba"', async () => {
+  const h = montarT8();
+  const { messageId: tela } = await cenaFechada(h);
+  await falarTg(h, 'sim', { respondeA: tela });
+  await firmarRetomada(h, 0, { morta: true });
+  assert.equal(h.entregas.length, 2);
+  assert.equal(h.entregas[1].avisarReaberta, true);
+  assert.deepEqual([chamado(h, S1).versao.estado, chamado(h, S1).versao.frase], ['problema', TXT8.naoAchei]);
+  assert.deepEqual(linhasSistema(h), [], 'sem "Reabri a aba"');
+});
+
+test('T32 4. sem titulo nenhum = "Reabri essa aba e passei o seu pedido."; o toque de opcao (fala por botao) tambem diz; a marca torta vinda do disco nao vale', async () => {
+  // a opcao tocada no chamado da aba fechada
+  let h = montarT8();
+  const c = await cenaFechada(h);
+  h.tg.lotes.push([toqueTg(h, `o:${c.chamadoId}:0`, c.messageId)]);
+  await h.p.esperarTelegram(15000);
+  await bombear(h.cru);
+  await firmarRetomada(h);
+  assert.equal(h.entregas.at(-1).avisarReaberta, true);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)]);
+
+  // a marca que veio do disco nao vale: e do porteiro, na hora que firma (so a mais nova)
+  h = montarT8();
+  const { messageId: tela } = await cenaFechada(h);
+  await falarTg(h, 'sim', { respondeA: tela });
+  h.t += 5000;
+  await falarTg(h, 'e o PDF', { respondeA: tela });
+  mexer(h, (e) => { e.reaberturas[0].pedidos[0].avisarReaberta = true; e.reaberturas[0].pedidos[1].avisarReaberta = 'sim'; });
+  await firmarRetomada(h);
+  assert.deepEqual(h.entregas.slice(-2).map((p) => p.avisarReaberta), [undefined, true]);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)], '1 linha so');
+
+  // sem titulo nenhum (nem na conversa, nem o -n, nem no pedido) = "essa aba", nunca o nome derivado do registro
+  h = montarT8();
+  conversa(h, S1, { titulo: null });
+  const t2 = (await chamadoNaTela(h, S1, TIT)).messageId;
+  ligarTg(h);
+  h.mortas.add(S1);
+  await falarTg(h, 'sim', { respondeA: t2 });
+  mexer(h, (e) => { e.reaberturas[0].pedidos[0].titulo = null; });
+  await firmarRetomada(h);
+  assert.deepEqual([h.entregas.at(-1).nome, h.entregas.at(-1).titulo], ['repos-40', null]);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(null)]);
+});
+
+test('T32 5. a aba com titulo proprio (sem -n: nome derivado) = a linha com o titulo dela; WhatsApp = nenhuma marca e nada no grupo', async () => {
+  let h = montarT8();
+  conversa(h, S1, { titulo: 'Aula 100% pronta' });
+  const tela = (await chamadoNaTela(h, S1, 'Aula')).messageId;
+  ligarTg(h);
+  h.mortas.add(S1);
+  await falarTg(h, 'sim', { respondeA: tela });
+  await firmarRetomada(h);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta('Aula 100% pronta')]);
+
+  h = montarT8(); // o canal do Telegram existe (desligado): a fala do grupo nunca leva a marca
+  conversa(h, S1);
+  sessao(h, { sessionId: S1, cwd: h.pasta });
+  await ligarRua(h);
+  evento(h, parou(h, S1, { titulo: TIT, final: FINAL_FIN, marcas: DECISAO }));
+  await h.p.passoEventos();
+  fecharSessao(h, S1);
+  h.mortas.add(S1);
+  h.t += 2 * MIN;
+  msg(h, { content: 'A', quoted_msg_id: 'P1' });
+  await h.p.passoGrupo();
+  await firmarRetomada(h);
+  assert.equal('avisarReaberta' in h.entregas.at(-1), false);
+  assert.equal(h.enviados.length, 1, 'nada no grupo');
+  assert.deepEqual(linhasSistema(h), [], 'nada no Telegram');
+});
+
+test('T32 6. a 1a tentativa volta "erro" mas o recado ja estava na aba reaberta: a nova tentativa registra sem reenviar e a linha "Reabri a aba" sai 1 vez, em cima da fala dele', async () => {
+  const h = montarT8();
+  const { messageId: tela } = await cenaFechada(h);
+  const u = await falarTg(h, 'sim', { respondeA: tela });
+  const entregar = h.mensageiro.entregar;
+  h.mensageiro.entregar = async (p) => { h.entregas.push(p); return { status: 'erro', detalhe: 'claude -p estourou o tempo' }; };
+  await firmarRetomada(h);
+  assert.equal(h.entregas.length, 2);
+  assert.deepEqual(linhasSistema(h), [], '"erro": ainda nada');
+  h.mensageiro.entregar = entregar;
+  transcript(h, S1, [peer(h.entregas[1], iso(h.t + 1000))], PROJ); // o recado chegou apesar do "erro"
+  h.t += 5000;
+  await h.p.passoGrupo();
+  await bombear(h.cru);
+  assert.equal(h.entregas.length, 2, 'nao reenviou');
+  assert.equal(comLog(h, `entrega ${S1}: recado ja estava na aba; nao reenvia`), 1);
+  assert.deepEqual(linhasSistema(h), [TXT8.reaberta(TIT)]);
+  assert.equal(estado(h).tg.sistema.citar, mid(u));
+  assert.equal(estado(h).tg.sistema.notificar, false);
 });

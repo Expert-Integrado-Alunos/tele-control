@@ -16,11 +16,13 @@
 // html/classico. O unico texto que o dono le sai do montarChamado/montarSistema (lib/formato-tg.mjs).
 import {
   montarChamado, montarChamadoComOk, montarSistema, montarPainel, montarSituacao, lerFinal, lerDadosBotao, novoIdChamado, ICONE_SISTEMA,
-  TITULO_SISTEMA,
+  TITULO_SISTEMA, botoesPainel, filtrarPainel, palavraDaBusca, PERGUNTA_BUSCA, EXEMPLO_BUSCA,
 } from './lib/formato-tg.mjs';
+import { partesCurtas } from './lib/formato.mjs'; // T29b: a pergunta em negrito (a mesma regra do aviso)
 
 const SISTEMA = 'sistema'; // "sessionId" da mensagem viva do sistema (na fila e em mensagens)
 const PAINEL = 'painel'; // T9: "sessionId" do painel das abas (na fila e em mensagens)
+const BUSCA_TTL_MS = 15 * 60 * 1000; // T29d: a busca sem uso (e a pergunta sem resposta) sai depois disso
 const TITULO_PAINEL = 'Painel das abas';
 const SITUACAO = 'situacao'; // T10: "sessionId" da situacao de uma aba (o toque no nome dela no painel)
 const TITULO_SITUACAO = 'Situação da aba';
@@ -45,6 +47,9 @@ const MAX_PASSOS = 200; // rede de seguranca: 1 drenar para em 200 acoes (~4 min
 const RECUO_MS = [30 * 1000, MIN_MS, 2 * MIN_MS, 4 * MIN_MS];
 const MAX_SONDA = 20;
 const MAX_IDS_DO_DONO = 300; // anel das mensagens do dono (nunca vao pra sonda)
+// T29b: a mensagem que nao espera nada dele sai na interacao dele se esta na tela ha 60 s ou mais; com 48 h a API nao apaga
+const VISTA_MS = 60 * 1000;
+const APAGA_ATE_MS = 48 * H_MS;
 
 // T7f (F8): 'calado' = o chamado da aba que so repassou a fala (a central) encerrando sem mensagem: so apaga o que era dele
 const CALADO = 'calado';
@@ -190,6 +195,8 @@ function completarSistema(v) {
   s.descer = v.descer === true;
   s.notificar = v.notificar === true;
   s.citar = idMensagem(v.citar);
+  if (s.citar != null && v.citarFica === true) s.citarFica = true; // T30: so existe com o citar
+  if (Number.isSafeInteger(v.semTela)) s.semTela = v.semTela; // T29b: a versao cuja mensagem saiu do chat (em dia sem tela)
   if (ehObjeto(v.mensagem)) s.mensagem = v.mensagem;
   if (Array.isArray(v.apagar)) s.apagar = v.apagar;
   const limpar = completarLimpar(v.limpar); // T23a: so existe com item
@@ -209,6 +216,11 @@ function completarPainel(v) {
   if (Array.isArray(v.apagar)) p.apagar = v.apagar;
   const limpar = completarLimpar(v.limpar); // T23a: so existe com item (a situacao herda daqui)
   if (limpar.length) p.limpar = limpar;
+  // T29d: a busca ({palavra, em}), a pergunta ({messageId | null, em}) e as perguntas a apagar; torto = sem
+  if (ehObjeto(v.busca) && palavraDaBusca(v.busca.palavra) && typeof v.busca.em === 'string') p.busca = { palavra: palavraDaBusca(v.busca.palavra), em: v.busca.em };
+  if (ehObjeto(v.pergunta) && typeof v.pergunta.em === 'string') p.pergunta = { messageId: idMensagem(v.pergunta.messageId), em: v.pergunta.em };
+  const perguntas = Array.isArray(v.apagarPergunta) ? v.apagarPergunta.map(idMensagem).filter((x) => x != null) : [];
+  if (perguntas.length) p.apagarPergunta = perguntas;
   return p;
 }
 
@@ -216,7 +228,8 @@ function completarPainel(v) {
 function completarSituacao(v) {
   const s = situacaoNova();
   if (!ehObjeto(v)) return s;
-  const out = { ...s, ...completarPainel(v), aba: ehAba(v.aba) ? v.aba : null };
+  const { busca, pergunta, apagarPergunta, ...doPainel } = completarPainel(v); // T29d: a busca e so do painel
+  const out = { ...s, ...doPainel, aba: ehAba(v.aba) ? v.aba : null };
   if (typeof v.chamadoId === 'string' && RE_ID_CHAMADO.test(v.chamadoId)) out.chamadoId = v.chamadoId; // T10c
   out.completo = v.completo === true;
   const ja = Array.isArray(v.apagarJa) ? v.apagarJa.map(idMensagem).filter((x) => x != null) : [];
@@ -365,8 +378,9 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   if (rand != null && typeof rand.getRandomValues !== 'function') throw new TypeError('criarCanalTelegram: rand invalido');
   if (ehCentral != null && typeof ehCentral !== 'function') throw new TypeError('criarCanalTelegram: ehCentral invalido');
   if (resolvidas !== 'apagar' && resolvidas !== 'manter') throw new TypeError('criarCanalTelegram: resolvidas invalido');
-  const limpaResolvidas = resolvidas === 'apagar'; // T23a
-  const mantemResolvidas = resolvidas === 'manter'; // T23b: a mensagem do robo so perde os botoes (nada e apagado)
+  // T29a: os 2 mudam na hora pelo definirResolvidas (o /modo do menu do bot)
+  let limpaResolvidas = resolvidas === 'apagar'; // T23a
+  let mantemResolvidas = resolvidas === 'manter'; // T23b: a mensagem do robo so perde os botoes (nada e apagado)
 
   let pausaAte = 0; // 429: nada sai antes disso (em memoria, como a pausa do rate_limit do WhatsApp)
   let drenando = false; // 1 drenar por vez: o que chegar durante outro volta na hora (o que roda esvazia a fila toda)
@@ -694,6 +708,109 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (!c.apagarJa.includes(n)) c.apagarJa.push(n);
   }
 
+  // ---------- T29b: o que nao espera nada dele (PLANO-TELEGRAM.md, "T29b") ----------
+  // Cada mensagem do robo guarda no registro (t.mensagens) a hora em que ficou na tela pela ultima vez sem ser por toque
+  // dele: o `at` do envio ou o `vistaEm` da ultima edicao vinda da aba/porteiro. O "Mais informações" (abrir,
+  // abrirSituacao) e o "Menos informações" (T29c: recolher, recolherSituacao) marcam `porToque` = a versao que ele abriu
+  // ou recolheu: a edicao dessa versao nao renova a hora.
+
+  function marcarPorToque(t, id, versaoId) {
+    const reg = t.mensagens[idMensagem(id)];
+    if (ehObjeto(reg)) reg.porToque = versaoId;
+  }
+
+  // O texto da aba espera algo dele: pergunta em negrito (a regra do aviso, partesCurtas) ou opcao
+  function esperaAlgo(final) {
+    const f = typeof final === 'string' ? final : '';
+    try {
+      return partesCurtas(f).pergunta != null || lerFinal(f).opcoes.length > 0;
+    } catch {
+      return true; // ilegivel = fica
+    }
+  }
+  const situacaoSemNada = (dados) => ehObjeto(dados) && !esperaAlgo(dados.final);
+
+  // A tela do chamado (em dia) nao espera nada dele: sem OK aberto, sem o botao do OK vencido, fora do calado e da fala
+  // em voo; aviso/resposta sem opcao nem pergunta; o resto (problema, encerrado, ok fechado) nunca espera
+  function chamadoSemNada(c) {
+    if (okAberto(c)) return false;
+    if (ehObjeto(c.ok) && Array.isArray(c.ok.botoesFechado) && c.ok.botoesFechado.length) return false; // T28
+    const v = c.versao;
+    if (v.estado === CALADO || SO_NO_ESTADO.has(v.estado)) return false;
+    if (COM_BOTOES.has(v.estado)) return !(Array.isArray(v.opcoes) && v.opcoes.length) && !esperaAlgo(v.final);
+    return true;
+  }
+
+  // O id ja esta no apagar de algum dono (vai sair por outro caminho)
+  function naAlgumApagar(t, id) {
+    const donos = [...Object.values(t.chamados), t.sistema, t.painel, t.situacao];
+    return donos.some((d) => ehObjeto(d) && Array.isArray(d.apagar) && d.apagar.some((a) => ehObjeto(a) && idMensagem(a.messageId) === id));
+  }
+
+  /**
+   * T29b (item 3): a interacao dele (o porteiro chama depois de tratar cada update dele). So no modo limpo (lido na hora):
+   * cada mensagem do robo na tela que nao espera nada dele (o chamado em dia sem opcao, pergunta, OK aberto nem o botao
+   * do OK vencido; a linha do sistema; a situacao sem pergunta, inclusive a que ficou como mensagem da aba) com 60 s ou
+   * mais na tela e menos de 48 h vai pro apagar (`vista`: 1 log quando sai). A do toque (`tocada`) fica nesse passo. O
+   * painel nunca. O chamado sai com a tela (calado); a do sistema fica em dia sem tela ate a proxima linha; a situacao
+   * nao volta.
+   * -> quantas foram pro apagar. Nunca lanca (exceto e.tg ausente = TypeError).
+   */
+  function vistasSemNada(e, { tocada = null } = {}) {
+    const t = tgDe(e);
+    if (!limpaResolvidas) return 0;
+    const agoraMs = agora();
+    const tocadaId = idMensagem(tocada);
+    const podeSair = (id) => {
+      if (id == null || id === tocadaId) return false;
+      const reg = t.mensagens[id];
+      if (!ehObjeto(reg) || reg.voz === true || reg.movido === true || reg.fica === true) return false;
+      const at = msDeIso(reg.at);
+      const vista = Number.isFinite(msDeIso(reg.vistaEm)) ? msDeIso(reg.vistaEm) : at;
+      return Number.isFinite(at) && agoraMs - at < APAGA_ATE_MS && Number.isFinite(vista) && agoraMs - vista >= VISTA_MS;
+    };
+    let n = 0;
+    for (const sid of Object.keys(t.chamados)) {
+      const c = chamadoDe(t, sid);
+      if (!c || !naTela(c) || !chamadoSemNada(c)) continue;
+      const id = idMensagem(c.mensagem.messageId);
+      if (!podeSair(id)) continue;
+      delete c.ok; // o OK fechado (sem botao) sai com a tela
+      okSaiComoCalado(t, sid, c, { vista: true });
+      n += 1;
+    }
+    const s = t.sistema;
+    if (ehObjeto(s.mensagem) && s.mensagem.versaoId === s.versaoId && s.descer !== true && podeSair(idMensagem(s.mensagem.messageId))) {
+      s.apagar.unshift({ messageId: s.mensagem.messageId, doBot: true, formato: formatoDe(s.mensagem.formato), vista: true });
+      s.mensagem = null;
+      s.semTela = s.versaoId; // em dia sem tela: so volta com linha nova (T15: a mensagem mostra so a ultima linha)
+      enfileirar(t, SISTEMA);
+      n += 1;
+    }
+    const si = t.situacao;
+    if (ehAba(si.aba) && ehObjeto(si.mensagem) && si.mensagem.versaoId === si.versaoId && si.descer !== true
+      && situacaoSemNada(si.dados) && podeSair(idMensagem(si.mensagem.messageId))) {
+      const id = si.mensagem.messageId;
+      semTirarBotoes(si, id);
+      si.apagar.unshift({ messageId: id, doBot: true, formato: formatoDe(si.mensagem.formato), vista: true });
+      si.mensagem = null;
+      esvaziarSituacao(si);
+      enfileirar(t, SITUACAO);
+      n += 1;
+    }
+    for (const [k, m] of Object.entries(t.mensagens)) { // a situacao que ficou como mensagem da aba (T26d, regra 3)
+      const id = idMensagem(k);
+      if (!ehObjeto(m) || m.exSituacao !== true || m.semNada !== true || !podeSair(id) || naAlgumApagar(t, id)) continue;
+      const c = chamadoDe(t, m.sessionId);
+      if (c && c.mensagem !== null && idMensagem(c.mensagem.messageId) === id) continue;
+      semTirarBotoes(si, id);
+      si.apagar.push({ messageId: id, doBot: true, formato: formatoDe(m.formato), vista: true });
+      enfileirar(t, SITUACAO);
+      n += 1;
+    }
+    return n;
+  }
+
   // ---------- entrada (update do Telegram) ----------
 
   function horaDaMensagem(date) {
@@ -811,17 +928,20 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
    * mensagem que esta na tela. T7c2: `i:<ID>` ("Mais informações") e o legado `c:<ID>` ("Mais contexto" de antes, que
    * ainda pode estar no chat) = informacoes (o lerDadosBotao ja le os dois assim).
    * T14c: o `z:<ID>` do "Concluir" (T14, que saiu) nao e lido (lerDadosBotao = null) = obsoleto.
+   * T29c: `m:<ID>` ("Menos informações") = {sessionId, acao:'menos'} (+ situacao: true) so com a tela aberta e sem botao
+   * de resposta (chamadoRecolhivel / situacaoRecolhivel); ja compacta, com opcao ou com o OK na mensagem = obsoleto.
    */
   function lerToque(e, dados, messageId) {
     const t = tgDe(e);
     const d = lerDadosBotao(dados);
     const id = idMensagem(messageId);
-    if (!d || id == null) return { obsoleto: true };
+    if (!d || id == null || typeof d.chamadoId !== 'string') return { obsoleto: true }; // T29d: o p:b/p:l e do porteiro
     // T10c: os botoes da situacao (id proprio): vale so da mensagem dela na tela; a opcao sai do final guardado nela
     const s = t.situacao;
     if (s.chamadoId != null && s.chamadoId === d.chamadoId) {
       if (!ehAba(s.aba) || !ehObjeto(s.dados) || !ehObjeto(s.mensagem) || idMensagem(s.mensagem.messageId) !== id) return { obsoleto: true };
       if (d.acao === 'informacoes') return { sessionId: s.aba, acao: 'informacoes', situacao: true };
+      if (d.acao === 'menos') return situacaoRecolhivel(s) ? { sessionId: s.aba, acao: 'menos', situacao: true } : { obsoleto: true }; // T29c
       if (s.dados.trabalhando === true) return { obsoleto: true }; // T16: a da aba trabalhando nao tem os botoes das opcoes
       const o = lerFinal(typeof s.dados.final === 'string' ? s.dados.final : '').opcoes[d.indice];
       if (!ehObjeto(o)) return { obsoleto: true };
@@ -832,6 +952,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       if (!c || c.versao.chamadoId !== d.chamadoId) continue;
       if (!COM_BOTOES.has(c.versao.estado) || c.mensagem === null || idMensagem(c.mensagem.messageId) !== id) return { obsoleto: true };
       if (d.acao === 'informacoes') return { sessionId: sid, acao: 'informacoes' };
+      if (d.acao === 'menos') return chamadoRecolhivel(c) ? { sessionId: sid, acao: 'menos' } : { obsoleto: true }; // T29c
       const o = Array.isArray(c.versao.opcoes) ? c.versao.opcoes[d.indice] : undefined;
       if (!ehObjeto(o)) return { obsoleto: true };
       return { sessionId: sid, acao: 'opcao', opcao: { letra: o.letra, texto: o.texto } };
@@ -1055,6 +1176,9 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   }
 
   // O encerrar de sempre (o do evento e o guardado que o okFechou aplica, T26d)
+  // T29e (PLANO-TELEGRAM.md, "T29e"; caso real 18/10 22:30: a resposta da central saiu da tela 44 s depois, antes de ele
+  // ler, porque ela parou de novo pra um recado): no modo limpo o encerrado tambem e a edicao de hoje; ele nao espera
+  // nada, entao sai pela regra da interacao dele (vistasSemNada: 60 s na tela). Nunca sai so porque a aba parou de novo.
   function encerrarChamado(t, sid, hora, motivo) {
     const c = chamadoDe(t, sid);
     if (!c || !COM_BOTOES.has(c.versao.estado)) return;
@@ -1145,10 +1269,15 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   }
 
   // O chamado da versao 'ok' (sem o c.ok) sai como o calado: a tela vai pro comeco do apagar e o chamado sai quando o
-  // apagar esvazia (nada pra apagar = sai agora)
-  function okSaiComoCalado(t, sid, c) {
+  // apagar esvazia (nada pra apagar = sai agora). T29b: o encerrado no limpo e a tela vista e sem nada (`vista`: a marca
+  // da entrada do apagar, que da o log) tambem.
+  function okSaiComoCalado(t, sid, c, { vista = false } = {}) {
     const ant = c.versao;
-    if (c.mensagem !== null) c.apagar.unshift({ messageId: c.mensagem.messageId, doBot: true, formato: formatoDe(c.mensagem.formato) });
+    if (c.mensagem !== null) {
+      const a = { messageId: c.mensagem.messageId, doBot: true, formato: formatoDe(c.mensagem.formato) };
+      if (vista) a.vista = true;
+      c.apagar.unshift(a);
+    }
     delete c.tirarBotoes;
     if (!c.apagar.length && !(Array.isArray(c.limpar) && c.limpar.length)) {
       delete t.chamados[sid];
@@ -1449,9 +1578,48 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       chamadoId: v.chamadoId, opcoes: v.opcoes, final: v.final, citar: v.citar, titulo: v.titulo, hora: v.hora, nome: v.nome,
       completo: true,
     });
+    if (c.mensagem !== null) marcarPorToque(t, c.mensagem.messageId, c.versao.id); // T29b
     c.mudouEm = agoraIso();
     enfileirar(t, sid);
     logar(`${sid} ${v.estado}: aberto (texto completo)`);
+    return true;
+  }
+
+  // ---------- T29c: "Menos informações" (PLANO-TELEGRAM.md, "T29c") ----------
+  // O aberto sem botao de resposta na tela tem o "Menos informações": aviso/resposta aberto, com final, sem opcao e sem o
+  // OK dentro da mensagem (o OK tem Sim/Nao e o bloco dele: fica de fora).
+  function chamadoRecolhivel(c) {
+    const v = c.versao;
+    if (!COM_BOTOES.has(v.estado) || v.completo !== true || typeof v.final !== 'string' || !v.final.trim()) return false;
+    return !(Array.isArray(v.opcoes) && v.opcoes.length) && !ehObjeto(c.ok);
+  }
+  // A situacao aberta, com texto e sem botao de opcao (sem opcao no texto, ou a da aba trabalhando: opcoes em texto, T16)
+  function situacaoRecolhivel(s) {
+    if (s.completo !== true || !ehObjeto(s.dados) || typeof s.dados.final !== 'string' || !s.dados.final.trim()) return false;
+    return s.dados.trabalhando === true || lerFinal(s.dados.final).opcoes.length === 0;
+  }
+
+  /**
+   * T29c: o dono tocou em "Menos informações" = a mensagem do chamado volta pro compacto, sem ida ate a aba. So com o
+   * aberto sem botao de resposta (chamadoRecolhivel): versao nova (++seq) com os mesmos campos e `completo: false`, pelo
+   * mesmo caminho do abrir (edicao da mensagem na tela, sem notificar; o chamadoId nao muda e o "Mais informações" volta).
+   * Marca o toque (T29b: a edicao nao renova a hora). Devolve true; senao (sem chamado, ja compacto, com opcao, com o OK
+   * na mensagem, outro estado) false e nada muda.
+   */
+  function recolher(e, sessionId) {
+    const t = tgDe(e);
+    const sid = sessao(sessionId, 'recolher');
+    const c = chamadoDe(t, sid);
+    if (!c || !chamadoRecolhivel(c)) return false;
+    const v = c.versao;
+    c.versao = versaoNova(t, v.estado, {
+      chamadoId: v.chamadoId, opcoes: v.opcoes, final: v.final, citar: v.citar, titulo: v.titulo, hora: v.hora, nome: v.nome,
+      completo: false,
+    });
+    if (c.mensagem !== null) marcarPorToque(t, c.mensagem.messageId, c.versao.id); // T29b
+    c.mudouEm = agoraIso();
+    enfileirar(t, sid);
+    logar(`${sid} ${v.estado}: recolhido (compacto)`);
     return true;
   }
 
@@ -1460,11 +1628,14 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
    * notificacao (fica ligado ate uma nova sair); citar (T7d1a, F1) = mensagem nova em cima da mensagem do dono (reply),
    * em silencio salvo notificar, e ela fica no chat; senao edicao em silencio. A anterior sai depois que a nova sair.
    * O citar fica ate a mensagem nova sair (linha sem citar no meio nao apaga ele). `apagarDoDono` saiu (F1): TypeError.
+   * T30 (PLANO-TELEGRAM.md, "T30", decisao 2): `falaFica: true` (com citar) = a fala citada nao chegou a aba nenhuma (a
+   * recusa): a mensagem que sair com este citar leva `falaFica` no registro e, quando ela sair do chat, a fala dele fica
+   * (nao entra no `limpar` da conversa resolvida). Sem ele = a T23 de hoje.
    */
   function sistema(e, texto, opcoes = {}) {
     const t = tgDe(e);
     if (typeof texto !== 'string') throw new TypeError('sistema: texto invalido');
-    const { notificar = false, citar = null } = opcoes;
+    const { notificar = false, citar = null, falaFica = false } = opcoes;
     if (tem(opcoes, 'apagarDoDono')) throw new TypeError('sistema: apagarDoDono saiu (F1: a mensagem do dono fica no chat); use citar');
     const s = t.sistema;
     s.linhas.push({ hora: agoraIso(), texto });
@@ -1473,6 +1644,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     const id = idMensagem(citar);
     if (notificar === true) s.notificar = true;
     if (id != null) s.citar = id;
+    if (id != null && falaFica === true) s.citarFica = true; // T30
+    else if (id != null) delete s.citarFica;
     if (notificar === true || id != null) s.descer = true;
     enfileirar(t, SISTEMA);
   }
@@ -1491,7 +1664,97 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     p.versaoId = ++t.seq;
     p.citar = idMensagem(citar);
     p.descer = true;
+    delete p.busca; // T29d: um painel novo pedido volta ao inteiro
     enfileirar(t, PAINEL);
+  }
+
+  // ---------- T29d: a busca no painel (PLANO-TELEGRAM.md, "T29d") ----------
+  // O painel tem o "Buscar"; o toque manda a pergunta (PERGUNTA_BUSCA, resposta forcada) e a palavra dele (a resposta a
+  // ela ou o "/buscar <palavra>"; quem reconhece e o porteiro) edita o painel na tela so com as abas que batem
+  // (filtrarPainel). A pergunta nao e mensagem de aba (fora do t.mensagens: resposta em cima dela nao vai pra aba) e sai
+  // do chat nos 2 modos (apagarPergunta, no passo do painel). A palavra nunca vai pro log.
+
+  // A pergunta que esta (ou ia) na tela vai pro apagar dela; a pergunta sai do estado.
+  function perguntaSai(t) {
+    const p = t.painel;
+    if (!ehObjeto(p.pergunta)) return false;
+    const id = idMensagem(p.pergunta.messageId);
+    delete p.pergunta;
+    if (id != null) p.apagarPergunta = [...(Array.isArray(p.apagarPergunta) ? p.apagarPergunta : []), id];
+    enfileirar(t, PAINEL);
+    return true;
+  }
+
+  /** T29d (decisao 1): o toque no "Buscar" = a pergunta nova (a anterior sai). Vale com ou sem painel na tela. */
+  function pedirBusca(e) {
+    const t = tgDe(e);
+    perguntaSai(t);
+    t.painel.pergunta = { messageId: null, em: agoraIso() };
+    enfileirar(t, PAINEL);
+    logar(`${PAINEL}: pergunta da busca pedida`);
+  }
+
+  /** T29d: o message_id da pergunta na tela (a que a resposta dele cita) | null (sem pergunta, nao saiu ou vencida). */
+  function perguntaDaBusca(e) {
+    const q = tgDe(e).painel.pergunta;
+    if (!ehObjeto(q)) return null;
+    const em = msDeIso(q.em);
+    if (!Number.isFinite(em) || agora() - em >= BUSCA_TTL_MS) return null;
+    return idMensagem(q.messageId);
+  }
+
+  /**
+   * T29d (decisao 2): a busca por `palavra` (texto com letra; senao TypeError). A pergunta sai. Painel na tela (ou pedido)
+   * = edicao dele (sem notificar); sem painel e com `dados` (objeto) = o painel sai filtrado como mensagem nova (sem
+   * citar); sem painel e sem dados = null e nada muda. Devolve o numero de abas que batem. Log sem a palavra.
+   */
+  function buscar(e, palavra, { dados = null } = {}) {
+    const t = tgDe(e);
+    const q = palavraDaBusca(palavra);
+    if (!q) throw new TypeError('buscar: palavra invalida');
+    const p = t.painel;
+    perguntaSai(t);
+    if (painelNaTela(e) === null) {
+      if (!ehObjeto(dados)) return null;
+      p.dados = JSON.parse(JSON.stringify(dados));
+      p.citar = null;
+      p.descer = true;
+    }
+    p.busca = { palavra: q, em: agoraIso() };
+    p.versaoId = ++t.seq;
+    enfileirar(t, PAINEL);
+    const n = filtrarPainel(p.dados, q).n;
+    logar(`${PAINEL}: busca com ${n} abas`);
+    return n;
+  }
+
+  /** T29d: o "Limpar busca" = o painel inteiro de novo (edicao). Sem busca = false e nada muda. */
+  function limparBusca(e) {
+    const t = tgDe(e);
+    const p = t.painel;
+    if (!ehObjeto(p.busca)) return false;
+    delete p.busca;
+    if (painelNaTela(e) !== null) {
+      p.versaoId = ++t.seq;
+      enfileirar(t, PAINEL);
+    }
+    logar(`${PAINEL}: busca limpa`);
+    return true;
+  }
+
+  /** T29d (decisao 4): 15 min sem uso = a busca volta ao inteiro; a pergunta sem resposta em 15 min sai (nada muda). */
+  function vencerBusca(e) {
+    const t = tgDe(e);
+    const p = t.painel;
+    const vencida = (x) => {
+      const em = msDeIso(x?.em);
+      return !Number.isFinite(em) || agora() - em >= BUSCA_TTL_MS;
+    };
+    if (ehObjeto(p.busca) && vencida(p.busca)) limparBusca(e);
+    if (ehObjeto(p.pergunta) && vencida(p.pergunta)) {
+      perguntaSai(t);
+      logar(`${PAINEL}: pergunta da busca sem resposta em 15 min; sai`);
+    }
   }
 
   /**
@@ -1573,8 +1836,26 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     s.completo = true;
     s.versaoId = ++t.seq;
     s.descer = false;
+    marcarPorToque(t, s.mensagem.messageId, s.versaoId); // T29b
     enfileirar(t, SITUACAO);
     logar(`${SITUACAO}: aberta (texto completo)`);
+    return true;
+  }
+
+  /**
+   * T29c: "Menos informações" na situacao = a mensagem dela volta pro compacto ali mesmo (edicao, sem notificar), com o
+   * "Mais informações" de volta; o id dos botoes fica. false = sem situacao na tela, ja compacta ou com botao de opcao.
+   */
+  function recolherSituacao(e) {
+    const t = tgDe(e);
+    const s = t.situacao;
+    if (!ehAba(s.aba) || !ehObjeto(s.mensagem) || !situacaoRecolhivel(s)) return false;
+    s.completo = false;
+    s.versaoId = ++t.seq;
+    s.descer = false;
+    marcarPorToque(t, s.mensagem.messageId, s.versaoId); // T29b
+    enfileirar(t, SITUACAO);
+    logar(`${SITUACAO}: recolhida (compacto)`);
     return true;
   }
 
@@ -1621,6 +1902,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         r = { ok: true, messageId: -(++t.seq), formato: 'rich' };
         registro = { acao: 'tg.enviar', sessionId, estado, silencioso: pedido.silencioso, html: pedido.html, classico: pedido.classico, botoes: pedido.botoes };
         if (pedido.responderA != null) registro.responderA = pedido.responderA; // T7d1a: so quando existe
+        if (pedido.respostaForcada != null) registro.respostaForcada = pedido.respostaForcada; // T29d: so quando existe
       } else if (metodo === 'editar') {
         r = { ok: true };
         registro = { acao: 'tg.editar', sessionId, messageId, estado, html: pedido.html, classico: pedido.classico, botoes: pedido.botoes };
@@ -1691,6 +1973,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     for (const c of Object.values(t.chamados)) verDono(c);
     verDono(t.sistema);
     verDono(t.painel);
+    if (ehObjeto(t.painel.pergunta)) ver(t.painel.pergunta.messageId); // T29d: a pergunta da busca (do bot)
+    if (Array.isArray(t.painel.apagarPergunta)) for (const id of t.painel.apagarPergunta) ver(id);
     verDono(t.situacao);
     if (Array.isArray(t.idsDoDono)) for (const id of t.idsDoDono) ver(id);
     for (const id of idsDeForaAtual) ids.add(id); // T7b2a: as mensagens de pedido de OK (nunca vao pra sonda)
@@ -1785,6 +2069,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       estado: SISTEMA,
       silencioso: s.notificar !== true,
       citar: idMensagem(s.citar), // T7d1a (F1)
+      falaFica: idMensagem(s.citar) != null && s.citarFica === true, // T30: a fala citada nao chegou a aba nenhuma
       montar: () => ({ ...montarSistema(s.linhas), botoes: null }),
       tituloMovido: TITULO_SISTEMA,
       iconeMovido: ICONE_SISTEMA, // o movido da do sistema com o titulo dela ("🎛️ Controle de Sessões")
@@ -1792,6 +2077,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       aoSair: () => {
         s.notificar = false;
         s.citar = null; // o reply ja saiu: a proxima linha sem citar nao cita de novo
+        delete s.citarFica; // T30
       },
     };
   }
@@ -1808,7 +2094,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       estado: PAINEL,
       silencioso: true,
       citar: idMensagem(p.citar),
-      montar: () => ({ ...montarPainel(p.dados), botoes: null }),
+      montar: () => ({ ...montarPainel(p.dados, { busca: p.busca?.palavra }), botoes: botoesPainel(p.busca?.palavra) }), // T29d
       tituloMovido: TITULO_PAINEL,
       versaoAtual: () => p.versaoId,
       aoSair: () => {
@@ -1985,8 +2271,11 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (alvo.sid !== SITUACAO) delete d.tirarBotoes;
     t.mensagens[id] = { sessionId: alvo.sid, at: agoraIso(), formato };
     if (alvo.sid === SITUACAO) t.mensagens[id].aba = alvo.aba; // T10
+    // T29b: a situacao sem pergunta leva a marca (vale tambem quando ela fica como mensagem da aba, T26d regra 3)
+    if (alvo.sid === SITUACAO && situacaoSemNada(d.dados)) t.mensagens[id].semNada = true;
     const citou = idMensagem(pedido.responderA); // T23a: a fala do dono em cima da qual ela saiu (a conversa dela)
     if (citou != null) t.mensagens[id].citar = citou;
+    if (citou != null && alvo.falaFica === true) t.mensagens[id].falaFica = true; // T30: a recusa (a fala fica no chat)
     if (alvo.sid === SITUACAO) { // T26d: regra 1 (a tela do chamado da aba sai depois) e regra 3 (as ex-situacoes dela)
       telaSaiPelaSituacao(t, alvo.aba);
       exSituacaoProApagar(t, d, alvo.aba, id);
@@ -2022,6 +2311,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         if (m.okCod != null) tela.ok = m.okCod;
         else delete tela.ok;
       }
+      const reg = t.mensagens[idMensagem(tela.messageId)]; // T29b: a edicao vinda da aba/porteiro renova a hora na tela
+      if (ehObjeto(reg) && reg.porToque !== alvo.versaoId) reg.vistaEm = agoraIso();
       soltar(t, alvo); // T7k
       logar(`${alvo.quem}: mensagem ${tela.messageId} editada`);
       // T26b2 (conserto 2): o OK fechou com a edicao em voo (o descer fica como esta)
@@ -2105,6 +2396,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (!limpaResolvidas) return;
     if (ehObjeto(entrada) && entrada.manterConversa === true) return; // T26b2: a tela do OK com a fala dele em voo
     const registro = t.mensagens[id];
+    if (ehObjeto(registro) && registro.falaFica === true) return; // T30: a fala recusada (nao chegou a aba nenhuma) fica
     const x = ehObjeto(registro) ? idMensagem(registro.citar) : null;
     if (x == null || !Array.isArray(t.idsDoDono) || !t.idsDoDono.includes(x)) return;
     const vozes = [];
@@ -2156,6 +2448,12 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       tirar(d.apagar, a);
       conversaResolvida(t, d, id, a); // T23a: a versao nova, o calado e as sobras (o registro e lido antes de sair)
       delete t.mensagens[id];
+      if (a.vista === true) logar(`${alvo.sid}: mensagem ${id} apagada (vista e sem nada pra você)`); // T29b
+      return 'segue';
+    }
+    if (r.velha === true && a.vista === true) { // T29b: a vista com 48 h fica no chat como esta (nunca vira "movido")
+      tirar(d.apagar, a);
+      logar(`${alvo.sid}: mensagem ${id} fica no chat (mais de 48 h)`);
       return 'segue';
     }
     if (r.velha === true) {
@@ -2239,6 +2537,46 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       return sair(`apagar ${id} recusado (${r.velha === true ? 'mais de 48 h' : erroCurto(r)}); fica sem os botoes`);
     }
     return falhou(t, item, alvo, r, 'apagar');
+  }
+
+  // T29d: a pergunta da busca no passo do painel, antes de tudo dele: primeiro o apagar dela (nos 2 modos; ok, 48 h ou
+  // 400 = sai da lista; 429 e transporte = fica), depois o envio da pedida (resposta forcada, em silencio). Envio ok = a
+  // pergunta na tela; 400 ou incerto = a pergunta sai sem repetir (1 log). null = nada a fazer aqui.
+  async function passoDaPergunta(t, item, resumo, agoraMs) {
+    const p = t.painel;
+    const apagar = Array.isArray(p.apagarPergunta) && p.apagarPergunta.length > 0;
+    const enviar = ehObjeto(p.pergunta) && p.pergunta.messageId == null;
+    if (!apagar && !enviar) return null;
+    if (agoraMs < pausaAte || agoraMs < recuoAte) return 'para';
+    const alvo = { sid: PAINEL, quem: PAINEL };
+    if (apagar) {
+      const id = idMensagem(p.apagarPergunta[0]);
+      const sair = (msg) => {
+        p.apagarPergunta.shift();
+        if (!p.apagarPergunta.length) delete p.apagarPergunta;
+        if (msg) logar(`${PAINEL}: ${msg}`);
+        return 'segue';
+      };
+      if (id == null) return sair(null);
+      const r = await chamar(t, 'apagar', { sessionId: PAINEL, messageId: id }, resumo);
+      if (r.ok === true) return sair(`pergunta da busca ${id} apagada`);
+      if (r.velha === true || (r.codigo === 400 && !ehPausa(r))) return sair(`apagar a pergunta da busca ${id} recusado (${r.velha === true ? 'mais de 48 h' : erroCurto(r)}); fica no chat`);
+      return falhou(t, item, alvo, r, 'apagar');
+    }
+    const pedido = { classico: PERGUNTA_BUSCA, respostaForcada: EXEMPLO_BUSCA, silencioso: true };
+    const r = await chamar(t, 'enviar', { sessionId: PAINEL, estado: 'busca', pedido }, resumo);
+    const id = r.ok === true ? idMensagem(r.messageId) : null;
+    if (id != null) {
+      p.pergunta.messageId = id;
+      logar(`${PAINEL}: pergunta da busca enviada (mensagem ${id})`);
+      return 'segue';
+    }
+    if (r.ok === true || r.incerto === true || (r.codigo === 400 && !ehPausa(r))) {
+      delete p.pergunta;
+      logar(`${PAINEL}: a pergunta da busca nao saiu (${r.ok === true ? 'sem message_id' : erroCurto(r)}); sai sem repetir`);
+      return 'segue';
+    }
+    return falhou(t, item, alvo, r, 'enviar');
   }
 
   // T12 (contrato 1): apaga a 1a mensagem de `apagarToque` (o "/start" do toque no nome da aba no painel: mensagem do
@@ -2391,7 +2729,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       && d.mensagem.ok === d.ok.cod && Number.isSafeInteger(d.ok.versaoId) && d.mensagem.versaoId >= d.ok.versaoId;
     if (comOk && trancada(d)) return passoTrancado(t, item, alvo, resumo, emDiaComOk); // T26b2
     // T26d (regra 1): a situacao da aba e a mensagem dela: o chamado esta em dia sem tela (so o apagar)
-    const emDiaSemTela = alvo.comOk === true && !comOk && d.mensagem === null && d.descer !== true && d.naSituacao === alvo.versaoId;
+    const emDiaSemTela = (alvo.comOk === true && !comOk && d.mensagem === null && d.descer !== true && d.naSituacao === alvo.versaoId)
+      || (alvo.sid === SISTEMA && d.mensagem === null && d.descer !== true && d.semTela === alvo.versaoId); // T29b: a do sistema saiu
     if (!emDiaComOk && !emDiaSemTela && (d.mensagem === null || d.descer === true || d.mensagem.versaoId !== alvo.versaoId)) {
       const nova = d.mensagem === null || d.descer === true;
       if (comOk && nova && typeof d.ok.fechado === 'string') { // a mensagem nova nao leva o bloco fechado
@@ -2450,6 +2789,8 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (sid === SISTEMA) {
       alvo = alvoSistema(t);
     } else if (sid === PAINEL) {
+      const pergunta = await passoDaPergunta(t, item, resumo, agoraMs); // T29d
+      if (pergunta !== null) return pergunta;
       // T12: painel que saiu do estado (edicao recusada) nunca volta como mensagem nova: so o apagar dele, se tiver
       if (!ehObjeto(t.painel.dados)) {
         const limparP = Array.isArray(t.painel.limpar) && t.painel.limpar.length > 0; // T23a: a limpeza antes do apagar
@@ -2617,6 +2958,23 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (x != null) t.mensagens[id].citar = x;
   }
 
+  // T29a (PLANO-TELEGRAM.md, "T29a"): o modo das resolvidas troca na hora (o /modo do menu do bot), valendo daqui pra
+  // frente. Fora de 'apagar'/'manter' = TypeError e nada muda. Pro 'manter': a limpeza pendente (o `limpar` de cada aba, do
+  // sistema, do painel e da situacao) e descartada sem chamar a API; com o drenar em curso a lista so esvazia no lugar (o
+  // passo que esta no meio dela segue sem lancar). Pro 'apagar': o que ficou no chat no manter (`fica`) continua la.
+  function definirResolvidas(e, modo) {
+    if (modo !== 'apagar' && modo !== 'manter') throw new TypeError('canal-telegram: resolvidas invalido');
+    const t = tgDe(e);
+    limpaResolvidas = modo === 'apagar';
+    mantemResolvidas = modo === 'manter';
+    if (!mantemResolvidas) return;
+    for (const d of [...Object.values(t.chamados), t.sistema, t.painel, t.situacao]) {
+      if (!ehObjeto(d) || d.limpar === undefined) continue;
+      if (drenando && Array.isArray(d.limpar)) d.limpar.length = 0;
+      else delete d.limpar;
+    }
+  }
+
   /** T17b: a aba tem item na fila do canal (a resposta em texto ainda nao saiu)? A voz so sai com a aba fora da fila. */
   function naFila(e, sessionId) {
     const t = tgDe(e);
@@ -2639,13 +2997,20 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     encerrar,
     calar,
     abrir,
+    recolher,
     sistema,
     painel,
     painelNaTela,
     atualizarPainel,
+    pedirBusca, // T29d
+    perguntaDaBusca,
+    buscar,
+    limparBusca,
+    vencerBusca,
     apagarToque,
     situacao,
     abrirSituacao,
+    recolherSituacao,
     situacaoTocada,
     drenar,
     podar,
@@ -2659,5 +3024,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     okDeNovo, // T28
     okNaMensagem,
     okSemTela, // T26b2
+    definirResolvidas, // T29a
+    vistasSemNada, // T29b
   };
 }
