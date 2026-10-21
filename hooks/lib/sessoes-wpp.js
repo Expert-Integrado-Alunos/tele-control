@@ -25,6 +25,9 @@ const path = require('path');
 const CAUDA_PADRAO = 2 * 1024 * 1024;
 const FRESCO_MS = 5 * 60 * 1000;
 const REGISTRO_RE = /^\d+\.json$/;
+// M4a (PLANO-MAC.md, "Mapa", linha 1): o nome do LaunchAgent do porteiro no Mac. Fonte unica: o porteiro, o
+// lib/launchagent.mjs (createRequire), o hooks/porteiro-supervisor.js e o tools/mac/instalar-mac.sh (node -e) leem daqui.
+const LABEL_MAC = 'com.expertintegrado.tele-control';
 
 // Pastas e arquivo de log. Env manda (teste e override); sem env = ~/.claude.
 function caminhos(env) {
@@ -334,6 +337,7 @@ function log(logFile, msg) {
 
 module.exports = {
   caminhos,
+  LABEL_MAC,
   ENTRYPOINTS_INTERATIVOS,
   ehInterativa,
   acharRegistro,

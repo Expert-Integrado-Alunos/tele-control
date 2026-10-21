@@ -160,6 +160,67 @@ test('lancador ausente: nao marca tentativa, loga o motivo, exit 0 e stdout vazi
   assert.match(lerLog(p), /o lancador nao existe/);
 });
 
+// M4a (PLANO-MAC.md, "Mapa", linha 1): no Mac o lancador e o LaunchAgent (launchctl kickstart), nao o .vbs. Os 3 abaixo
+// chamam o main({ platform: 'darwin', ... }) neste processo com dubles: o spawn so anota (launchctl nunca roda), o
+// `existe` responde pelo plist sintetico (/Users/dono) e cai no disco pro resto; a pasta de estado vem do env (restaurado).
+const { EventEmitter } = require('events');
+const { LABEL_MAC } = require('../lib/sessoes-wpp.js');
+const PLIST_MAC = `/Users/dono/Library/LaunchAgents/${LABEL_MAC}.plist`;
+
+async function rodarMac(p, { temPlist }) {
+  const { main } = require(HOOK);
+  const chamadas = [];
+  const spawnFalso = (cmd, args, opts) => {
+    chamadas.push({ cmd, args, opts });
+    const f = new EventEmitter();
+    f.unref = () => {};
+    setImmediate(() => f.emit('spawn'));
+    return f;
+  };
+  const existe = (arq) => (arq === PLIST_MAC ? temPlist : fs.existsSync(arq));
+  const antes = { SESSOES_WPP_DIR: process.env.SESSOES_WPP_DIR, SESSOES_WPP_LOG: process.env.SESSOES_WPP_LOG };
+  process.env.SESSOES_WPP_DIR = p.estado;
+  process.env.SESSOES_WPP_LOG = p.log;
+  try {
+    await main({ platform: 'darwin', spawn: spawnFalso, uid: 501, home: '/Users/dono', existe });
+  } finally {
+    for (const [k, v] of Object.entries(antes)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  return chamadas;
+}
+
+test('M4a darwin: sem o plist do LaunchAgent nao chama o spawn, nao marca tentativa e loga o motivo', async () => {
+  const p = pasta({ vbs: false });
+  const chamadas = await rodarMac(p, { temPlist: false });
+  assert.deepEqual(chamadas, []);
+  assert.equal(tentou(p), false);
+  assert.match(lerLog(p), /supervisor: porteiro morto e o plist do launchd nao existe \(.*com\.expertintegrado\.tele-control\.plist\); nada feito/);
+  assert.doesNotMatch(lerLog(p), /religando/);
+});
+
+test('M4a darwin: com o plist e o porteiro morto, religa por launchctl kickstart gui/<uid>/<label> destacado e loga "religando pelo launchd"', async () => {
+  const p = pasta({ vbs: false });
+  const morto = pidMorto();
+  fs.writeFileSync(path.join(p.estado, 'porteiro.lock'), String(morto));
+  const chamadas = await rodarMac(p, { temPlist: true });
+  assert.deepEqual(chamadas, [{ cmd: 'launchctl', args: ['kickstart', `gui/501/${LABEL_MAC}`], opts: { detached: true, stdio: 'ignore' } }]);
+  assert.match(lerLog(p), new RegExp(`supervisor: porteiro morto \\(pid ${morto}\\); religando pelo launchd`));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(p.estado, 'supervisor.json'), 'utf8')).pidMorto, morto);
+  assert.equal(esperarMarca(p.marca, 300), false, 'nada de .vbs no Mac');
+});
+
+test('M4a darwin: com o arquivo "desligado" nao chama nada (nem com o plist)', async () => {
+  const p = pasta({ vbs: false });
+  fs.writeFileSync(path.join(p.estado, 'desligado'), '');
+  const chamadas = await rodarMac(p, { temPlist: true });
+  assert.deepEqual(chamadas, []);
+  assert.equal(tentou(p), false);
+  assert.equal(lerLog(p), '');
+});
+
 test('stdin ausente ou lixo nao muda nada: continua exit 0 e mudo', () => {
   const p = pasta();
   fs.writeFileSync(path.join(p.estado, 'porteiro.lock'), String(process.pid));

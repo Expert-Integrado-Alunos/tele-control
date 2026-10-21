@@ -150,6 +150,8 @@ import { semLinhaDoDono, lerDadosBotao } from './lib/formato-tg.mjs';
 import { falar as falarVoz, textoParaFala } from './lib/voz.mjs';
 import { limparAmbienteDeSessao, nomesDoRegistroReal } from './lib/ambiente.mjs';
 import { gravarCentral as gravarCentralReal } from './lib/central.mjs';
+import { ehMac, caminhos } from './lib/plataforma.mjs';
+import { caminhoDoPlist, LABEL_MAC } from './lib/launchagent.mjs';
 
 const require = createRequire(import.meta.url);
 const lib = require('./hooks/lib/sessoes-wpp.js');
@@ -245,6 +247,9 @@ const RETOMADAS_MAX = 50;
 // T18c (PLANO-TELEGRAM.md, "T18c", contrato 3): um destes na arvore da escondida (filhos e netos nascidos depois dela,
 // nome em minusculas) = comando rodando nela: nao fecha ate ele acabar
 const COMANDO_NOMES = new Set(['bash.exe', 'sh.exe', 'powershell.exe', 'pwsh.exe']);
+// M2 (PLANO-MAC.md, "Mapa", linha 2): no Mac o `ps` da o nome sem .exe (o basename; shell de login sem o `-` do comeco,
+// linhasDoPsMac)
+export const COMANDO_NOMES_MAC = new Set(['bash', 'sh', 'zsh', 'dash', 'fish', 'pwsh']);
 // T18c (revisao): com comando rodando, a escondida e conferida de novo so 1 vez por minuto (cada conferencia sao ate 3
 // PowerShell: ocioso, info e filhos; o passo rapido de 15 s faria 12 por minuto enquanto o comando durar)
 const COMANDO_CONFERE_MS = MIN;
@@ -394,7 +399,7 @@ function nomesDasPastas(pastas) {
   const nomes = [];
   const vistos = new Set();
   for (const p of Array.isArray(pastas) ? pastas : []) {
-    const nome = typeof p === 'string' ? path.win32.basename(p) : '';
+    const nome = typeof p === 'string' ? caminhos().basename(p) : ''; // M1: o basename da plataforma
     if (!nome || vistos.has(nome.toLowerCase())) continue;
     vistos.add(nome.toLowerCase());
     nomes.push(nome);
@@ -998,12 +1003,15 @@ function fixaDe(e, sid) {
 /**
  * T7a1a: a sessao tem canal de recado? (o SendMessage do mensageiro entra pelo pipe `messagingSocketPath` do registro).
  * Sem o campo = false; `\\.\pipe\<resto>` com o resto (em minusculas) em `pipes` (Set de nomes em minusculas) = true,
- * fora = false; outro formato ou `pipes` que nao e Set (listagem falhou) = null (nao sabe). Pura.
+ * fora = false; outro formato ou `pipes` que nao e Set (listagem falhou) = null (nao sabe). Pura no Windows.
+ * M2 (PLANO-MAC.md, "Mapa", linha 3): no Mac o canal e um socket Unix: caminho POSIX absoluto = `ehSocket(p)` (true,
+ * false ou null; padrao ehSocketReal, que olha o disco), outro formato = null; o `pipes` nao vale no Mac.
  */
-export function temCanalDeRecado(registro, pipes) {
+export function temCanalDeRecado(registro, pipes, ehSocket = ehSocketReal) {
   const p = registro && typeof registro === 'object' ? registro.messagingSocketPath : undefined;
   if (p === undefined || p === null || p === '') return false;
   if (typeof p !== 'string') return null;
+  if (ehMac()) return path.posix.isAbsolute(p) ? ehSocket(p) : null;
   const m = /^\\\\\.\\pipe\\(.+)$/i.exec(p);
   if (!m || !(pipes instanceof Set)) return null;
   return pipes.has(m[1].toLowerCase());
@@ -1012,8 +1020,11 @@ export function temCanalDeRecado(registro, pipes) {
 /**
  * T7a1a: `procStart` do registro (FILETIME do Windows em texto: centenas de ns desde 1601) -> ms desde 1970 | null.
  * '134353489160112846' -> 1790875316011. Pura.
+ * M2: no Mac = null sempre (a idade cai no startedAt, como no registro sem o campo). HIPOTESE: o formato do procStart no
+ * Mac ainda nao foi medido; medir no Mac (PLANO-MAC.md, "So da para medir no Mac").
  */
 export function procStartMs(procStart) {
+  if (ehMac()) return null;
   if (typeof procStart !== 'string' || !/^\d{1,24}$/.test(procStart)) return null;
   const ms = Number(BigInt(procStart) / 10000n - 11644473600000n);
   return Number.isSafeInteger(ms) && ms > 0 ? ms : null;
@@ -1023,12 +1034,16 @@ export function procStartMs(procStart) {
  * T7a1b/T18b: o processo do pid (o `processos.info`) e o do registro? 'ok' = claude(.exe) criado na hora do procStart
  * (+-1 s) ou, sem ele, do startedAt (+-2 min); 'sem-hora' = registro sem hora de criacao legivel; 'outro' = nome ou hora
  * que nao bate (o pid e de outro processo: reusado). Pura.
+ * M2: no Mac o nome aceito e `claude` ou um nome de versao `x.y.z` (o instalador nativo roda
+ * ~/.local/share/claude/versions/<x.y.z>). HIPOTESE: o nome do processo do claude nativo no Mac ainda nao foi medido.
  */
-function processoBate(reg, info) {
+export function processoBate(reg, info) {
   const ps = procStartMs(reg?.procStart);
   const base = ps ?? (Number.isFinite(reg?.startedAt) ? reg.startedAt : null);
   if (base === null) return 'sem-hora';
-  const nome = String(info?.nome ?? '');
+  const doProcesso = String(info?.nome ?? '');
+  // M2: no Mac o nome que vale (claude ou x.y.z) vira `claude` pra regra de baixo; qualquer outro vira '' (nao bate)
+  const nome = ehMac() ? (/^(?:claude|\d+\.\d+\.\d+)$/.test(doProcesso) ? 'claude' : '') : doProcesso;
   const criado = Number(info?.criadoEm);
   const folga = ps !== null ? CENTRAL_PROC_FOLGA_MS : CENTRAL_INICIO_FOLGA_MS;
   if (!/^claude(\.exe)?$/i.test(nome) || !Number.isFinite(criado) || Math.abs(criado - base) > folga) return 'outro';
@@ -1085,29 +1100,38 @@ function nomeDaSessao(v) {
 
 // Pasta do Windows normalizada: absoluta COM letra de drive (relativa, `\x` sem drive e UNC = null), barra `/` vira `\`,
 // `.` e `..` resolvidos, sem `\` no fim (menos a raiz do drive). O caso das letras fica como veio.
-function pastaNormal(p) {
+// M1 (PLANO-MAC.md, linha 0): no Mac, absoluta POSIX (`/...`; o resto = null) pelo `path.posix.resolve`, sem `/` no fim
+// (menos a raiz `/`).
+export function pastaNormal(p) {
   const s = typeof p === 'string' ? p.trim() : '';
+  if (ehMac()) {
+    if (!s.startsWith('/')) return null;
+    const rm = path.posix.resolve(s);
+    return rm.length > 1 ? rm.replace(/\/+$/, '') : rm;
+  }
   if (!/^[A-Za-z]:[\\/]/.test(s)) return null;
   const r = path.win32.resolve(s);
   return r.length > 3 ? r.replace(/\\+$/, '') : r;
 }
 
 // Mesma pasta sem diferenca de maiuscula/minuscula e de barra (o VS Code grava `c:\projetos\x` no cwd do registro).
-function mesmaPasta(a, b) {
+// M1: no Mac tambem sem caso (o APFS padrao nao diferencia; PLANO-MAC.md, "Decisoes").
+export function mesmaPasta(a, b) {
   const x = pastaNormal(a);
   const y = pastaNormal(b);
   return x !== null && y !== null && x.toLowerCase() === y.toLowerCase();
 }
 
 // A raiz (normalizada) que contem `pasta` (ou e ela), comparando sem caso; nenhuma = null. So texto: nao olha o disco.
-function raizDaPasta(pasta, raizes) {
+export function raizDaPasta(pasta, raizes) {
   const k = pastaNormal(pasta)?.toLowerCase();
   if (!k) return null;
+  const sep = caminhos().sep; // M1: `/` no Mac, `\` no Windows
   for (const bruta of raizes) {
     const raiz = pastaNormal(bruta);
     if (!raiz) continue;
     const r = raiz.toLowerCase();
-    if (k === r || k.startsWith(r.endsWith('\\') ? r : `${r}\\`)) return raiz;
+    if (k === r || k.startsWith(r.endsWith(sep) ? r : `${r}${sep}`)) return raiz;
   }
   return null;
 }
@@ -1118,7 +1142,7 @@ function pastaDaSessao(pedida, raizes) {
   const pasta = pastaNormal(pedida);
   const raiz = pasta ? raizDaPasta(pasta, raizes) : null;
   if (!raiz) return null;
-  const abaixo = pasta.slice(raiz.length).split('\\').filter(Boolean);
+  const abaixo = pasta.slice(raiz.length).split(caminhos().sep).filter(Boolean); // M1: o separador da plataforma
   if (abaixo.some((s) => PASTAS_FORA_DA_SESSAO.has(s.toLowerCase()))) return null;
   try {
     return fs.statSync(pasta).isDirectory() ? pasta : null;
@@ -1129,13 +1153,15 @@ function pastaDaSessao(pedida, raizes) {
 
 // Pasta curta da frase: `<ultimo nome da raiz>\<resto>` (repos\sessoes-wpp, Workspace\Comercial); a propria raiz = so o
 // nome dela (repos / Workspace). Fora das raizes (estado velho) = o ultimo nome da pasta.
-function pastaCurta(pasta, raizes) {
+// M1: no Mac, `path.posix.basename` e junta com `/` (`repos/sessoes-wpp`).
+export function pastaCurta(pasta, raizes) {
+  const c = caminhos();
   const raiz = raizDaPasta(pasta, raizes);
   const p = pastaNormal(pasta);
-  if (!raiz || !p) return path.win32.basename(String(pasta ?? '')) || 'a pasta pedida';
-  const resto = p.slice(raiz.length).replace(/^\\+/, '');
-  const base = path.win32.basename(raiz) || raiz;
-  return resto ? `${base}\\${resto}` : base;
+  if (!raiz || !p) return c.basename(String(pasta ?? '')) || 'a pasta pedida';
+  const resto = p.slice(raiz.length).replace(ehMac() ? /^\/+/ : /^\\+/, '');
+  const base = c.basename(raiz) || raiz;
+  return resto ? `${base}${c.sep}${resto}` : base;
 }
 
 // F4c: id de janela do VS Code que vale (o <n> da pasta window<n> dos logs e do `windowId` do link): inteiro positivo.
@@ -2894,7 +2920,8 @@ export function criarPorteiro({
         naoFecha('comandos sem dados');
         continue;
       }
-      const comando = filhos.map((n) => String(n ?? '').toLowerCase()).find((n) => COMANDO_NOMES.has(n));
+      const nomesDeComando = ehMac() ? COMANDO_NOMES_MAC : COMANDO_NOMES; // M2: o conjunto do Mac
+      const comando = filhos.map((n) => String(n ?? '').toLowerCase()).find((n) => nomesDeComando.has(n));
       if (comando) {
         if (!x.comandoEm) {
           x.comandoEm = iso(agoraMs);
@@ -7475,12 +7502,24 @@ function soltarTrava(lockFile) {
 }
 
 // T7a1a: os nomes em \\.\pipe\ (em minusculas) pro canal de recado das sessoes; erro = null (nao sabe = como antes).
-// So lista o diretorio: nunca `stat` nem abre um pipe.
+// So lista o diretorio: nunca `stat` nem abre um pipe. M2: no Mac = Set vazio (a listagem "deu certo"; quem decide e o
+// ehSocketReal, pelo caminho do socket no temCanalDeRecado).
 function listarPipesReal() {
+  if (ehMac()) return new Set();
   try {
     return new Set(fs.readdirSync('\\\\.\\pipe\\').map((n) => String(n).toLowerCase()));
   } catch {
     return null;
+  }
+}
+
+// M2 (PLANO-MAC.md, "Mapa", linha 3): o caminho `p` e um socket Unix? (o canal de recado no Mac). So o lstat (nunca abre
+// o socket); nao existe (ENOENT) = false; outro erro = null (nao sabe).
+function ehSocketReal(p) {
+  try {
+    return fs.lstatSync(p).isSocket();
+  } catch (err) {
+    return err?.code === 'ENOENT' ? false : null;
   }
 }
 
@@ -7489,7 +7528,8 @@ function listarPipesReal() {
 // numerico; 3221225794 = 0xC0000142, o powershell nem inicializou; sem codigo e morto por sinal = o sinal), 'abrir'
 // (codigo em texto: ENOENT e parecidos; ou o exec lancou), 'formato' (sem status=ok ou sem idle_ms). stderr = so a 1a
 // linha, ate 160. Nunca lanca. `exec` = o execFile e `agora` = o relogio (teste: dubles; o powershell real nunca roda na
-// bateria).
+// bateria). M2 (PLANO-MAC.md, "Mapa", linha 4): no Mac roda o `ioreg -c IOHIDSystem` (mesmo prazo) e o 1o
+// `"HIDIdleTime" = <n>` (em ns) vira ms inteiro; sem ele = 'formato'; os mesmos falha e motivoDoErro.
 export function ociosoReal({ exec = execFile, agora = Date.now } = {}) {
   const script = path.join(REPO, 'bin', 'ocioso.ps1');
   return new Promise((resolver) => {
@@ -7524,10 +7564,18 @@ export function ociosoReal({ exec = execFile, agora = Date.now } = {}) {
       inicio = 0;
     }
     try {
+      const mac = ehMac();
+      const [bin, args, opts] = mac
+        ? ['ioreg', ['-c', 'IOHIDSystem', '-d', '4', '-r', '-k', 'HIDIdleTime'], { timeout: 20000 }]
+        : [
+          'powershell',
+          ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-MinMs', '0', '-TimeoutMs', '0'],
+          { windowsHide: true, timeout: 20000 },
+        ];
       exec(
-        'powershell',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-MinMs', '0', '-TimeoutMs', '0'],
-        { windowsHide: true, timeout: 20000 },
+        bin,
+        args,
+        opts,
         (err, stdout, stderr) => {
           try {
             if (err) {
@@ -7535,6 +7583,10 @@ export function ociosoReal({ exec = execFile, agora = Date.now } = {}) {
               return falha(motivo, codigo, stderr ?? err.stderr);
             }
             const s = String(stdout ?? '');
+            if (mac) {
+              const ns = /"HIDIdleTime"\s*=\s*(\d+)/.exec(s);
+              return ns ? fim(Number(BigInt(ns[1]) / 1000000n)) : falha('formato', null, stderr);
+            }
             const m = /idle_ms=(\d+)/.exec(s);
             if (/status=ok/.test(s) && m) return fim(Number(m[1]));
             return falha('formato', null, stderr);
@@ -7601,6 +7653,89 @@ const ABRIR_PRAZO_MS = 15 * 1000; // wscript que nao emite nem 'spawn' nem 'erro
 const RUIM_PRO_CLAUDE = /["%\r\n;]/;
 const claudeRuim = (c) => typeof c !== 'string' || !c || RUIM_PRO_CLAUDE.test(c);
 
+// ---------- M3 (PLANO-MAC.md, "Mapa", linha 2): no Mac a central e a sessao escondida sobem numa sessao tmux ----------
+
+// Servidor tmux so do Tele Control (`tmux -L tele-control`): o dono olha com `tmux -L tele-control attach -t <nome>`.
+export const TMUX_SOCKET = 'tele-control';
+const NOME_TMUX_MAX = 40;
+// VS Code e Orca no Mac: o porteiro nao abre (o fluxo padrao, F4f, ja e a sessao escondida)
+const SO_ESCONDIDA_NO_MAC = 'no Mac a sessao abre escondida (tmux); VS Code/Orca nao abrem pelo porteiro';
+
+/**
+ * M3: o nome da sessao tmux a partir do nome da sessao (ou da central): minusculo, sem acento (NFD sem as marcas), cada
+ * sequencia fora de [a-z0-9] vira 1 `-`, sem `-` no comeco e no fim, no maximo 40 caracteres (o `-` que o corte deixa no
+ * fim sai tambem). Vazio (ou nao texto) = 'sessao'. Nunca tem `.` nem `:` (o tmux recusa no nome da sessao).
+ */
+export function nomeTmux(nome) {
+  const s = (typeof nome === 'string' ? nome : '').toLowerCase().normalize('NFD').replace(/\p{M}+/gu, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, NOME_TMUX_MAX).replace(/-+$/, '');
+  return s || 'sessao';
+}
+
+/**
+ * M3: os argumentos de `tmux -L tele-control new-session -d -s <sessao> -c <pasta> [-e K=V ...] -- <comando...>`.
+ * `extraEnv` ({K: V}) vira 1 `-e K=V` por par, na ordem. O `comando` (array) entra em argumentos separados: o tmux
+ * executa direto, sem shell (espaco e aspas num argumento nao precisam de escape).
+ */
+export function argsTmux({ sessao, pasta, comando, extraEnv } = {}) {
+  const doEnv = extraEnv && typeof extraEnv === 'object'
+    ? Object.entries(extraEnv).flatMap(([k, v]) => ['-e', `${k}=${v}`])
+    : [];
+  return ['-L', TMUX_SOCKET, 'new-session', '-d', '-s', sessao, '-c', pasta, ...doEnv, '--', ...comando];
+}
+
+// M3: o tipo do caminho no disco: 'pasta' | 'arquivo' | null (erro ou outra coisa = null). O `existe` padrao do Mac.
+function tipoNoDisco(p) {
+  try {
+    const st = fs.statSync(p);
+    return st.isDirectory() ? 'pasta' : (st.isFile() ? 'arquivo' : null);
+  } catch {
+    return null;
+  }
+}
+
+// M3: as conferencias do .vbs (saidas 2 e 3) no Mac. Cada [caminho, tipo, rotulo] tem que ser absoluto POSIX (`/...`) e
+// o `existe` tem que devolver o tipo. Devolve a frase do 1o que falha ou null (tudo certo). `existe` que lanca = nao existe.
+function faltaNoMac(existe, itens) {
+  for (const [p, tipo, rotulo] of itens) {
+    if (typeof p !== 'string' || !p.startsWith('/')) return `${rotulo} nao e caminho absoluto do Mac (/...)`;
+    let achado = null;
+    try { achado = existe(p); } catch { achado = null; }
+    if (achado !== tipo) return `${rotulo} (${p}) nao existe`;
+  }
+  return null;
+}
+
+// M3: 1 `tmux <args>` sem shell e sem terminal, esperando ele sair (o `new-session -d` sai logo; a sessao fica no
+// servidor tmux, que nasce no 1o pedido com este ambiente). Saida 0 = resolve; outro codigo (o "duplicate session" sai
+// com 1), 'error' (tmux fora do PATH) ou `prazoMs` (o tmux e encerrado) = rejeita.
+function rodarTmux(spawnFn, args, ambiente, prazoMs) {
+  return new Promise((resolver, rejeitar) => {
+    let acabou = false;
+    let relogio = null;
+    const fim = (err) => {
+      if (acabou) return;
+      acabou = true;
+      clearTimeout(relogio);
+      if (err) rejeitar(err);
+      else resolver();
+    };
+    let filho;
+    try {
+      filho = spawnFn('tmux', args, { stdio: 'ignore', env: ambiente });
+    } catch (err) {
+      fim(err);
+      return;
+    }
+    relogio = setTimeout(() => {
+      try { filho.kill(); } catch { /* ja saiu */ }
+      fim(new Error(`tmux nao saiu em ${Math.round(prazoMs / 1000)} s`));
+    }, prazoMs);
+    filho.on('error', (err) => fim(err)); // fica ouvindo: 'error' sem ouvinte derrubaria o porteiro
+    filho.once('exit', (codigo, sinal) => fim(codigo === 0 ? null : new Error(`tmux saiu com ${codigo ?? sinal ?? '?'}`)));
+  });
+}
+
 /**
  * Abre a central de verdade (F3.9/F3.10): wscript no central/abrir-central.vbs (ele limpa o ambiente herdado e abre o
  * Windows Terminal), destacado e sem janela. So o `rodar` usa a de verdade; teste passa `spawn` falso.
@@ -7623,6 +7758,7 @@ const claudeRuim = (c) => typeof c !== 'string' || !c || RUIM_PRO_CLAUDE.test(c)
 export function abrirCentralReal(log, {
   spawn: spawnFn = spawn, central = null, claude, gravarCentral: gravar = gravarCentralReal, estadoDir = null, dono = null,
   raizes = [], env = process.env,
+  existe = tipoNoDisco,
 } = {}) {
   const vbs = path.join(REPO, 'central', 'abrir-central.vbs');
   const id = identidadeCentral({ central }, { repo: REPO });
@@ -7653,6 +7789,32 @@ export function abrirCentralReal(log, {
       return;
     }
     const modoCli = montada.modo === 'sozinha' ? 'bypassPermissions' : 'auto';
+    if (ehMac()) {
+      // M3 (PLANO-MAC.md, "Mapa", linha 2): no Mac a central sobe numa sessao tmux destacada (o .vbs e o Windows
+      // Terminal sao do Windows). As conferencias do abrir-central.vbs (saidas 2 e 3) viram as do faltaNoMac, pelo
+      // `existe` injetavel, antes de rodar qualquer coisa. O claude so com o nome (sem `/` nem `\`) o PATH do tmux acha.
+      const instrucoes = path.posix.join(montada.pasta, 'instrucoes.md');
+      const ajustes = path.posix.join(montada.pasta, 'ajustes.json');
+      const exeSoNome = !/[\\/]/.test(exe);
+      const falta = faltaNoMac(existe, [
+        [id.pasta, 'pasta', 'pasta da central'],
+        ...(exeSoNome ? [] : [[exe, 'arquivo', 'claude']]),
+        [montada.pasta, 'pasta', 'pasta montada da central'],
+        [instrucoes, 'arquivo', 'instrucoes.md da central'],
+        [ajustes, 'arquivo', 'ajustes.json da central'],
+      ]);
+      if (falta) {
+        rejeitar(new Error(falta));
+        return;
+      }
+      const comando = [exe, '-n', id.nome, '--permission-mode', modoCli, '--settings', ajustes, '--append-system-prompt-file', instrucoes];
+      rodarTmux(spawnFn, argsTmux({ sessao: nomeTmux(id.nome), pasta: id.pasta, comando }), semHerdadas(env), ABRIR_PRAZO_MS)
+        .then(resolver, (err) => {
+          log(`abrir a central falhou (tmux): ${String(err?.message || err).slice(0, 160)}`);
+          rejeitar(err);
+        });
+      return;
+    }
     let acabou = false;
     let relogio = null;
     const fim = (err) => {
@@ -7749,6 +7911,7 @@ function rodarCode(spawnFn, prazoMs, code, args, ambiente) {
  */
 export function abrirSessaoReal({ spawn: spawnFn = spawn, env = process.env, prazoMs = CODE_PRAZO_MS } = {}) {
   return async (pasta) => {
+    if (ehMac()) throw new Error(SO_ESCONDIDA_NO_MAC); // M3: no Mac o porteiro nao abre o VS Code
     const p = typeof pasta === 'string' ? pasta.trim() : '';
     if (!p || RUIM_PRO_CMD.test(p)) throw new Error('pasta vazia ou com caractere que o cmd nao passa inteiro');
     const code = caminhoDoCode(env);
@@ -7765,6 +7928,7 @@ export function abrirSessaoReal({ spawn: spawnFn = spawn, env = process.env, pra
  */
 export function abrirLinkReal({ spawn: spawnFn = spawn, env = process.env, prazoMs = CODE_PRAZO_MS } = {}) {
   return async (n) => {
+    if (ehMac()) throw new Error(SO_ESCONDIDA_NO_MAC); // M3: no Mac o porteiro nao abre o VS Code
     if (!idJanelaValido(n)) throw new Error('windowId invalido (inteiro positivo)');
     const code = caminhoDoCode(env);
     await rodarCode(spawnFn, prazoMs, code, ['--open-url', `"${LINK_ABA_NOVA}?windowId=${n}"`], semHerdadas(env));
@@ -7803,6 +7967,7 @@ const RUIM_PRO_NOME = /["%]/;
 export function abrirSessaoEscondidaReal({
   spawn: spawnFn = spawn, env = process.env, prazoMs = ABRIR_PRAZO_MS, claude = null, gravarCentral: gravar = gravarCentralReal,
   log = () => {}, central = null, estadoDir = null, dono = null, raizes = [],
+  existe = tipoNoDisco, agora = Date.now,
 } = {}) {
   const vbs = path.join(REPO, 'central', 'abrir-sessao.vbs');
   const id = identidadeCentral({ central }); // so o nome e o modo (a pasta da central nao entra aqui)
@@ -7815,6 +7980,11 @@ export function abrirSessaoEscondidaReal({
     const p = /^[a-z]:/.test(bruta) ? bruta[0].toUpperCase() + bruta.slice(1) : bruta;
     if (!p || RUIM_PRO_CMD.test(p)) {
       rejeitar(new Error('pasta vazia ou com caractere que o wscript nao passa inteiro'));
+      return;
+    }
+    // M3: no Mac a pasta e POSIX absoluta (a letra do disco nao se aplica; `C:\...` = rejeita sem rodar nada)
+    if (ehMac() && !p.startsWith('/')) {
+      rejeitar(new Error('pasta da sessao nao e caminho absoluto do Mac (/...)'));
       return;
     }
     const comRetomada = retomada !== null && retomada !== undefined;
@@ -7852,6 +8022,32 @@ export function abrirSessaoEscondidaReal({
       return;
     }
     const doMontado = { SESSOES_WPP_MONTADA: montada.pasta, SESSOES_WPP_MODO: montada.modo === 'sozinha' ? 'bypassPermissions' : 'auto' };
+    if (ehMac()) {
+      // M3 (PLANO-MAC.md, "Mapa", linha 2): no Mac a sessao sobe numa sessao tmux destacada (`tmux -L tele-control`), com
+      // o comando que o abrir-sessao.vbs monta e o SESSOES_WPP_ESCONDIDA=1 que ele poe (o hook da sessao le). Nome tmux
+      // com o sufixo do `agora` (2 sessoes de mesmo nome nao colidem). As conferencias do .vbs (saida 3) pelo `existe`.
+      // Matar: nada novo; o matarArvore (M2) mata o claude pelo pid e a sessao tmux fecha sozinha quando o comando sai
+      // (remain-on-exit off, o padrao do tmux).
+      const instrucoes = path.posix.join(montada.pasta, 'instrucoes-sessao.md');
+      const ajustes = path.posix.join(montada.pasta, 'ajustes.json');
+      const falta = faltaNoMac(existe, [
+        [p, 'pasta', 'pasta da sessao'],
+        [montada.pasta, 'pasta', 'pasta montada da sessao'],
+        [instrucoes, 'arquivo', 'instrucoes-sessao.md'],
+        [ajustes, 'arquivo', 'ajustes.json da sessao'],
+      ]);
+      if (falta) {
+        rejeitar(new Error(falta));
+        return;
+      }
+      const exe = claude === null ? claudeDoConfig({}, { env }) : claude;
+      const comando = [exe, ...(n ? ['-n', n] : []), ...(comRetomada ? ['--resume', retomada.retomar] : []),
+        '--permission-mode', doMontado.SESSOES_WPP_MODO, '--settings', ajustes, '--append-system-prompt-file', instrucoes];
+      const sessao = `${nomeTmux(n || 'sessao')}-${agora().toString(36)}`;
+      rodarTmux(spawnFn, argsTmux({ sessao, pasta: p, comando, extraEnv: { SESSOES_WPP_ESCONDIDA: '1' } }), semHerdadas(env), prazoMs)
+        .then(resolver, rejeitar);
+      return;
+    }
     let acabou = false;
     let relogio = null;
     const fim = (err) => {
@@ -7902,6 +8098,10 @@ const ORCA_SAIDA_MAX = 64 * 1024; // stdout do --json juntado ate isso (o resto 
  */
 export function abrirNoOrcaReal({ spawn: spawnFn = spawn, env = process.env, prazoMs = ABRIR_PRAZO_MS, existe = ehArquivoNoDisco, exe: exeDado = null } = {}) {
   return (pasta, nome, retomada = null) => new Promise((resolver, rejeitar) => {
+    if (ehMac()) { // M3: no Mac o porteiro nao abre o Orca
+      rejeitar(new Error(SO_ESCONDIDA_NO_MAC));
+      return;
+    }
     const bruta = typeof pasta === 'string' ? pasta.trim() : '';
     const p = /^[a-z]:/.test(bruta) ? bruta[0].toUpperCase() + bruta.slice(1) : bruta;
     if (!p || RUIM_PRO_CMD.test(p)) {
@@ -7981,6 +8181,10 @@ export function abrirNoOrcaReal({ spawn: spawnFn = spawn, env = process.env, pra
  */
 export function orcaAbertoReal({ execFile: exec = execFile } = {}) {
   return () => new Promise((resolver) => {
+    if (ehMac()) { // M3: Orca fora do Mac; sem tasklist
+      resolver(false);
+      return;
+    }
     try {
       exec('tasklist', ['/FI', 'IMAGENAME eq Orca.exe', '/NH', '/FO', 'CSV'], { windowsHide: true, timeout: 10 * 1000 }, (err, stdout) => {
         if (err) {
@@ -8009,11 +8213,15 @@ function ehArquivoNoDisco(p) {
  * main.log (cada `code` cria uma sessao VAZIA, de nome mais novo; medido 30/09). ids = os <n> das pastas window<n> dela
  * (o id da janela no VS Code, so cresce na sessao), em ordem de numero. -> {sessao, dir, ids} | null (sem raiz ou sem
  * sessao viva). Erro de leitura lanca: quem chama (janelasVsCodeReal, janelaDoExthostReal) pega.
+ * M2 (PLANO-MAC.md, "Mapa", linha 5): no Mac a raiz padrao e <HOME>/Library/Application Support/Code/logs (sem HOME =
+ * null; o APPDATA nao vale no Mac).
  */
 function sessaoVivaDosLogs(env) {
   const doEnv = typeof env?.SESSOES_WPP_VSCODE_LOGS === 'string' ? env.SESSOES_WPP_VSCODE_LOGS.trim() : '';
   const appdata = typeof env?.APPDATA === 'string' ? env.APPDATA.trim() : '';
-  const raiz = doEnv || (appdata ? path.join(appdata, 'Code', 'logs') : '');
+  const home = typeof env?.HOME === 'string' ? env.HOME.trim() : '';
+  const padraoMac = home ? path.posix.join(home, 'Library', 'Application Support', 'Code', 'logs') : '';
+  const raiz = doEnv || (ehMac() ? padraoMac : (appdata ? path.join(appdata, 'Code', 'logs') : ''));
   if (!raiz) return null;
   const nomes = fs.readdirSync(raiz).sort((a, b) => (a < b ? 1 : a > b ? -1 : 0)); // mais novo primeiro
   const sessao = nomes.find((s) => ehPastaNoDisco(path.join(raiz, s)) && ehArquivoNoDisco(path.join(raiz, s, 'main.log')));
@@ -8095,9 +8303,18 @@ export function lerInfoProcesso(saida) {
  * vieram) dos descendentes de `pid` (filhos, netos...), sem ele. So conta como filho quem nasceu no mesmo ms ou depois
  * do pai (pid reaproveitado no Windows aponta pro pai errado) e quem nao conta nao leva os filhos dele; ciclo de pais
  * nao trava (visto: cada pid entra 1 vez). Pid fora da lista = null (sem dados: quem chama acabou de ver o processo
- * vivo, entao a saida veio vazia ou cortada; nunca vale como "sem comando"). Pura.
+ * vivo, entao a saida veio vazia ou cortada; nunca vale como "sem comando"). Pura. M2: o miolo mora no arvoreDe.
  */
 export function descendentesDe(saida, pid) {
+  return arvoreDe(saida, pid)?.map((p) => p.nome) ?? null;
+}
+
+/**
+ * M2 (PLANO-MAC.md, "Mapa", linha 2): o miolo do descendentesDe. Mesma saida "Pid|PaiPid|CriacaoMs|Nome" e mesmas regras
+ * (nascido no mesmo ms ou depois do pai; ciclo nao trava; pid fora da lista = null) -> [{pid, nome}] dos descendentes,
+ * na ordem da busca (filhos antes dos netos). O matarArvore do Mac mata do fim pro comeco (o mais fundo primeiro). Pura.
+ */
+export function arvoreDe(saida, pid) {
   const procs = [];
   for (const linha of String(saida ?? '').split(/\r?\n/)) {
     const m = /^(\d+)\|(\d+)\|(\d+)\|(.+)$/.exec(linha.trim());
@@ -8123,7 +8340,37 @@ export function descendentesDe(saida, pid) {
       fila.push(f);
     }
   }
-  return fila.slice(1).map((p) => p.nome);
+  return fila.slice(1).map((p) => ({ pid: p.pid, nome: p.nome }));
+}
+
+const MESES_PS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// pid, ppid, lstart ("Tue Oct 20 23:45:01 2026"; o dia vem com espaco na frente se tem 1 digito) e o comm (pode ter espaco)
+const LINHA_PS_MAC_RE = /^(\d+)\s+(\d+)\s+[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(\d{4})\s+(.+)$/;
+
+/**
+ * M2 (PLANO-MAC.md, "Mapa", linha 2): saida do `ps -o pid=,ppid=,lstart=,comm=` (com LC_ALL=C; 1 processo por linha, CRLF
+ * ou LF) -> as linhas "Pid|PaiPid|CriacaoMs|Nome" do descendentesDe/arvoreDe, juntadas por \n. CriacaoMs = a hora local do
+ * lstart (new Date(ano, mes, dia, h, m, s); mes pelo nome ingles de 3 letras). Nome = o basename POSIX do comm sem o `-`
+ * do comeco (shell de login: `-zsh`); comm com espaco fica inteiro (`Code Helper (Plugin)`). Linha torta (sem os campos,
+ * mes desconhecido, data que nao existe, nome vazio) = ignorada. Pura.
+ */
+export function linhasDoPsMac(saida) {
+  const out = [];
+  for (const linha of String(saida ?? '').split(/\r?\n/)) {
+    const m = LINHA_PS_MAC_RE.exec(linha.trim());
+    if (!m) continue;
+    const [pid, pai, mes, dia, h, min, s, ano] = [m[1], m[2], MESES_PS.indexOf(m[3]), m[4], m[5], m[6], m[7], m[8]].map(Number);
+    if (mes < 0) continue;
+    const d = new Date(ano, mes, dia, h, min, s);
+    const ms = d.getTime();
+    // data que nao existe (31 de fevereiro, 25h) rola pro dia seguinte no Date: torta
+    if (!Number.isSafeInteger(ms) || d.getFullYear() !== ano || d.getMonth() !== mes || d.getDate() !== dia
+      || d.getHours() !== h || d.getMinutes() !== min || d.getSeconds() !== s) continue;
+    const nome = path.posix.basename(m[9].trim()).replace(/^-/, '');
+    if (!nome || ![pid, pai].every(Number.isSafeInteger)) continue;
+    out.push(`${pid}|${pai}|${ms}|${nome}`);
+  }
+  return out.join('\n');
 }
 
 // Consulta (Win32_Process: nome, pai e criacao, so leitura) e encerramento da arvore (taskkill /T /F). Sincronos: rodam
@@ -8132,7 +8379,11 @@ export function descendentesDe(saida, pid) {
 // ja aberta pelo pai do processo de uma aba. So o `rodar` usa.
 // T18c: `filhos` (Win32_Process inteiro, so leitura) = os nomes dos descendentes do pid (descendentesDe; null = a saida
 // veio sem ele); so o devolverRetomadas chama, depois que um motivo valeu e o processo bateu.
-function processosReais() {
+// M2 (PLANO-MAC.md, "Mapa", linha 2): exportada; `execSync` e `kill` injetaveis (teste: dubles; o `rodar` chama sem
+// argumento). No Mac: `ps` (com LC_ALL=C, linhasDoPsMac) e `kill` SIGKILL da arvore (processosDoMac); o Windows segue o
+// de sempre.
+export function processosReais({ execSync = execFileSync, kill = process.kill } = {}) {
+  if (ehMac()) return processosDoMac(execSync, kill);
   return {
     info(pid) {
       if (!Number.isInteger(pid) || pid <= 0) return null;
@@ -8154,6 +8405,50 @@ function processosReais() {
     matarArvore(pid) {
       if (!Number.isInteger(pid) || pid <= 0) return false;
       execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 20000, stdio: 'ignore' });
+      return true;
+    },
+  };
+}
+
+// M2: o processosReais do Mac. `info` = `ps -p <pid>` (o ps sai com codigo 1 quando o pid nao existe: null; outro erro
+// lanca, como no Windows); `filhos` = `ps -ax` inteiro -> descendentesDe; `matarArvore` = a mesma listagem -> arvoreDe e
+// `kill(p, 'SIGKILL')` do mais fundo pro mais raso e por ultimo no pid (pid fora da lista = so ele; ESRCH = ja morreu,
+// ignorado; outro erro lanca).
+function processosDoMac(execSync, kill) {
+  const CAMPOS = 'pid=,ppid=,lstart=,comm=';
+  const opcoes = () => ({ timeout: 20000, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
+  const listarTodos = () => linhasDoPsMac(execSync('ps', ['-axo', CAMPOS], { ...opcoes(), maxBuffer: 16 * 1024 * 1024 }));
+  return {
+    info(pid) {
+      if (!Number.isInteger(pid) || pid <= 0) return null;
+      let saida;
+      try {
+        saida = execSync('ps', ['-o', CAMPOS, '-p', String(pid)], opcoes());
+      } catch (err) {
+        if (err?.status === 1) return null;
+        throw err;
+      }
+      const linhas = [];
+      for (const l of linhasDoPsMac(saida).split('\n')) {
+        const m = /^(\d+)\|(\d+)\|(\d+)\|(.+)$/.exec(l);
+        if (m && Number(m[1]) === pid) linhas.push(`${m[4]}|${m[2]}|${m[3]}`);
+      }
+      return lerInfoProcesso(linhas.join('\n'));
+    },
+    filhos(pid) {
+      if (!Number.isInteger(pid) || pid <= 0) return null;
+      return descendentesDe(listarTodos(), pid);
+    },
+    matarArvore(pid) {
+      if (!Number.isInteger(pid) || pid <= 0) return false;
+      const arvore = arvoreDe(listarTodos(), pid) ?? [];
+      for (const p of [...arvore.map((x) => x.pid).reverse(), pid]) {
+        try {
+          kill(p, 'SIGKILL');
+        } catch (err) {
+          if (err?.code !== 'ESRCH') throw err;
+        }
+      }
       return true;
     },
   };
@@ -8417,10 +8712,21 @@ async function rodar(ensaio) {
   const env = process.env;
   const C = caminhosDo(env, ensaio);
   const log = (msg) => lib.log(C.logFile, `porteiro${ensaio ? ' (ensaio)' : ''}: ${msg}`);
+  // M4a: no Mac o launchd sobe o porteiro em todo login (RunAtLoad). Parado de proposito (o arquivo `desligado`, o mesmo
+  // que o supervisor respeita) nao sobe; a saida 0 deixa o launchd quieto (KeepAlive so religa saida com erro).
+  if (ehMac() && fs.existsSync(path.join(C.estadoDir, 'desligado'))) {
+    log('desligado: nao sobe (arquivo desligado na pasta de estado)');
+    return;
+  }
   const t = pegarTrava(C.lockFile);
   if (!t.ok) {
     log(`outro porteiro vivo (pid ${t.pid}); saindo`);
     return;
+  }
+  // M4a: no Mac o porteiro segura o Mac acordado na tomada enquanto vive (caffeinate -s -w <pid>: sai junto com ele)
+  if (ehMac()) {
+    const acordado = segurarAcordado({ pid: process.pid, aoFalhar: (err) => log(`mac: caffeinate falhou depois de subir (${String(err?.message || err).slice(0, 160)})`) });
+    log(acordado ? 'mac: caffeinate -s ligado' : 'mac: caffeinate falhou');
   }
   process.on('exit', () => soltarTrava(C.lockFile));
   for (const s of ['SIGINT', 'SIGTERM', 'SIGBREAK']) process.on(s, () => process.exit(0));
@@ -8564,12 +8870,71 @@ async function rodar(ensaio) {
   }
 }
 
+/**
+ * M4a (PLANO-MAC.md, "Mapa", linha 1): sobe o porteiro pelo LaunchAgent do launchd no Mac. Sem o plist
+ * (`existe(caminhoDoPlist(home, label))` falso) = 'sem-plist'. Com ele: `launchctl kickstart gui/<uid>/<label>` (agente
+ * carregado e parado) = 'kickstart'; o kickstart lancou (agente nao carregado) = `launchctl bootstrap gui/<uid> <plist>`
+ * = 'bootstrap'; os dois lancaram (ou uid que nao e inteiro >= 0) = 'falhou'. Quem chama cai no spawn destacado de hoje
+ * no 'sem-plist' e no 'falhou'. Nunca lanca por causa do launchctl. `label` so pro ensaio no Mac do GitHub (M6).
+ * M6 (ensaio no Mac do GitHub, rodada 2, 21/10): com o agente parado ha menos de 60 s da ultima subida, o kickstart espera
+ * o ThrottleInterval (60) e passa do prazo de 15 s; o pedido fica com o launchd, que sobe o porteiro no fim da espera.
+ * Prazo estourado = 'kickstart' (o bootstrap daria erro, ja carregado, e o spawn de hoje faria 2 porteiros).
+ */
+export function garantirMac({ execFileSync: execSync = execFileSync, existe = fs.existsSync, uid, home, label = LABEL_MAC } = {}) {
+  const plist = caminhoDoPlist(home, label);
+  if (!existe(plist)) return 'sem-plist';
+  if (!Number.isInteger(uid) || uid < 0) return 'falhou';
+  const opcoes = { stdio: 'ignore', timeout: 15000 };
+  try {
+    execSync('launchctl', ['kickstart', `gui/${uid}/${label}`], opcoes);
+    return 'kickstart';
+  } catch (err) {
+    if (err?.code === 'ETIMEDOUT') return 'kickstart';
+    /* nao carregado: tenta o bootstrap */
+  }
+  try {
+    execSync('launchctl', ['bootstrap', `gui/${uid}`, plist], opcoes);
+    return 'bootstrap';
+  } catch {
+    return 'falhou';
+  }
+}
+
+/**
+ * M4a: segura o Mac acordado na tomada enquanto o processo `pid` vive: `/usr/bin/caffeinate -s -w <pid>`, destacado, sem
+ * stdio, com unref (sai sozinho quando o pid morre). Subiu = true; spawn que lanca ou pid ruim = false. Nunca lanca: o
+ * erro que chega depois (caffeinate ausente = 'error' assincrono) vai pro `aoFalhar`, sem derrubar o porteiro.
+ */
+export function segurarAcordado({ spawn: spawnFn = spawn, pid, aoFalhar = () => {} } = {}) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    const filho = spawnFn('/usr/bin/caffeinate', ['-s', '-w', String(pid)], { detached: true, stdio: 'ignore' });
+    filho.on?.('error', (err) => {
+      try { aoFalhar(err); } catch { /* nunca lanca */ }
+    });
+    filho.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function garantir(ensaio) {
   const C = caminhosDo(process.env, ensaio);
   const pid = lerPidTrava(C.lockFile);
   if (pid && pidVivo(pid)) {
     console.log(`porteiro ja esta vivo (pid ${pid})`);
     return;
+  }
+  // M4a: no Mac (fora do ensaio) quem sobe e o launchd; sem o plist ou com o launchctl falhando = o spawn de hoje, com
+  // 1 linha no log. O ensaio fica no spawn: o plist sobe o `rodar` sem --ensaio.
+  if (ehMac() && !ensaio) {
+    const r = garantirMac({ execFileSync, existe: fs.existsSync, uid: process.getuid?.(), home: os.homedir() });
+    if (r === 'kickstart' || r === 'bootstrap') {
+      console.log('porteiro subindo (launchd)');
+      return;
+    }
+    lib.log(C.logFile, `porteiro: launchd ${r === 'sem-plist' ? 'sem o plist' : 'falhou (kickstart e bootstrap)'}; subindo destacado (spawn)`);
   }
   fs.mkdirSync(path.dirname(C.logFile), { recursive: true });
   // O guardiao do sessoes-wpp-porteiro.vbs (a cada 60 s) so chama com o porteiro morto: o rastro fica no log

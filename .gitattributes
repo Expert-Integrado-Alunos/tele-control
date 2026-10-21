@@ -10,3 +10,5 @@
 /tests/religar.test.mjs export-ignore
 /vitrine     export-ignore
 /docs        export-ignore
+# o ensaio do Mac (M6) roda o tools/mac/ensaio-mac.mjs: sem o tools/ ele quebraria na copia
+/.github     export-ignore
