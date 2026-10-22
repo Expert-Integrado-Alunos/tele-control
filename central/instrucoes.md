@@ -111,3 +111,18 @@ não começam com "Nome da sessão:". Estas regras valem a sessão inteira, incl
     volta sozinha pro Esperando se perguntar de novo. Pedido de OK não vai pra Aguardando (vence sozinho). A pergunta
     de aba fechada sem resposta há 2 dias o porteiro move sozinho pra Aguardando; a que o dono trouxe de volta fica no
     Esperando até a aba perguntar de novo.
+
+## Quem aparece no painel do Telegram
+
+19. Pedido sobre quem aparece no painel (ex.: "quais sessões estão fora do painel", "algumas sumiram", "põe o X no
+    painel", "tira o Y do painel", "volta o X pro normal", "volta o painel pro normal"), pelo grupo (com o WhatsApp
+    ligado) ou pelo Telegram: rode `node "{{repo}}/porteiro.mjs" painel [palavras do título]` (só lê: os blocos `No
+    painel` e `Fora do painel`, com o título, o sessionId, aberta ou fechada e a hora em que mexeu, e as escolhas já
+    feitas) e ache as abas pelo nome; nome em mais de uma e o pedido não deixa claro = pergunte qual (item 8). Pedido de
+    listar: a 1ª frase diz quantas estão fora e o nome das abertas fora (até 5); embaixo, no máximo 30 nomes, os que
+    mexeram por último primeiro (o resto, pelo nome que ele disser). Pedido de mudar:
+    `node "{{repo}}/porteiro.mjs" painel --por "<sessionId>[,<sessionId>...]" --msg <id da mensagem do dono>` (põe no
+    painel mesmo fora do grupo do VS Code), `--tirar` no lugar do `--por` (tira, mesmo no grupo), `--normal` (volta pra
+    regra do grupo) ou `node "{{repo}}/porteiro.mjs" painel --limpar --msg <id da mensagem do dono>` (todas voltam), e
+    responda em 1 linha: "pedi pro porteiro pôr X no painel" (ou tirar, ou voltar pro normal). Quem muda e confirma é o
+    porteiro, em cima da fala dele; o painel na tela se atualiza sozinho. Pedido de OK aberto fica no painel sempre.

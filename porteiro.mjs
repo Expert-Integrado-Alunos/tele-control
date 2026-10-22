@@ -143,7 +143,7 @@ import {
   lerConfig, identidadeTelegram, botIdDaChave, identidadeWhatsapp, RE_NUMERO_WPP, WPP_DESLIGADO_NO_CONFIG,
   sessoesDoConfig, identidadeCentral, claudeDoConfig, appsDoConfig, orcaDoConfig, bancoVsCodeDoConfig, donoDoConfig,
   transcricaoDoConfig, modoRuaDoConfig, mensageiroDoConfig, vozDoConfig, saudeDoConfig, maquinaDoConfig, nomeDoDonoValido,
-  vozLigadaDoConfig,
+  vozLigadaDoConfig, focoDoConfig,
 } from './lib/config.mjs';
 import { lerListaVsCode, listaVsCodeVazia, caminhoBancoVsCode, raizNormal, nomeDoGrupo, ehConcluido } from './lib/lista-vscode.mjs';
 import { semLinhaDoDono, lerDadosBotao } from './lib/formato-tg.mjs';
@@ -227,6 +227,7 @@ const REABERTAS_MAX = 200; // e.reabertas: no maximo isso, as mais novas
 // conferidas; a leitura inteira dos 12 GB passou de 2 min) e o log da lista do VS Code ilegivel no maximo 1 vez por hora
 const CAUDA_TITULO = 1024 * 1024;
 const LISTA_ERRO_LOG_MS = 60 * MIN;
+const GUARDIAO_RELIGAR_MS = 10 * MIN; // T34: o porteiro roda o .vbs pro guardiao morto no maximo 1 vez nesse prazo
 const ENTRYPOINTS_DA_LISTA = new Set(['claude-vscode', 'cli']); // T11: aba do VS Code ou do terminal (as que a T8 reabre)
 // T12: o painel na tela se confere no maximo a cada 30 s (montar os dados leva 15 a 45 ms, medido 07/10) e guarda no
 // maximo 300 abas tocadas
@@ -259,6 +260,13 @@ const AGUARDANDO_MAX = 200;
 const AGUARDAR_MAX_IDS = 20;
 // T25 (PLANO-TELEGRAM.md, "T25"): a pergunta de aba fechada sem resposta ha AGUARDAR_SOZINHO_MS vai sozinha pro Aguardando
 const AGUARDAR_SOZINHO_MS = 48 * 60 * MIN;
+// T35 (PLANO-TELEGRAM.md, "T35"): as escolhas da central sobre o painel (no maximo ESCOLHAS_MAX, 30 dias), a lista de
+// quem ficou dentro e fora (no maximo PAINEL_LISTA_MAX de cada) e o passo de minuto que remonta a lista velha disso
+const ESCOLHAS_MAX = 200;
+const PAINEL_LISTA_MAX = 300;
+const PAINEL_LISTA_MS = 5 * MIN;
+const LADOS_PAINEL = new Set(['por', 'tirar']);
+const ACOES_PAINEL = new Set(['por', 'tirar', 'normal', 'limpar']);
 const PASTAS_FORA_DA_SESSAO = new Set(['node_modules', '.git', '.next', 'dist', 'build']);
 // F3.11: saude do canal e aviso no Telegram pelo portao de avisos (contrato `avisa`/`gateway_url`)
 const SAUDE_MS = 10 * MIN; // leitura (ou envio com item esperando) falhando isso = canal quebrado
@@ -780,6 +788,12 @@ function estadoNovo(agoraMs, eventosFile) {
     // sessionId -> {em (a hora da volta), finalTs (o da pergunta)}. Vale so pra MESMA pergunta (fixaDe): o aguardarSozinho
     // nao leva de novo; pergunta nova = a regra volta a valer e o podar tira o registro. Estado velho sem a chave = {}.
     fixasNoEsperando: {},
+    // T35 (PLANO-TELEGRAM.md, "T35"): o que o dono escolheu pela central sobre o painel: sessionId -> {lado: 'por' (entra
+    // mesmo fora do grupo do foco) | 'tirar' (sai mesmo no grupo), em}; 30 dias, no maximo ESCOLHAS_MAX (as mais novas).
+    // painelLista = a ultima foto de quem ficou dentro ({sid, titulo, lugar}) e fora ({sid, titulo, aberta, ms: ISO |
+    // null}) do painel, pro `porteiro.mjs painel` da central. Estado velho sem as chaves = {} e a lista vazia.
+    escolhasPainel: {},
+    painelLista: { em: null, dentro: [], fora: [] },
     // T12 (PLANO-TELEGRAM.md, "T12"): o painel do Telegram na tela. tocadas = sessionId -> lugar no painel na hora do toque
     // no nome dela (fica fora do painel enquanto continua no mesmo lugar; no maximo 300); conferidoEm = a ultima vez que o
     // painel vivo remontou os dados (ISO | null). O /painel novo zera as tocadas.
@@ -928,6 +942,19 @@ function podar(e, agoraMs) {
     const boas = Object.entries(e.fixasNoEsperando).filter(([k]) => UUID_RE.test(k) && fixaDe(e, k) !== null);
     boas.sort((a, b) => msDeIso(b[1].em) - msDeIso(a[1].em));
     e.fixasNoEsperando = Object.fromEntries(boas.slice(0, AGUARDANDO_MAX));
+  }
+  // T35: escolha torta sai (chave que nao e UUID, lado que nao e por/tirar, hora ilegivel), 30 dias, no maximo
+  // ESCOLHAS_MAX (as mais novas); a lista do painel torta volta vazia e fica com no maximo PAINEL_LISTA_MAX de cada lado
+  if (e.escolhasPainel && typeof e.escolhasPainel === 'object' && !Array.isArray(e.escolhasPainel)) {
+    const boas = Object.entries(e.escolhasPainel).filter(([k, r]) => UUID_RE.test(k) && r && typeof r === 'object'
+      && LADOS_PAINEL.has(r.lado) && Number.isFinite(msDeIso(r.em)) && agoraMs - msDeIso(r.em) <= REABERTAS_TTL_MS);
+    boas.sort((a, b) => msDeIso(b[1].em) - msDeIso(a[1].em));
+    e.escolhasPainel = Object.fromEntries(boas.slice(0, ESCOLHAS_MAX));
+  }
+  {
+    const pl = e.painelLista && typeof e.painelLista === 'object' && !Array.isArray(e.painelLista) ? e.painelLista : {};
+    const lado = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object' && typeof x.sid === 'string').slice(0, PAINEL_LISTA_MAX) : []);
+    e.painelLista = { em: typeof pl.em === 'string' && Number.isFinite(msDeIso(pl.em)) ? pl.em : null, dentro: lado(pl.dentro), fora: lado(pl.fora) };
   }
   for (const k of ['centralReabrindo', 'centralSemRecado', 'fraseReabertaDe']) {
     const v = e[k];
@@ -1274,6 +1301,11 @@ function mudarModo(m, ligado, motivo, agoraMs, porComando = false) {
 // A5a (PLANO-ABERTO.md, "A5a — os botões de funcionamento"): `modoRua` = {automatico, ociosoMin} (CLI: o modoRuaDoConfig
 // do config.json), normalizado aqui pelo modoRuaDoConfig (ausente = o padrao: liga sozinho com o PC parado 30 min); com
 // automatico false o PC parado nunca liga o modo rua (so o "to na rua" e o /rua).
+// T33 (PLANO-TELEGRAM.md, "T33"): `focoPainel` = {grupo, desdeMs} (CLI: o focoDoConfig do config.json) = o painel do
+// Telegram so com esse grupo do VS Code (o nome sem icone, acento e caixa); sem grupo = o painel de antes; sem a hora = a
+// hora em que o porteiro subiu.
+// T34 (PLANO-TELEGRAM.md, "T34"): `guardiao` = {vivo() -> true|false|null, religar()} (CLI: o guardiaoReal, so no Windows)
+// = o porteiro religa o guardiao morto (null = nao confere: o Mac, o teste e o ensaio).
 export function criarPorteiro({
   wpp, numeroDono = null, mensageiro, ocioso, agora = Date.now, env = process.env, ensaio, abrirCentral, avisarTelegram, processos,
   tg = null, canalPrincipal = 'whatsapp', dormir: dormirMs = dormir, rand, transcrever = null,
@@ -1283,10 +1315,19 @@ export function criarPorteiro({
   central = null,
   resolvidasTg = 'apagar',
   modoRua = null,
+  focoPainel = null,
+  guardiao = null,
 } = {}) {
   const emEnsaio = ensaio ?? env.SESSOES_WPP_ENSAIO === '1';
   const rua = modoRuaDoConfig({ modoRua }); // A5a: o PC parado que liga o modo rua (ausente ou torto = o padrao)
   const raizes = Array.isArray(raizesSessao) ? raizesSessao : []; // A3a: sem pasta de projeto = nenhuma
+  // T33: o foco do painel (chave = o nome sem icone, normalizado; nome so com icone = sem foco)
+  const chaveFoco = typeof focoPainel?.grupo === 'string' ? normalizar(nomeDoGrupo(focoPainel.grupo)) : '';
+  const foco = chaveFoco ? {
+    grupo: nomeDoGrupo(focoPainel.grupo),
+    chave: chaveFoco,
+    desdeMs: Number.isFinite(focoPainel.desdeMs) ? focoPainel.desdeMs : agora(),
+  } : null;
   // A3a: a central (nome e pasta) pelo config; o titulo normalizado e o que faz uma aba ser a central
   const centralId = identidadeCentral({ central }, { repo: REPO });
   const centralTitulo = normalizar(centralId.nome);
@@ -1329,6 +1370,8 @@ export function criarPorteiro({
   // do ultimo log da lista do VS Code ilegivel
   const cacheConversas = new Map();
   let listaErroLogEm = -Infinity;
+  let focoErroLogEm = -Infinity; // T33: o ultimo log do painel sem o foco (lista ilegivel ou grupo sem ninguem)
+  let guardiaoReligadoEm = -Infinity; // T34: a ultima vez que o porteiro rodou o .vbs pro guardiao morto
   // T7a1b (so em memoria): `${pid}|${sessionId}` da central travada que falhou na identidade (ou no encerrar) ->
   // {ate, motivo, reusado}; reusado = o pid e de outro processo (o sessoesVivas pula ate `ate`)
   const falhasCentral = new Map();
@@ -3015,12 +3058,32 @@ export function criarPorteiro({
       const pendentes = Array.isArray(e.centralPendentes) ? e.centralPendentes.length : 0;
       const vivas = sessoesVivas();
       aguardarSozinho(e, vivas, agoraMs);
+      listaDoPainel(e, vivas, agoraMs); // T35: a lista da central fresca mesmo sem painel na tela
       await cuidarDaCentral(e, vivas, agoraMs, { idle, pendentes });
       await devolverRetomadas(e, agoraMs, { idle });
     }
     if (!semWpp) await avisarSaudePendente(e, agoraMs); // F3.11: Telegram, nunca o grupo (A2b: nem a queda velha do disco)
     if (canal) await avisarSaudeTgPendente(e, agoraMs); // T4b: pelo portao, nunca pelo proprio bot
+    vigiarGuardiao(agoraMs); // T34: com ou sem trava (nada sai pro dono)
     salvar(e);
+  }
+
+  // T34 (PLANO-TELEGRAM.md, "T34"): o guardiao morto (vivo() === false) = o porteiro roda o .vbs sem argumento (religar),
+  // no maximo 1 vez a cada GUARDIAO_RELIGAR_MS, com 1 linha no log. Sem o guardiao (Mac, teste), no ensaio, vivo, sem
+  // saber (null ou erro) ou com o arquivo `desligado` na pasta de estado (parado de proposito) = nada.
+  function vigiarGuardiao(agoraMs) {
+    if (!guardiao || emEnsaio) return;
+    if (fs.existsSync(path.join(C.estadoDir, 'desligado'))) return;
+    let vivo = null;
+    try { vivo = guardiao.vivo(); } catch { vivo = null; }
+    if (vivo !== false || agoraMs - guardiaoReligadoEm < GUARDIAO_RELIGAR_MS) return;
+    guardiaoReligadoEm = agoraMs;
+    try {
+      guardiao.religar();
+      log('guardiao: estava morto; rodei o .vbs pra ele renascer');
+    } catch (err) {
+      log(`guardiao: estava morto e o .vbs falhou (${err?.code ?? err?.message ?? 'erro'})`);
+    }
   }
 
   // T18c (PLANO-TELEGRAM.md, "T18c", contrato 2): o passo rapido do devolver, a cada volta do laco (ate 15 s): so com
@@ -4312,6 +4375,105 @@ export function criarPorteiro({
     await fraseNoCanal(e, peloTg, `${CABECALHO}\n${linhas.join('\n')}`, { citar: peloTg ? citarDaRecebida(e, id) : null });
   }
 
+  // T35 (PLANO-TELEGRAM.md, "T35"; caso real: «escolher quais as sessões que eu coloco aqui [...] listar as sessões que
+  // não estão aí?»): evento {tipo:'painel', at, acao: por | tirar | normal | limpar, sessoes, providerMsgId, por} do CLI
+  // `painel` (a central achou as abas pelo `painel` de leitura). As guardas do aguardar: 1 vez por linha, travado = nada,
+  // so da central viva, sem id da mensagem ou com sessao invalida (limpar: sem sessao nenhuma) = so log. por/tirar =
+  // e.escolhasPainel[sid] = {lado, em}; normal = a escolha sai; limpar = todas saem. Aba que o porteiro nao conhece (viva,
+  // na lista do painel, no transcript, no chamado ou no ultimo parou) = "Não achei a aba X.". Tirada com pedido de OK
+  // aberto: a escolha fica e 1 linha diz que ela segue no painel ate o pedido sair. Depois: a lista do painel remontada na
+  // hora, o painel vivo confere de novo na proxima volta e 1 frase no canal da fala, em cima da mensagem dele.
+  async function escolherPainel(e, ev, agoraMs) {
+    const lista = Array.isArray(ev.sessoes) ? ev.sessoes : null;
+    const chave = ['pnl', ev.por, ev.at, ev.providerMsgId, ev.acao, lista ? lista.join(',') : ev.sessoes]
+      .map((x) => String(x ?? '').slice(0, 120)).join('|');
+    if (e.vistosEventos.includes(chave)) return;
+    e.vistosEventos.push(chave);
+    if (e.trava) {
+      log('painel ignorado: travado');
+      return;
+    }
+    const vivas = sessoesVivas();
+    const central = acharCentral(vivas, e);
+    if (!central || typeof ev.por !== 'string' || ev.por !== central.sessionId) {
+      log(`painel ignorado: nao veio da central viva (por ${String(ev.por).slice(0, 60)}, central ${central?.sessionId ?? 'nenhuma'})`);
+      return;
+    }
+    const id = typeof ev.providerMsgId === 'string' ? ev.providerMsgId.trim() : '';
+    const acao = ACOES_PAINEL.has(ev.acao) ? ev.acao : null;
+    const sids = lista ? [...new Set(lista.map((x) => (typeof x === 'string' ? x.trim() : '')))] : [];
+    const semSessao = acao === 'limpar' ? sids.length === 0 : sids.length > 0 && sids.length <= AGUARDAR_MAX_IDS && sids.every((x) => UUID_RE.test(x));
+    if (!id || !acao || !semSessao) {
+      log('painel ignorado: sem id da mensagem, com acao torta ou com sessao invalida');
+      return;
+    }
+    if (!e.escolhasPainel || typeof e.escolhasPainel !== 'object' || Array.isArray(e.escolhasPainel)) e.escolhasPainel = {};
+    const esc = e.escolhasPainel;
+    const linhas = [];
+    if (acao === 'limpar') {
+      const n = Object.keys(esc).length;
+      e.escolhasPainel = {};
+      linhas.push(n
+        ? `Voltei o painel pra regra${foco ? ` do grupo ${foco.grupo} do VS Code` : ''}: desfiz ${n} ${n === 1 ? 'escolha' : 'escolhas'}.`
+        : `O painel já seguia só a regra${foco ? ` do grupo ${foco.grupo} do VS Code` : ''}.`);
+      log(`painel da central (limpar): ${n} escolha(s) desfeita(s)`);
+    } else {
+      const pl = e.painelLista && typeof e.painelLista === 'object' ? e.painelLista : {};
+      const daLista = (sid) => [...(Array.isArray(pl.dentro) ? pl.dentro : []), ...(Array.isArray(pl.fora) ? pl.fora : [])]
+        .find((x) => x?.sid === sid)?.titulo;
+      const comOk = new Set(itensPendencias(e, vivas, agoraMs).filter((x) => x.ok).map((x) => x.sid));
+      const mudou = [];
+      const ficou = [];
+      for (const sid of sids) {
+        const viva = vivas.find((s) => s.sessionId === sid);
+        const titulo = (viva && (viva.titulo || viva.nome)) || daLista(sid) || tituloDaAbaFechada(e, sid);
+        if (!titulo) {
+          ficou.push(`Não achei a aba ${sid.slice(0, 8)}.`);
+          continue;
+        }
+        const t = nomeNaFrase(titulo);
+        if (acao === 'normal') {
+          if (Object.hasOwn(esc, sid)) {
+            delete esc[sid];
+            mudou.push(t);
+          } else ficou.push(`${t} já seguia a regra do grupo.`);
+          continue;
+        }
+        delete esc[sid]; // a mais nova vai pro fim
+        esc[sid] = { lado: acao, em: iso(agoraMs) };
+        mudou.push(t);
+        if (acao === 'tirar' && comOk.has(sid)) ficou.push(`${t} tem pedido de OK aberto: segue no painel até ele sair.`);
+      }
+      if (mudou.length) {
+        linhas.push({ por: `Pus no painel: ${emFrase(mudou)}.`, tirar: `Tirei do painel: ${emFrase(mudou)}.`,
+          normal: `Voltou pra regra do grupo: ${emFrase(mudou)}.` }[acao]);
+      }
+      linhas.push(...ficou);
+      log(`painel da central (${acao}): ${mudou.length} mudaram, ${ficou.length} linha(s) a mais`);
+    }
+    try {
+      dadosPainelCru(e, vivas, agoraMs); // a lista da central ja com a escolha
+    } catch (err) {
+      log(`painel: a lista nao remontou (${String(err?.message || err).slice(0, 160)})`);
+    }
+    painelTgDe(e).conferidoEm = null; // o painel vivo confere na proxima volta
+    const peloTg = canal !== null && id.startsWith('tg-u');
+    await fraseNoCanal(e, peloTg, `${CABECALHO}\n${linhas.join('\n')}`, { citar: peloTg ? citarDaRecebida(e, id) : null });
+  }
+
+  // T35: a lista do painel da central velha (PAINEL_LISTA_MS ou mais, ou nunca montada) = remonta no passo de minuto (sem
+  // painel na tela o painel vivo nao remonta). So com o Telegram. Nunca lanca.
+  function listaDoPainel(e, vivas, agoraMs) {
+    if (!canal) return;
+    const em = msDeIso(e.painelLista?.em);
+    if (Number.isFinite(em) && agoraMs >= em && agoraMs - em < PAINEL_LISTA_MS) return;
+    try {
+      dadosPainelCru(e, vivas, agoraMs);
+    } catch (err) {
+      log(`painel: a lista nao remontou (${String(err?.message || err).slice(0, 160)})`);
+    }
+  }
+
   // T25 (PLANO-TELEGRAM.md, "T25"; caso real: «Ta com muuuito chat lá que eu acho qeu nao ta mais ativo na real»): no
   // passoMinuto, sem trava. A pergunta de aba FECHADA (item do itensPendencias fora das vivas) ha AGUARDAR_SOZINHO_MS ou
   // mais, sem pedido de OK, fora do Aguardando e sem registro de volta que vale (fixaDe) ganha o registro do aguardar
@@ -4518,6 +4680,10 @@ export function criarPorteiro({
     }
     if (ev.tipo === 'aguardar') { // T24
       await aguardar(e, ev, agoraMs);
+      return;
+    }
+    if (ev.tipo === 'painel') { // T35
+      await escolherPainel(e, ev, agoraMs);
       return;
     }
     if (ev.tipo === 'pergunta-barrada') {
@@ -4853,14 +5019,69 @@ export function criarPorteiro({
   // T24 (PLANO-TELEGRAM.md, "T24"): a pergunta que o dono tirou do Esperando (item com `aguardando`) sai do esperando e vai
   // pro d.aguardando = [{titulo, hora, texto, sid, fechada?, em (a hora do mover)}], na mesma ordem; so com N > 0 (sem
   // nenhuma, o campo nao existe).
+  // T33 (PLANO-TELEGRAM.md, "T33", decisoes 1, 2 e 4): o filtro do foco pra lista do VS Code lida agora (o retorno do
+  // fechadasDaLista) -> null (sem foco, sem a lista, lista ilegivel ou nenhuma conversa no grupo: o painel de antes; os 2
+  // ultimos com 1 log por hora) | (sid, {ms, aberta, ok}) -> true se a aba fica no painel: do grupo do foco (nas 2
+  // janelas), pedido de OK aberto, ou que mexeu depois do `desde` (ms null = sem hora, conta como nova) sendo aberta (de
+  // qualquer grupo) ou sem grupo nenhum na lista (a do grupo de concluidas tem grupo).
+  function filtroDoFoco(doVs, agoraMs) {
+    if (!foco || !doVs) return null;
+    const grupoDe = doVs.grupoDe instanceof Map ? doVs.grupoDe : new Map();
+    const doFoco = new Set();
+    for (const [sid, g] of grupoDe) if (typeof g === 'string' && normalizar(g) === foco.chave) doFoco.add(sid);
+    if (doVs.erro || doFoco.size === 0) {
+      if (agoraMs - focoErroLogEm >= LISTA_ERRO_LOG_MS) {
+        focoErroLogEm = agoraMs;
+        log(`painel: ${doVs.erro ? 'lista do VS Code ilegivel' : `nenhuma conversa no grupo "${foco.grupo}"`}; o painel sai sem o foco`);
+      }
+      return null;
+    }
+    return (sid, { ms = null, aberta = false, ok = false } = {}) => {
+      if (doFoco.has(sid) || ok) return true;
+      const nova = ms === null || !Number.isFinite(ms) || ms >= foco.desdeMs;
+      return nova && (aberta || !grupoDe.has(sid));
+    };
+  }
+
   function dadosPainelCru(e, vivas, agoraMs) {
-    const itens = itensPendencias(e, vivas, agoraMs);
-    const comEle = new Set(itens.map((x) => x.sid));
+    const todos = itensPendencias(e, vivas, agoraMs);
+    const comEle = new Set(todos.map((x) => x.sid));
     const nome = (s) => ({ titulo: s.titulo || s.nome || 'sem nome', sid: s.sessionId });
-    const outras = vivas.filter((s) => !comEle.has(s.sessionId));
     const desde = agoraMs - PARADA_JANELA_MS;
     const doVs = fechadasDaLista(e, vivas, comEle, agoraMs);
     const grupoDe = (sid) => doVs?.grupoDe?.get(sid) ?? null;
+    // T33: com o foco, a aba fora dele sai de todos os grupos (`fora` = os sessionIds que sairam)
+    // T35: a escolha da central vem antes da regra: tirada sai, posta entra (`postas` = as que so entraram por ela); o
+    // pedido de OK aberto entra sempre. `foraInfo` = quem saiu, pra lista da central. Com o foco, a central viva nunca
+    // entra nem conta no `fora` (o painel e das abas dele; sem o foco, como antes).
+    const fica = filtroDoFoco(doVs, agoraMs);
+    const centrais = fica ? new Set(vivas.filter((s) => ehCentral(s)).map((s) => s.sessionId)) : new Set();
+    const escolhas = e.escolhasPainel && typeof e.escolhasPainel === 'object' ? e.escolhasPainel : {};
+    const ladoDe = (sid) => (Object.hasOwn(escolhas, sid) ? escolhas[sid]?.lado : undefined);
+    const fora = new Set();
+    const postas = new Set();
+    const foraInfo = [];
+    const passa = (sid, o) => {
+      const lado = ladoDe(sid);
+      if (o.ok === true) return true;
+      if (centrais.has(sid)) return false;
+      if (lado !== 'tirar') {
+        if (!fica || fica(sid, o)) return true;
+        if (lado === 'por') {
+          postas.add(sid);
+          return true;
+        }
+      }
+      if (!fora.has(sid)) {
+        const ms = Number.isFinite(o.ms) ? o.ms : null;
+        foraInfo.push({ sid, titulo: o.titulo || null, aberta: o.aberta === true, ms });
+      }
+      fora.add(sid);
+      return false;
+    };
+    const itens = todos.filter((x) => passa(x.sid, { ms: x.ms, aberta: !x.fechada, ok: x.ok === true, titulo: x.titulo }));
+    const outras = vivas.filter((s) => !comEle.has(s.sessionId)
+      && passa(s.sessionId, { ms: mexeuDe(s), aberta: true, titulo: s.titulo || s.nome }));
     const paradas = [];
     const fechadas = [];
     for (const s of outras) {
@@ -4873,6 +5094,7 @@ export function criarPorteiro({
       paradas.push({ ms: ms ?? agoraMs, item: nome(s) });
     }
     for (const x of doVs?.lista ?? []) {
+      if (!passa(x.sid, { ms: x.ms, titulo: x.titulo })) continue; // T33
       if (agoraMs - x.ms <= PARADA_JANELA_MS) {
         paradas.push({ ms: x.ms, item: { titulo: x.titulo, sid: x.sid, fechada: true } });
         continue;
@@ -4886,7 +5108,7 @@ export function criarPorteiro({
     const d = {
       hora: iso(agoraMs),
       modoRua: e.modoRua.ligado === true,
-      abertas: vivas.length,
+      abertas: vivas.filter((s) => !fora.has(s.sessionId) && !centrais.has(s.sessionId)).length, // T33: so as que ficaram no painel
       bot: typeof tg?.usuarioBot === 'string' && tg.usuarioBot ? tg.usuarioBot : null,
       esperando: itens.filter((x) => !x.aguardando).map(comPergunta),
       trabalhando: outras.filter((s) => s.status === 'busy').map(nome),
@@ -4896,7 +5118,41 @@ export function criarPorteiro({
     if (doVs?.erro) d.listaErro = true;
     const ag = itens.filter((x) => x.aguardando); // T24
     if (ag.length) d.aguardando = ag.map((x) => ({ ...comPergunta(x), em: x.em }));
+    // T33: a linha do fim. T35: com as postas, quantas; sem o foco, so quando a central tirou alguma
+    if (fica) d.foco = { grupo: foco.grupo, fora: fora.size, ...(postas.size ? { postas: postas.size } : {}) };
+    else if (fora.size) d.foco = { grupo: null, fora: fora.size };
+    e.painelLista = fotoDoPainel(e, d, foraInfo, agoraMs); // T35: a lista da central
     return d;
+  }
+
+  // T35 (PLANO-TELEGRAM.md, "T35", decisao 3): a foto de quem ficou dentro do painel ({sid, titulo, lugar}, na ordem dos
+  // grupos) e fora ({sid, titulo, aberta, ms: ISO | null}; a aberta primeiro, depois a que mexeu por ultimo; sem hora no
+  // fim), no maximo PAINEL_LISTA_MAX de cada. Sem titulo no painel (o pedido de OK de aba fechada) = o do transcript ou
+  // do chamado, senao "sem nome".
+  function fotoDoPainel(e, d, foraInfo, agoraMs) {
+    const comNome = (x) => (x.titulo && x.titulo !== 'sem nome' ? x.titulo : null) || tituloDaAbaFechada(e, x.sid) || 'sem nome';
+    const dentro = [];
+    const visto = new Set();
+    const por = (lista, lugar) => {
+      for (const x of Array.isArray(lista) ? lista : []) {
+        if (!x || typeof x.sid !== 'string' || visto.has(x.sid)) continue;
+        visto.add(x.sid);
+        dentro.push({ sid: x.sid, titulo: comNome(x), lugar });
+      }
+    };
+    por(d.esperando, 'Esperando você');
+    por(d.aguardando, 'Aguardando');
+    por(d.trabalhando, 'Trabalhando');
+    por(d.paradas, 'Paradas');
+    por(d.fechadas, 'Fechadas');
+    const ordem = (x) => (x.ms === null ? -Infinity : x.ms);
+    const fora = foraInfo.map((x) => ({ ...x, titulo: comNome(x) })).sort((a, b) => Number(b.aberta) - Number(a.aberta) || ordem(b) - ordem(a)
+      || a.titulo.localeCompare(b.titulo, 'pt-BR'));
+    return {
+      em: iso(agoraMs),
+      dentro: dentro.slice(0, PAINEL_LISTA_MAX),
+      fora: fora.slice(0, PAINEL_LISTA_MAX).map((x) => ({ sid: x.sid, titulo: x.titulo, aberta: x.aberta, ms: x.ms === null ? null : iso(x.ms) })),
+    };
   }
 
   // T12 (PLANO-TELEGRAM.md, "T12", contrato 2): o lugar de cada aba no painel cru (o grupo; com pergunta, a hora dela)
@@ -8708,6 +8964,37 @@ export function lerListaVsCodeReal({ env = process.env, banco = null } = {}) {
   return () => lerListaVsCode(caminhoBancoVsCode(env, banco));
 }
 
+// T34 (PLANO-TELEGRAM.md, "T34"): o guardiao do Windows que o rodar passa ao criarPorteiro (o sessoes-wpp-porteiro.vbs no
+// modo /guardiao segura o guardiao.lock aberto pra escrita enquanto vive). vivo(): abrir o lock com r+ (nao cria nem
+// trunca) da EBUSY, EPERM ou EACCES com ele vivo = true (medido 21/10/2026); abriu (fecha na hora) ou nao existe =
+// false; outro erro = null (nao sabe). religar(): `wscript //nologo <vbs>` sem argumento (o .vbs renasce pelo WMI com o
+// ambiente do login, fora da arvore do porteiro), escondido e solto.
+export function guardiaoReal({
+  estadoDir, vbs = path.join(REPO, 'sessoes-wpp-porteiro.vbs'), env = process.env, spawn: spawnFn = spawn, io = fs,
+} = {}) {
+  const trava = path.join(estadoDir, 'guardiao.lock');
+  return {
+    vivo() {
+      let fd;
+      try {
+        fd = io.openSync(trava, 'r+');
+      } catch (err) {
+        if (err?.code === 'ENOENT') return false;
+        if (err?.code === 'EBUSY' || err?.code === 'EPERM' || err?.code === 'EACCES') return true;
+        return null;
+      }
+      try { io.closeSync(fd); } catch { /* o proximo passo confere de novo */ }
+      return false;
+    },
+    religar() {
+      const wscript = path.join(env.SystemRoot || env.SYSTEMROOT || 'C:\\Windows', 'System32', 'wscript.exe');
+      const filho = spawnFn(wscript, ['//nologo', vbs], { detached: true, stdio: 'ignore', windowsHide: true });
+      filho?.on?.('error', () => {});
+      filho?.unref?.();
+    },
+  };
+}
+
 async function rodar(ensaio) {
   const env = process.env;
   const C = caminhosDo(env, ensaio);
@@ -8782,6 +9069,9 @@ async function rodar(ensaio) {
     sondaTg: configTg.sonda === true, // T7e2: sonda do envio incerto so com telegram.sonda === true (hoje ausente)
     resolvidasTg: configTg.resolvidas === 'manter' ? 'manter' : 'apagar', // T23c: o modo das resolvidas (ausente = apagar)
     modoRua: rua, // A5a: o PC parado que liga o modo rua (o modoRua do config; padrao 30 min)
+    focoPainel: focoDoConfig(cfg), // T33: o painel so com o grupo do painel.foco (sem ele = o painel de antes)
+    // T34: o porteiro religa o guardiao morto (so no Windows; no Mac quem religa e o launchd; o ensaio nunca roda o .vbs)
+    guardiao: !ehMac() && process.platform === 'win32' && !ensaio ? guardiaoReal({ estadoDir: C.estadoDir, env }) : null,
     // T4a: so roda com o Telegram ligado (passoAudioTg). A5b: so com transcricao.ligada (null = sem transcritor)
     transcrever: transcricao.ligada
       ? (arquivo) => transcreverReal(arquivo, { env, python: transcricao.python, idioma: transcricao.idioma, modeloGpu: transcricao.modeloGpu, modeloCpu: transcricao.modeloCpu })
@@ -9127,6 +9417,82 @@ function aguardarCli(args, ensaio) {
   return undefined;
 }
 
+// `painel [palavras]` (T35, PLANO-TELEGRAM.md "T35"): quem esta no painel do Telegram e quem esta fora, pra central achar
+// o sessionId das que ele nomeia e responder "quais sumiram". So le o estado.json (a foto e.painelLista que o porteiro
+// remonta a cada painel e a cada 5 min; e.escolhasPainel): blocos "No painel (N):" ("- <titulo> (sessionId <sid>,
+// <grupo>)"), "Fora do painel (N):" ("- <titulo> (sessionId <sid>, aberta | fechada, mexeu às <HH:MM | DD/MM HH:MM> |
+// sem hora)", no maximo PAINEL_CLI_MAX linhas e "... e mais N" no fim) e as escolhas da central ("Postas pela central:" e
+// "Tiradas pela central:", com o titulo da foto). As palavras filtram as 2 listas pelo titulo (sem acento e caixa).
+// Sem foto = "o painel ainda nao foi montado". Codigo 0. A hora no fuso do dono, como no `esperando`.
+// `painel --por|--tirar|--normal "<sessionId>[,...]" --msg <id>` e `painel --limpar --msg <id>`: o desenho do `aguardar`
+// (so grava 1 evento {v, tipo:'painel', at, acao, sessoes, providerMsgId, por}; quem confere e o porteiro). Mais de 1
+// acao, sessao torta ou faltando = exit 1 com {ok:false, erro} e nada gravado.
+const PAINEL_CLI_MAX = 60;
+function painelCli(args, ensaio) {
+  const falha = (erro) => {
+    console.log(JSON.stringify({ ok: false, erro }));
+    process.exitCode = 1;
+  };
+  const acoes = ['por', 'tirar', 'normal', 'limpar'].filter((a) => args.includes(`--${a}`));
+  const C = caminhosDo(process.env, ensaio);
+  if (acoes.length) {
+    if (acoes.length > 1) return falha('uma acao por vez: --por, --tirar, --normal ou --limpar');
+    const acao = acoes[0];
+    const providerMsgId = valorDaOpcao(args, 'msg');
+    let sessoes = [];
+    if (acao !== 'limpar') {
+      sessoes = [...new Set(valorDaOpcao(args, acao).split(',').map((x) => x.trim()).filter(Boolean))];
+      if (!sessoes.length) return falha(`faltou --${acao} "<sessionId>[,<sessionId>...]"`);
+      if (sessoes.length > AGUARDAR_MAX_IDS) return falha(`no maximo ${AGUARDAR_MAX_IDS} abas por vez`);
+      const ruim = sessoes.find((x) => !UUID_RE.test(x));
+      if (ruim) return falha(`sessionId invalido: ${ruim.slice(0, 60)}`);
+    }
+    if (!providerMsgId) return falha('faltou --msg <id da mensagem do dono>');
+    const por = process.env.CLAUDE_CODE_SESSION_ID || null;
+    try {
+      lib.anexarEvento(C.estadoDir, { v: 1, tipo: 'painel', at: iso(Date.now()), acao, sessoes, providerMsgId, por });
+    } catch (err) {
+      return falha(`nao gravei o evento: ${String(err?.message || err).slice(0, 160)}`);
+    }
+    lib.log(C.logFile, `porteiro: painel pedido (${acao}, ${sessoes.length} aba(s), por ${String(por).slice(0, 60)})`);
+    console.log(JSON.stringify({ ok: true }));
+    return undefined;
+  }
+  definirFuso(donoDoConfig(lerConfig(C.estadoDir)).fuso);
+  const e = lerJson(C.estadoFile) ?? {};
+  const objeto = (x) => Boolean(x) && typeof x === 'object' && !Array.isArray(x);
+  const pl = objeto(e.painelLista) ? e.painelLista : {};
+  if (typeof pl.em !== 'string' || !Number.isFinite(msDeIso(pl.em))) {
+    console.log('o painel ainda nao foi montado');
+    return undefined;
+  }
+  const lado = (v) => (Array.isArray(v) ? v.filter((x) => objeto(x) && typeof x.sid === 'string' && UUID_RE.test(x.sid)) : []);
+  const umaLinha = (t) => String(typeof t === 'string' && t.trim() ? t : 'sem nome').replace(/\s+/g, ' ').trim();
+  const palavras = args.filter((a, i) => a !== 'painel' && !a.startsWith('--') && i > args.indexOf('painel'))
+    .map((p) => normalizar(p)).filter(Boolean);
+  const casa = (x) => palavras.every((p) => normalizar(umaLinha(x.titulo)).includes(p));
+  const dentro = lado(pl.dentro).filter(casa);
+  const fora = lado(pl.fora).filter(casa);
+  const hoje = diaBRT(iso(Date.now()));
+  const quando = (v) => {
+    if (typeof v !== 'string' || !Number.isFinite(msDeIso(v))) return 'sem hora';
+    return `mexeu às ${diaBRT(v) === hoje ? '' : `${diaBRT(v)} `}${horaBRT(v)}`;
+  };
+  const saida = [`Painel de ${diaBRT(pl.em) === hoje ? '' : `${diaBRT(pl.em)} `}${horaBRT(pl.em)}${palavras.length ? ` (só os títulos com "${palavras.join(' ')}")` : ''}.`];
+  saida.push(`No painel (${dentro.length}):`, ...dentro.map((x) => `- ${umaLinha(x.titulo)} (sessionId ${x.sid}, ${umaLinha(x.lugar)})`));
+  saida.push(`Fora do painel (${fora.length}):`, ...fora.slice(0, PAINEL_CLI_MAX)
+    .map((x) => `- ${umaLinha(x.titulo)} (sessionId ${x.sid}, ${x.aberta === true ? 'aberta' : 'fechada'}, ${quando(x.ms)})`));
+  if (fora.length > PAINEL_CLI_MAX) saida.push(`... e mais ${fora.length - PAINEL_CLI_MAX} (peça pelo nome)`);
+  const esc = objeto(e.escolhasPainel) ? e.escolhasPainel : {};
+  const tituloDe = (sid) => umaLinha([...lado(pl.dentro), ...lado(pl.fora)].find((x) => x.sid === sid)?.titulo ?? sid.slice(0, 8));
+  for (const [ld, cab] of [['por', 'Postas pela central:'], ['tirar', 'Tiradas pela central:']]) {
+    const s = Object.entries(esc).filter(([k, r]) => UUID_RE.test(k) && objeto(r) && r.lado === ld).map(([k]) => `${tituloDe(k)} (sessionId ${k})`);
+    if (s.length) saida.push(`${cab} ${s.join('; ')}`);
+  }
+  console.log(saida.join('\n'));
+  return undefined;
+}
+
 async function main(args) {
   const ensaio = args.includes('--ensaio') || process.env.SESSOES_WPP_ENSAIO === '1';
   const cmd = args.find((a) => !a.startsWith('--'));
@@ -9135,6 +9501,7 @@ async function main(args) {
   if (cmd === 'reabrir-sessao') return reabrirSessaoCli(args, ensaio);
   if (cmd === 'esperando') return esperandoCli(ensaio); // T24
   if (cmd === 'aguardar') return aguardarCli(args, ensaio); // T24
+  if (cmd === 'painel') return painelCli(args, ensaio); // T35
   if (cmd === 'rodar') return rodar(ensaio);
   if (cmd === 'garantir') return garantir(ensaio);
   if (cmd === 'parar') return parar(ensaio);
@@ -9149,7 +9516,10 @@ async function main(args) {
     + '     node porteiro.mjs abrir-sessao --nome "<nome>" --pasta "<pasta>" --msg <id da mensagem do dono>\n'
     + '     node porteiro.mjs reabrir-sessao --sessao "<sessionId>" --msg <id da mensagem do dono>\n'
     + '     node porteiro.mjs esperando\n'
-    + '     node porteiro.mjs aguardar --sessao "<sessionId>[,<sessionId>...]" --msg <id da mensagem do dono> [--voltar]');
+    + '     node porteiro.mjs aguardar --sessao "<sessionId>[,<sessionId>...]" --msg <id da mensagem do dono> [--voltar]\n'
+    + '     node porteiro.mjs painel [palavras do titulo]\n'
+    + '     node porteiro.mjs painel --por|--tirar|--normal "<sessionId>[,<sessionId>...]" --msg <id da mensagem do dono>\n'
+    + '     node porteiro.mjs painel --limpar --msg <id da mensagem do dono>');
   process.exitCode = 2;
   return undefined;
 }

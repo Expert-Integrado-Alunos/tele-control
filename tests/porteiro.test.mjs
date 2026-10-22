@@ -5877,7 +5877,7 @@ test('T7a2 38. item 11 das instrucoes da central: nunca muda o proprio controle,
   assert.ok(item, 'item 11 seguido do 12');
   assert.equal(item[0].replace(/\s+/g, ' ').trim(), ITEM_11);
   const numeros = [...instr.matchAll(/^(\d+)\. /gm)].map((x) => Number(x[1]));
-  assert.deepEqual(numeros, Array.from({ length: 18 }, (_, i) => i + 1), 'itens 1 a 18 em ordem, 1 vez cada (T24: o 18)');
+  assert.deepEqual(numeros, Array.from({ length: 19 }, (_, i) => i + 1), 'itens 1 a 19 em ordem, 1 vez cada (T24: o 18; T35: o 19)');
 });
 
 test('T24 1. item 18 das instrucoes da central: tirar do Esperando e trazer de volta pelo porteiro (esperando + aguardar), nome em 2 abas = perguntar, a frase de 1 linha', () => {

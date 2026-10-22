@@ -186,8 +186,8 @@ test('A5d 8. modelo da central: item 9 com a regra geral das pastas (uma das pas
   const ss = ler('instrucoes-sessao.md').replace(/\s+/g, ' ');
   assert.ok(ss.includes('(no chat do bot no Telegram ou, com o WhatsApp ligado, no grupo do WhatsApp)'), 'sessao: a entrada');
   assert.ok(ss.includes('vindo do número do dono (com o WhatsApp ligado) ou da conta dele no Telegram'), 'sessao: item 4');
-  // os itens 1 a 18 em ordem, 1 vez cada (o conteudo fica; so sai o que era de uma pessoa)
-  assert.deepEqual([...c.matchAll(/^(\d+)\. /gm)].map((x) => Number(x[1])), Array.from({ length: 18 }, (_, i) => i + 1));
+  // os itens 1 a 19 em ordem, 1 vez cada (o conteudo fica; so sai o que era de uma pessoa; T35: o 19)
+  assert.deepEqual([...c.matchAll(/^(\d+)\. /gm)].map((x) => Number(x[1])), Array.from({ length: 19 }, (_, i) => i + 1));
   assert.deepEqual([...ler('instrucoes-sessao.md').matchAll(/^(\d+)\. /gm)].map((x) => Number(x[1])), [1, 2, 3, 4, 5, 6]);
 });
 
@@ -212,6 +212,8 @@ const ALLOW = [
   `Bash(node "${REPO_BARRA}/porteiro.mjs" abrir-sessao *)`,
   `Bash(node "${REPO_BARRA}/porteiro.mjs" esperando)`,
   `Bash(node "${REPO_BARRA}/porteiro.mjs" aguardar *)`,
+  `Bash(node "${REPO_BARRA}/porteiro.mjs" painel)`,
+  `Bash(node "${REPO_BARRA}/porteiro.mjs" painel *)`,
   `Bash(node "${REPO_BARRA}/ler-grupo.mjs" *)`,
   `Bash(node "${REPO_BARRA}/abas.mjs" *)`,
   `Bash(node "${REPO_BARRA}/ok-wpp.mjs" pedir *)`,
