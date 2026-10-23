@@ -74,6 +74,11 @@ function ambienteDoInstalador() {
 
 // ---------- 1-3. config ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('A3b 1. appsDoConfig: os conhecidos (aparados, sem caixa, sem repetir, na ordem do config); lista presente manda ([] e so desconhecidos = []); ausente ou que nao e lista = os 3 de hoje; lista nova a cada chamada', () => {
   assert.deepEqual(config.APPS, ['vscode', 'desktop', 'orca', 'terminal']);
   assert.deepEqual(config.PADRAO_APPS, TRES);
@@ -93,7 +98,7 @@ test('A3b 1. appsDoConfig: os conhecidos (aparados, sem caixa, sem repetir, na o
   assert.deepEqual([a({}), a({ apps: ['orca'] }), config.PADRAO_APPS], [TRES, ['orca'], TRES], 'mexer na lista devolvida nao muda o padrao');
 });
 
-test('A3b 2. orcaDoConfig: orca.bin > o do instalador do Orca no LOCALAPPDATA; so absoluto, .exe, sem caractere ruim e que existe; nenhum = o do instalador mesmo assim; sem LOCALAPPDATA = null; nunca lanca', () => {
+test('A3b 2. orcaDoConfig: orca.bin > o do instalador do Orca no LOCALAPPDATA; so absoluto, .exe, sem caractere ruim e que existe; nenhum = o do instalador mesmo assim; sem LOCALAPPDATA = null; nunca lanca', { skip: SO_WINDOWS }, () => {
   const o = config.orcaDoConfig;
   assert.equal(typeof o, 'function', 'orcaDoConfig exportada');
   const LOCAL = 'C:\\Users\\Fulano de Tal\\AppData\\Local';
@@ -127,7 +132,7 @@ test('A3b 2. orcaDoConfig: orca.bin > o do instalador do Orca no LOCALAPPDATA; s
   assert.equal(o({ orca: { bin: MEU } }, { env, existe: 'sim' }), PADRAO);
 });
 
-test('A3b 3. bancoVsCodeDoConfig: o vscode.banco absoluto e sem caractere ruim, aparado e com as barras do Windows; o resto = null (o leitor cai no SESSOES_WPP_VSCODE_DB e no APPDATA); nao olha o disco', () => {
+test('A3b 3. bancoVsCodeDoConfig: o vscode.banco absoluto e sem caractere ruim, aparado e com as barras do Windows; o resto = null (o leitor cai no SESSOES_WPP_VSCODE_DB e no APPDATA); nao olha o disco', { skip: SO_WINDOWS }, () => {
   const b = config.bancoVsCodeDoConfig;
   assert.equal(typeof b, 'function', 'bancoVsCodeDoConfig exportada');
   const INS = 'C:\\Users\\Fulano de Tal\\AppData\\Roaming\\Code - Insiders\\User\\globalStorage\\state.vscdb';
@@ -176,7 +181,7 @@ test('A3b 4. lista do VS Code: listaVsCodeVazia (objeto novo a cada vez); o banc
   }
 });
 
-test('A3b 5. caminhoBancoVsCode(env, banco): o do config > SESSOES_WPP_VSCODE_DB > o do APPDATA > null; lerListaVsCodeReal({env, banco}) le o do config e, se ele nao existe, devolve a lista vazia (nao cai noutro banco)', () => {
+test('A3b 5. caminhoBancoVsCode(env, banco): o do config > SESSOES_WPP_VSCODE_DB > o do APPDATA > null; lerListaVsCodeReal({env, banco}) le o do config e, se ele nao existe, devolve a lista vazia (nao cai noutro banco)', { skip: SO_WINDOWS }, () => {
   const c = lista.caminhoBancoVsCode;
   const env = { SESSOES_WPP_VSCODE_DB: 'C:\\x\\y.vscdb', APPDATA: 'C:\\A' };
   assert.equal(c(env, 'D:\\cfg\\state.vscdb'), 'D:\\cfg\\state.vscdb');
@@ -197,7 +202,7 @@ test('A3b 5. caminhoBancoVsCode(env, banco): o do config > SESSOES_WPP_VSCODE_DB
 
 // ---------- 6-7. o porteiro: o Orca do config e o rodar ----------
 
-test('A3b 6. abrirNoOrcaReal({exe}): roda o exe dado (caminho com espaco inteiro, sem shell) e confere ele no disco a cada abertura; exe que nao existe rejeita sem spawn; exe vazio ou que nao e texto = o do LOCALAPPDATA, como antes; o --command segue com o claude do PATH', async () => {
+test('A3b 6. abrirNoOrcaReal({exe}): roda o exe dado (caminho com espaco inteiro, sem shell) e confere ele no disco a cada abertura; exe que nao existe rejeita sem spawn; exe vazio ou que nao e texto = o do LOCALAPPDATA, como antes; o --command segue com o claude do PATH', { skip: SO_WINDOWS }, async () => {
   const env = { LOCALAPPDATA: 'C:\\Users\\Fulano de Tal\\AppData\\Local', PATH: 'x' };
   const PADRAO = 'C:\\Users\\Fulano de Tal\\AppData\\Local\\Programs\\orca\\resources\\bin\\orca.exe';
   const MEU = 'D:\\Meus Apps\\Orca\\resources\\bin\\orca.exe';

@@ -14,6 +14,9 @@ import { fileURLToPath } from 'node:url';
 import { pastaTemp } from './lib/pasta-temp.cjs';
 import { lerEstado, linhasTelegram, linha, sessaoDoCabecalho } from '../ler-grupo.mjs';
 import { WHATSAPP } from './lib/dados-whatsapp.mjs';
+// Mac-testes (C, ambiente): as horas esperadas aqui sao as de Brasilia (o fuso do PC); maquina noutro fuso (o Mac do
+// dono veio com o relogio em New York) quebrava a conta. Sem TZ = Brasilia, pra este processo e pros filhos.
+process.env.TZ ??= 'America/Sao_Paulo';
 
 const ARQ = fileURLToPath(new URL('../ler-grupo.mjs', import.meta.url));
 const MIN = 60 * 1000;
@@ -36,6 +39,7 @@ function rodar(args, { estado, cru, p = pasta() } = {}) {
   const env = { SESSOES_WPP_DIR: p.estadoDir, USERPROFILE: p.home, HOME: p.home };
   if (process.env.PATH) env.PATH = process.env.PATH;
   if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
+  if (process.env.TZ) env.TZ = process.env.TZ; // Mac-testes: o fuso de Brasilia do topo
   const r = spawnSync(process.execPath, [ARQ, ...args], { env, encoding: 'utf8', timeout: 30000, windowsHide: true });
   assert.equal(r.error, undefined, String(r.error));
   return { status: r.status, out: r.stdout, err: r.stderr };

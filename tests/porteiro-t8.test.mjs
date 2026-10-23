@@ -350,6 +350,11 @@ const PROJ = 'c--projetos-sessoes-wpp'; // a pasta de projeto da conversa() (o t
 
 // ---------- 1. o "nao achei" que reabre ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('T8 1 (T18). resposta em cima do chamado de uma aba fechada: o "não achei" retoma a MESMA conversa escondida (pasta da conversa, -n com o titulo dado, so o sessionId dela: nenhum id novo), sem frase; ela firma e recebe a MESMA fala (T32: com a linha "Reabri a aba" sem notificar, em cima dela); o chamado e as mensagens ficam nela (sem trocarAba, sem entrada nova na cadeia); a resposta volta pelo Telegram em cima da fala', async () => {
   const h = montarT8();
   const { messageId: tela } = await cenaFechada(h);
@@ -926,7 +931,7 @@ function spawnFalso(modos = []) {
 // A5d2: o gravarCentral dublado no abridor (a pasta montada e o modo; o de verdade esta no tests/a5d.test.mjs)
 const MONTAR = (o) => ({ pasta: 'D:\\estado\\central', modo: o.modo });
 
-test('T8 13 (T18). abrirSessaoEscondidaReal com a retomada: o wscript recebe a pasta, o nome (vazio = sem -n) e o sessionId da conversa (1 argumento cada); id que nao e uuid, id novo (a copia), nome ruim, nome que mudaria (aparado, cortado) e sessao nova sem nome rejeitam sem rodar; sem retomada = os 2 argumentos de antes', async () => {
+test('T8 13 (T18). abrirSessaoEscondidaReal com a retomada: o wscript recebe a pasta, o nome (vazio = sem -n) e o sessionId da conversa (1 argumento cada); id que nao e uuid, id novo (a copia), nome ruim, nome que mudaria (aparado, cortado) e sessao nova sem nome rejeitam sem rodar; sem retomada = os 2 argumentos de antes', { skip: SO_WINDOWS }, async () => {
   const vbs = path.join(CENTRAL_DIR, 'abrir-sessao.vbs');
   const pasta = 'D:\\Meus Docs\\trabalho\\Area';
   const NOVO = '0f1e2d3c-4b5a-4968-8776-655443322110';
@@ -954,7 +959,7 @@ test('T8 13 (T18). abrirSessaoEscondidaReal com a retomada: o wscript recebe a p
   }
 });
 
-test('T13 1. abrirSessaoEscondidaReal passa a pasta com a letra do disco MAIUSCULA (o VS Code grava `d:\\...` no transcript; o claude escondido em `d:` minusculo para na pergunta de confianca da pasta e nunca sobe); o resto da pasta fica igual', async () => {
+test('T13 1. abrirSessaoEscondidaReal passa a pasta com a letra do disco MAIUSCULA (o VS Code grava `d:\\...` no transcript; o claude escondido em `d:` minusculo para na pergunta de confianca da pasta e nunca sobe); o resto da pasta fica igual', { skip: SO_WINDOWS }, async () => {
   const vbs = path.join(CENTRAL_DIR, 'abrir-sessao.vbs');
   const casos = [
     ['d:\\Meus Docs\\trabalho\\Area', 'D:\\Meus Docs\\trabalho\\Area'],

@@ -184,12 +184,65 @@ test('M3 3. abrirCentralReal darwin: pasta que nao existe, montada sem instrucoe
   const linhas = [];
   const sp1 = spawnFalso({ codigo: 1 });
   await assert.rejects(abrirCentralReal((l) => linhas.push(l), { ...base, gravarCentral: gravarDuble(), existe: existeDuble(), spawn: sp1 })(), /tmux saiu com 1/);
-  assert.equal(sp1.chamadas.length, 1);
+  // Mac-testes: depois da recusa, 1 consulta do list-sessions (aqui ela tambem sai com 1 = sem como saber = a recusa)
+  assert.equal(sp1.chamadas.length, 2);
+  assert.deepEqual(sp1.chamadas[1].args.slice(0, 3), ['-L', 'tele-control', 'list-sessions']);
   assert.ok(linhas.some((l) => /central falhou \(tmux\)/.test(l)));
   // 'error' (tmux fora do PATH) = rejeita com ele
   const enoent = Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' });
   const spE = spawnFalso({ erro: enoent });
   await assert.rejects(abrirCentralReal(() => {}, { ...base, gravarCentral: gravarDuble(), existe: existeDuble(), spawn: spE })(), /ENOENT/);
+});
+
+// Mac-testes: spawn falso por subcomando do tmux: `respostas[sub]` = lista de {codigo, saida} consumida em ordem (o
+// ultimo se repete); o stdout sai antes do 'exit'
+function spawnTmuxFalso(respostas) {
+  const chamadas = [];
+  const fn = (cmd, args, opts) => {
+    const filho = new EventEmitter();
+    filho.stdout = new EventEmitter();
+    filho.unref = () => {};
+    filho.kill = () => true;
+    chamadas.push({ cmd, args, opts });
+    const lista = respostas[args[2]] ?? [{ codigo: 0 }];
+    const r = lista.length > 1 ? lista.shift() : lista[0];
+    setImmediate(() => {
+      filho.emit('spawn');
+      if (r.saida) filho.stdout.emit('data', Buffer.from(r.saida));
+      filho.emit('exit', r.codigo, null);
+    });
+    return filho;
+  };
+  fn.chamadas = chamadas;
+  return fn;
+}
+
+test('M3 3b (Mac-testes). abrirCentralReal darwin: new-session recusado com a sessao de mesmo nome criada ha 3 min ou mais (a central presa sem registro) = kill-session e 1 new-session mais; mais nova, ausente ou a 2a recusa = rejeita sem 2a central', async () => {
+  const AGORA_S = 1792729215;
+  const base = { central: { pasta: CENTRAL }, claude: CLAUDE, estadoDir: ESTADO, env: {}, agora: () => AGORA_S * 1000 };
+  const lista = (idadeS) => `${AGORA_S - 9000} outra-sessao\n${AGORA_S - idadeS} central-do-tele-control\n`;
+
+  // orfa (3 min): fecha e abre de novo
+  const linhas = [];
+  const sp = spawnTmuxFalso({ 'new-session': [{ codigo: 1 }, { codigo: 0 }], 'list-sessions': [{ codigo: 0, saida: lista(180) }] });
+  assert.equal(await abrirCentralReal((l) => linhas.push(l), { ...base, gravarCentral: gravarDuble(), existe: existeDuble(), spawn: sp })(), undefined);
+  assert.deepEqual(sp.chamadas.map((c) => c.args[2]), ['new-session', 'list-sessions', 'kill-session', 'new-session']);
+  assert.deepEqual(sp.chamadas[2].args, ['-L', 'tele-control', 'kill-session', '-t', '=central-do-tele-control']);
+  assert.deepEqual(sp.chamadas[3].args, sp.chamadas[0].args, 'o mesmo new-session');
+  assert.deepEqual(sp.chamadas[1].opts.env, {}, 'sem as herdadas');
+  assert.ok(linhas.some((l) => /sessao tmux central-do-tele-control sobrou de uma abertura de 3 min atras/.test(l)));
+
+  // mais nova que 3 min (ainda subindo), so outra sessao com o nome, ou list-sessions torto = a recusa de antes, sem kill
+  for (const [rotulo, saida] of [['2 min', lista(179)], ['sem ela', `${AGORA_S - 900} outra-sessao\n`], ['torto', 'lixo\n']]) {
+    const s = spawnTmuxFalso({ 'new-session': [{ codigo: 1 }], 'list-sessions': [{ codigo: 0, saida }] });
+    await assert.rejects(abrirCentralReal(() => {}, { ...base, gravarCentral: gravarDuble(), existe: existeDuble(), spawn: s })(), /tmux saiu com 1/, rotulo);
+    assert.deepEqual(s.chamadas.map((c) => c.args[2]), ['new-session', 'list-sessions'], rotulo);
+  }
+
+  // a 2a recusa (depois do kill) = rejeita, sem 3a tentativa
+  const s2 = spawnTmuxFalso({ 'new-session': [{ codigo: 1 }], 'list-sessions': [{ codigo: 0, saida: lista(600) }] });
+  await assert.rejects(abrirCentralReal(() => {}, { ...base, gravarCentral: gravarDuble(), existe: existeDuble(), spawn: s2 })(), /tmux saiu com 1/);
+  assert.deepEqual(s2.chamadas.map((c) => c.args[2]), ['new-session', 'list-sessions', 'kill-session', 'new-session']);
 });
 
 test('M3 4. abrirSessaoEscondidaReal darwin: nova com nome (-n, -e SESSOES_WPP_ESCONDIDA=1, sufixo do agora); retomada sem nome (so --resume, sem -n); uuid invalido, nome com aspas, pasta que nao existe ou C:\\ = rejeita sem spawn', async () => {

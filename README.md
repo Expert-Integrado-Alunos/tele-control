@@ -1,4 +1,4 @@
-> **Publicado pela Expert Integrado — versão 2026-10-22-7fbec81.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
+> **Publicado pela Expert Integrado — versão 2026-10-23-54bc3b3.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
 
 # Tele Control — as abas do Claude Code do seu PC, controladas pelo celular
 

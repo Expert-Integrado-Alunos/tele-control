@@ -80,6 +80,11 @@ const cfgGravado = (a) => JSON.parse(fs.readFileSync(path.join(a.estado, 'config
 
 // ---------- 1-4. config ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('A4a 1. PADRAO_DONO ("dono" com artigo "o", congelado) e nomeDoDonoValido: NFC, aparado e espacos seguidos viram 1; de 1 a 40 code points; comeca com letra; depois letra, marca, digito, espaco ou .\'’_-; o resto = null', () => {
   assert.deepEqual({ ...config.PADRAO_DONO }, { nome: 'dono', artigo: 'o' });
   assert.ok(Object.isFrozen(config.PADRAO_DONO), 'PADRAO_DONO congelado');
@@ -353,7 +358,7 @@ test('A4a 12. instalar.mjs config: o dono vai normalizado (o nome, o artigo em m
   }
 });
 
-test('A4a 13. a skill /instalar: a pergunta 3b (o artigo: do, da ou de <nome>) vira dono.artigo; o exemplo do config passa no passo config de verdade', async () => {
+test('A4a 13. a skill /instalar: a pergunta 3b (o artigo: do, da ou de <nome>) vira dono.artigo; o exemplo do config passa no passo config de verdade', { skip: SO_WINDOWS }, async () => {
   const texto = fs.readFileSync(path.join(REPO, '.claude', 'skills', 'instalar', 'SKILL.md'), 'utf8');
   assert.match(texto, /^3b\. /m, 'a pergunta 3b');
   assert.match(texto, /dono\.artigo/);

@@ -25,6 +25,9 @@ import { montarOkTg } from '../lib/ok-tg.mjs';
 import { horaBRT } from '../lib/formato.mjs';
 import { NUMERO_DONO, NUMERO_ROBO, WHATSAPP } from './lib/dados-whatsapp.mjs';
 import { CENTRAL_TESTE, RAIZES_TESTE } from './lib/dados-central.mjs';
+// Mac-testes (C, ambiente): as horas esperadas aqui sao as de Brasilia (o fuso do PC); maquina noutro fuso (o Mac do
+// dono veio com o relogio em New York) quebrava a conta. Sem TZ = Brasilia, pra este processo e pros filhos.
+process.env.TZ ??= 'America/Sao_Paulo';
 
 const require = createRequire(import.meta.url);
 const lib = require('../hooks/lib/sessoes-wpp.js');
@@ -537,6 +540,7 @@ test('A2b 11 (A2a). CLI ler-grupo com o WhatsApp desligado: 1 linha "WhatsApp de
     const env = { SESSOES_WPP_DIR: estadoDir, USERPROFILE: home, HOME: home };
     if (process.env.PATH) env.PATH = process.env.PATH;
     if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
+    if (process.env.TZ) env.TZ = process.env.TZ; // Mac-testes: o fuso de Brasilia do topo
     const r = spawnSync(process.execPath, ['--import', SEM_REDE, LER_GRUPO, ...args], { env, encoding: 'utf8', timeout: 30000, windowsHide: true });
     assert.equal(r.error, undefined, String(r.error));
     return r;

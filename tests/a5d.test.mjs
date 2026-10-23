@@ -69,6 +69,11 @@ const MONTADO = [
 
 // ---------- montarInstrucoes ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('A5d 1. PROCEDENCIA: o texto exato do contrato (marca d\'água)', () => {
   assert.equal(central.PROCEDENCIA, PROC);
 });
@@ -231,7 +236,7 @@ const AJUSTES_PEDIR = {
   },
 };
 
-test('A5d 10. montarAjustes: sozinha = so o crossSessionInbound; pedir (e qualquer outro modo) = o inbound, o allow com os comandos do roteamento e o hook PermissionRequest sem matcher com onFailure block', () => {
+test('A5d 10. montarAjustes: sozinha = so o crossSessionInbound; pedir (e qualquer outro modo) = o inbound, o allow com os comandos do roteamento e o hook PermissionRequest sem matcher com onFailure block', { skip: SO_WINDOWS }, () => {
   assert.deepEqual(central.montarAjustes({ modo: 'sozinha', repo: REPO, node: NODE }), { crossSessionInbound: 'accept' });
   assert.deepEqual(central.montarAjustes({ modo: 'sozinha' }), { crossSessionInbound: 'accept' }, 'sozinha nao precisa de repo nem node');
   assert.deepEqual(central.montarAjustes({ modo: 'pedir', repo: REPO, node: NODE }), AJUSTES_PEDIR);
@@ -345,7 +350,7 @@ test('A5d 14. negar-permissao.mjs: entrada que nao termina = responde o deny no 
 
 // ---------- identidadeCentral com o modo ----------
 
-test('A5d 15. identidadeCentral: modoPermissao = sozinha so com central.modoPermissao === "sozinha"; ausente ou outro valor = pedir', () => {
+test('A5d 15. identidadeCentral: modoPermissao = sozinha so com central.modoPermissao === "sozinha"; ausente ou outro valor = pedir', { skip: SO_WINDOWS }, () => {
   const { identidadeCentral } = config;
   assert.deepEqual(identidadeCentral({ central: { pasta: 'C:\\projetos', nome: 'Minha Central', modoPermissao: 'sozinha' } }),
     { pasta: 'C:\\projetos', nome: 'Minha Central', modoPermissao: 'sozinha' });
@@ -539,7 +544,7 @@ function gravarDuble(ordem, resposta = (o) => ({ pasta: MONTADA, modo: o.modo })
   return fn;
 }
 
-test('A5d 19. abrirCentralReal: gravarCentral ANTES do wscript, a cada abertura, com {estadoDir, repo, dono, central, raizes, modo, node, procedencia, log}; a montada e o modo (pedir = auto, sozinha = bypassPermissions) nos argumentos 4 e 5', async () => {
+test('A5d 19. abrirCentralReal: gravarCentral ANTES do wscript, a cada abertura, com {estadoDir, repo, dono, central, raizes, modo, node, procedencia, log}; a montada e o modo (pedir = auto, sozinha = bypassPermissions) nos argumentos 4 e 5', { skip: SO_WINDOWS }, async () => {
   const log = () => {};
   const ordem = [];
   const sp = spawnFalso('spawn', ordem);
@@ -596,7 +601,7 @@ test('A5d 20. abrirCentralReal: gravarCentral null (ou que lanca, ou montada rui
   assert.match(linhas[0], /^central: nao montei as instrucoes/);
 });
 
-test('A5d 21. abrirCentralReal com o gravarCentral de verdade (pasta temporaria): monta <estado>/central e passa a pasta; EXPERT_NO_PROVENANCE=1 tira a procedencia (so "1"); dono sem nome configurado = null (sem a linha do dono)', async () => {
+test('A5d 21. abrirCentralReal com o gravarCentral de verdade (pasta temporaria): monta <estado>/central e passa a pasta; EXPERT_NO_PROVENANCE=1 tira a procedencia (so "1"); dono sem nome configurado = null (sem a linha do dono)', { skip: SO_WINDOWS }, async () => {
   const estado = pastaTemp('a5d-');
   const pasta = path.join(estado, 'central');
   const instr = () => fs.readFileSync(path.join(pasta, 'instrucoes.md'), 'utf8');
@@ -628,7 +633,7 @@ test('A5d 21. abrirCentralReal com o gravarCentral de verdade (pasta temporaria)
   assert.ok(!instr().includes('o dono é o dono'));
 });
 
-test('A5d 22. abrirSessaoEscondidaReal: gravarCentral ANTES do wscript, a cada abertura, com os mesmos valores da central; a montada e o modo vao no ambiente do wscript (SESSOES_WPP_MONTADA, SESSOES_WPP_MODO); os argumentos de hoje iguais; null = rejeita sem o wscript; nome ruim = nem monta', async () => {
+test('A5d 22. abrirSessaoEscondidaReal: gravarCentral ANTES do wscript, a cada abertura, com os mesmos valores da central; a montada e o modo vao no ambiente do wscript (SESSOES_WPP_MONTADA, SESSOES_WPP_MODO); os argumentos de hoje iguais; null = rejeita sem o wscript; nome ruim = nem monta', { skip: SO_WINDOWS }, async () => {
   const log = () => {};
   const PASTA = 'C:\\projetos\\x';
   const ordem = [];

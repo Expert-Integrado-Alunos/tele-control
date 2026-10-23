@@ -42,7 +42,12 @@ function banco(linhas, { tabela = true } = {}) {
 }
 const outras = [['workbench.panel.x', '{"a":1}'], ['segredo.de.outra.extensao', '{"token":"nao-ler"}']];
 
-test('T11 L1. le as arquivadas e os grupos de cada janela (pasta normalizada, ordem da tela); o resto da chave e das outras chaves fica de fora', () => {
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
+test('T11 L1. le as arquivadas e os grupos de cada janela (pasta normalizada, ordem da tela); o resto da chave e das outras chaves fica de fora', { skip: SO_WINDOWS }, () => {
   const arq = banco([...outras, ['Anthropic.claude-code', JSON.stringify(ESTADO)]]);
   const l = lerListaVsCode(arq);
   assert.deepEqual([...l.arquivadas], ['arq-1', 'arq-2']);
@@ -99,7 +104,7 @@ test('T11 L4. so leitura: o banco sai com os mesmos bytes; e da pra apagar logo 
   fs.unlinkSync(arq);
 });
 
-test('T11 L5. caminho do banco (SESSOES_WPP_VSCODE_DB, senao o do VS Code no APPDATA; sem nenhum = null); pasta normalizada; nome do grupo sem o icone; concluido sem acento e sem caixa', () => {
+test('T11 L5. caminho do banco (SESSOES_WPP_VSCODE_DB, senao o do VS Code no APPDATA; sem nenhum = null); pasta normalizada; nome do grupo sem o icone; concluido sem acento e sem caixa', { skip: SO_WINDOWS }, () => {
   assert.equal(caminhoBancoVsCode({ SESSOES_WPP_VSCODE_DB: 'C:\\x\\y.vscdb', APPDATA: 'C:\\A' }), 'C:\\x\\y.vscdb');
   assert.equal(caminhoBancoVsCode({ APPDATA: 'C:\\A' }), path.join('C:\\A', 'Code', 'User', 'globalStorage', 'state.vscdb'));
   assert.equal(caminhoBancoVsCode({}), null);

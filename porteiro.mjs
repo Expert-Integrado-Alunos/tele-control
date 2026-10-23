@@ -7992,6 +7992,61 @@ function rodarTmux(spawnFn, args, ambiente, prazoMs) {
   });
 }
 
+// Mac-testes (22/10, caso real no Mac do dono): a central subiu no tmux, o claude parou na 1a tela do CLI (o tema do
+// onboarding) e nunca gravou o registro. Sem registro o porteiro acha que nao ha central e manda abrir; o tmux recusa
+// ("duplicate session", saida 1) e a central nunca volta (3 tentativas e "parei de abrir sozinho"). No Windows a janela
+// presa nao impede outra. Regra: com o new-session recusado, a sessao tmux de mesmo nome criada ha CENTRAL_ORFA_MS ou
+// mais e orfa (o porteiro so abre a central quando nao ve nenhuma viva, e a que esta subindo tem no maximo 2 min do
+// CENTRAL_SUBINDO_MS): ela sai (kill-session) e o new-session roda 1 vez mais. Mais nova, ou sem como saber = a recusa
+// de antes (nunca 2 centrais).
+const CENTRAL_ORFA_MS = 3 * MIN;
+
+// `tmux <args>` de leitura: resolve com o stdout (texto); saida != 0, 'error' ou prazo = resolve null. Nunca rejeita.
+function lerTmux(spawnFn, args, ambiente, prazoMs) {
+  return new Promise((resolver) => {
+    let acabou = false;
+    let relogio = null;
+    let saida = '';
+    const fim = (v) => {
+      if (acabou) return;
+      acabou = true;
+      clearTimeout(relogio);
+      resolver(v);
+    };
+    let filho;
+    try {
+      filho = spawnFn('tmux', args, { stdio: ['ignore', 'pipe', 'ignore'], env: ambiente });
+    } catch {
+      fim(null);
+      return;
+    }
+    relogio = setTimeout(() => {
+      try { filho.kill(); } catch { /* ja saiu */ }
+      fim(null);
+    }, prazoMs);
+    try { filho.stdout?.on('data', (d) => { saida += String(d); }); } catch { /* duble sem stdout */ }
+    filho.on('error', () => fim(null));
+    filho.once('exit', (codigo) => fim(codigo === 0 ? saida : null));
+  });
+}
+
+/**
+ * Mac-testes: idade (ms) da sessao `sessao` no servidor tmux do Tele Control pelo `list-sessions -F
+ * '#{session_created} #{session_name}'` (segundos desde 1970); sem servidor, sem a sessao ou saida torta = null.
+ */
+async function idadeSessaoTmux(spawnFn, sessao, ambiente, agoraMs) {
+  const saida = await lerTmux(spawnFn, ['-L', TMUX_SOCKET, 'list-sessions', '-F', '#{session_created} #{session_name}'], ambiente, ABRIR_PRAZO_MS);
+  if (typeof saida !== 'string') return null;
+  for (const linha of saida.split('\n')) {
+    const m = /^(\d{9,11}) (.+)$/.exec(linha.trim());
+    if (m && m[2] === sessao) {
+      const idade = agoraMs - Number(m[1]) * 1000;
+      return Number.isFinite(idade) ? idade : null;
+    }
+  }
+  return null;
+}
+
 /**
  * Abre a central de verdade (F3.9/F3.10): wscript no central/abrir-central.vbs (ele limpa o ambiente herdado e abre o
  * Windows Terminal), destacado e sem janela. So o `rodar` usa a de verdade; teste passa `spawn` falso.
@@ -8014,7 +8069,7 @@ function rodarTmux(spawnFn, args, ambiente, prazoMs) {
 export function abrirCentralReal(log, {
   spawn: spawnFn = spawn, central = null, claude, gravarCentral: gravar = gravarCentralReal, estadoDir = null, dono = null,
   raizes = [], env = process.env,
-  existe = tipoNoDisco,
+  existe = tipoNoDisco, agora = Date.now,
 } = {}) {
   const vbs = path.join(REPO, 'central', 'abrir-central.vbs');
   const id = identidadeCentral({ central }, { repo: REPO });
@@ -8064,7 +8119,18 @@ export function abrirCentralReal(log, {
         return;
       }
       const comando = [exe, '-n', id.nome, '--permission-mode', modoCli, '--settings', ajustes, '--append-system-prompt-file', instrucoes];
-      rodarTmux(spawnFn, argsTmux({ sessao: nomeTmux(id.nome), pasta: id.pasta, comando }), semHerdadas(env), ABRIR_PRAZO_MS)
+      const sessao = nomeTmux(id.nome);
+      const ambiente = semHerdadas(env);
+      const novaSessao = () => rodarTmux(spawnFn, argsTmux({ sessao, pasta: id.pasta, comando }), ambiente, ABRIR_PRAZO_MS);
+      novaSessao()
+        .catch(async (err) => {
+          // Mac-testes: recusado = a sessao de mesmo nome sobrou de uma abertura antiga sem registro? (CENTRAL_ORFA_MS)
+          const idade = await idadeSessaoTmux(spawnFn, sessao, ambiente, agora());
+          if (idade === null || idade < CENTRAL_ORFA_MS) throw err;
+          log(`central: a sessao tmux ${sessao} sobrou de uma abertura de ${Math.round(idade / 60000)} min atras sem registro; fechada pra abrir outra`);
+          await rodarTmux(spawnFn, ['-L', TMUX_SOCKET, 'kill-session', '-t', `=${sessao}`], ambiente, ABRIR_PRAZO_MS);
+          return novaSessao();
+        })
         .then(resolver, (err) => {
           log(`abrir a central falhou (tmux): ${String(err?.message || err).slice(0, 160)}`);
           rejeitar(err);

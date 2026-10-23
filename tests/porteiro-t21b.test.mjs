@@ -246,6 +246,11 @@ const firmar = async (h) => {
 
 // ---------- reabrir no Orca (contrato 3) ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('T21b 1. fala pra conversa fechada com origem Orca e o Orca aberto: abrirNoOrca(pasta, nome, {retomar: sid}), escondida nao; o item da espera tem orca: true e o log diz "no Orca"', async () => {
   const h = montar();
   await falaPraFechada(h);
@@ -341,7 +346,7 @@ test('T21b 4. sem origem Orca (nenhuma, ou outro app) a escondida e chamada e o 
   }
 });
 
-test('T21b 5. a reaberta no Orca firma (cli vivo na pasta, 10 s), a fala e entregue e o e.retomadas nao ganha a entrada; 31 min parada com o dono no PC: o devolverRetomadas nao fecha ela (a escondida de controle fecha)', async () => {
+test('T21b 5. a reaberta no Orca firma (cli vivo na pasta, 10 s), a fala e entregue e o e.retomadas nao ganha a entrada; 31 min parada com o dono no PC: o devolverRetomadas nao fecha ela (a escondida de controle fecha)', { skip: SO_WINDOWS }, async () => {
   const cena = async (orcaAberto) => {
     const h = montar();
     h.orcaAberto = orcaAberto;
@@ -407,7 +412,7 @@ function spawnOrcaFalso(modos = []) {
   return fn;
 }
 
-test('T21b 6. abrirNoOrcaReal e orcaAbertoReal (falsos): caminho e argumentos exatos, env sem ELECTRON_RUN_AS_NODE e as herdadas; nome/uuid/pasta ruins e orca.exe ausente rejeitam sem spawn; saida ruim rejeita; tasklist com "Orca.exe" = true', async () => {
+test('T21b 6. abrirNoOrcaReal e orcaAbertoReal (falsos): caminho e argumentos exatos, env sem ELECTRON_RUN_AS_NODE e as herdadas; nome/uuid/pasta ruins e orca.exe ausente rejeitam sem spawn; saida ruim rejeita; tasklist com "Orca.exe" = true', { skip: SO_WINDOWS }, async () => {
   assert.equal(typeof abrirNoOrcaReal, 'function', 'abrirNoOrcaReal exportada');
   assert.equal(typeof orcaAbertoReal, 'function', 'orcaAbertoReal exportada');
   const env = {

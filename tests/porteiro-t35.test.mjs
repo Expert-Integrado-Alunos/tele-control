@@ -27,6 +27,9 @@ import * as formatoTg from '../lib/formato-tg.mjs';
 import { horaBRT, diaBRT } from '../lib/formato.mjs';
 import { NUMERO_DONO } from './lib/dados-whatsapp.mjs';
 import { CENTRAL_TESTE } from './lib/dados-central.mjs';
+// Mac-testes (C, ambiente): as horas esperadas aqui sao as de Brasilia (o fuso do PC); maquina noutro fuso (o Mac do
+// dono veio com o relogio em New York) quebrava a conta. Sem TZ = Brasilia, pra este processo e pros filhos.
+process.env.TZ ??= 'America/Sao_Paulo';
 
 const require = createRequire(import.meta.url);
 const lib = require('../hooks/lib/sessoes-wpp.js');

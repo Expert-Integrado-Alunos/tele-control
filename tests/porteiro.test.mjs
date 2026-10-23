@@ -170,6 +170,11 @@ async function ligarRua(h) {
 
 // ---------------------------------------------------------------------------------------------------------------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('1. parou com DECISAO + modo rua -> 1 aviso com o texto do montarAviso; avisos[] com os 2 ids; repetido -> 0', async () => {
   const h = montar();
   sessao(h, { sessionId: 'S1' });
@@ -3290,7 +3295,7 @@ function spawnFalso(modo) {
 // A5d2: o gravarCentral dublado nos abridores (a pasta montada e o modo; o de verdade esta no tests/a5d.test.mjs)
 const MONTAR = (o) => ({ pasta: 'D:\\estado\\central', modo: o.modo });
 
-test('R2 4. central: erro assincrono do spawn do wscript -> "Não consegui abrir" (e o "abre central" seguinte tenta de novo); aberta pelo "abre central" e sem aparecer viva em 3 min -> 1 frase; apareceu ou travou -> nada', async () => {
+test('R2 4. central: erro assincrono do spawn do wscript -> "Não consegui abrir" (e o "abre central" seguinte tenta de novo); aberta pelo "abre central" e sem aparecer viva em 3 min -> 1 frase; apareceu ou travou -> nada', { skip: SO_WINDOWS }, async () => {
   assert.equal(typeof porteiroMod.abrirCentralReal, 'function', 'abrirCentralReal testavel (spawn injetado)');
   const h = montar();
   const sp = spawnFalso('erro');
@@ -4062,7 +4067,7 @@ async function cenaSessao(h, { pasta = h.pasta } = {}) {
   return { m, pedido: h.entregas[1] };
 }
 
-test('F4b 1. feliz: central viva manda abrir-sessao -> VS Code 1x na pasta; registro 1 some e nasce o 2; so o 2 vale (2 checagens >= 10 s); pedido com a fala literal e encaminhado; enviado -> 1 linha custom-title acrescentada e frase com a pasta curta', async () => {
+test('F4b 1. feliz: central viva manda abrir-sessao -> VS Code 1x na pasta; registro 1 some e nasce o 2; so o 2 vale (2 checagens >= 10 s); pedido com a fala literal e encaminhado; enviado -> 1 linha custom-title acrescentada e frase com a pasta curta', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   centralCli(h);
   const m = msg(h, { content: FALA_SESSAO });
@@ -4134,7 +4139,7 @@ test('F4b 1. feliz: central viva manda abrir-sessao -> VS Code 1x na pasta; regi
   assert.equal(fs.readFileSync(arq, 'utf8').split(linhaNome(NOME_SESSAO, 'N2')).length, 2, 'nome gravado 1 vez so');
 });
 
-test('F4b 2. "enviado" sem transcript: grava na volta em que o arquivo aparece; 2 min sem ele -> a mesma frase com o sufixo e nada gravado', async () => {
+test('F4b 2. "enviado" sem transcript: grava na volta em que o arquivo aparece; 2 min sem ele -> a mesma frase com o sufixo e nada gravado', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   const { pedido } = await cenaSessao(h);
   assert.deepEqual(h.enviados, [], 'sem transcript: nada ainda');
@@ -4168,7 +4173,7 @@ test('F4b 2. "enviado" sem transcript: grava na volta em que o arquivo aparece; 
   assert.equal(h2.enviados.length, 1);
 });
 
-test('F4b 2b. transcript com a ultima linha cortada (a aba escrevendo): nao cola no meio dela; grava na volta seguinte, com a linha completa', async () => {
+test('F4b 2b. transcript com a ultima linha cortada (a aba escrevendo): nao cola no meio dela; grava na volta seguinte, com a linha completa', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   const { pedido } = await cenaSessao(h);
   const arq = transcript(h, 'N1', [peer(pedido, false, iso(h.t))], 'c--projetos-sessoes-wpp');
@@ -4215,7 +4220,7 @@ test('F4b 3. abrir-sessao que nao veio da central viva (outra aba, sem por, sem 
   }
 });
 
-test('F4b 4. pasta que nao existe, fora das raizes, com .. saindo da raiz, dentro de node_modules/.git, relativa, arquivo ou prefixo da raiz -> frase de pasta recusada, nada abre; maiuscula, barra / e .. que fica dentro valem', async () => {
+test('F4b 4. pasta que nao existe, fora das raizes, com .. saindo da raiz, dentro de node_modules/.git, relativa, arquivo ou prefixo da raiz -> frase de pasta recusada, nada abre; maiuscula, barra / e .. que fica dentro valem', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   centralCli(h);
   const m = msg(h, { content: FALA_SESSAO });
@@ -4248,7 +4253,7 @@ test('F4b 4. pasta que nao existe, fora das raizes, com .. saindo da raiz, dentr
   assert.equal(h.enviados.length, ruins.length, 'aceita = nenhuma frase');
 });
 
-test('F4b 4b. pasta curta na frase: repos\\<resto>, Area\\<resto>; a propria raiz = repos / Area', async () => {
+test('F4b 4b. pasta curta na frase: repos\\<resto>, Area\\<resto>; a propria raiz = repos / Area', { skip: SO_WINDOWS }, async () => {
   const casos = [
     [(h) => h.repos, 'repos'],
     [(h) => path.join(h.workspace, 'Comercial'), 'Area\\Comercial'],
@@ -4545,7 +4550,7 @@ function spawnCmdFalso(modos = []) {
   return fn;
 }
 
-test('F4b 12. abrirSessaoReal (spawn falso): 1 cmd.exe so, com a pasta (F4c: sem pausa e sem --open-url; o link sai pelo abrirLinkReal com windowId), pasta com espaco inteira entre aspas, sem janela, sem a identidade da sessao no ambiente; erro, saida != 0 e prazo rejeitam; SESSOES_WPP_CODE troca o caminho', async () => {
+test('F4b 12. abrirSessaoReal (spawn falso): 1 cmd.exe so, com a pasta (F4c: sem pausa e sem --open-url; o link sai pelo abrirLinkReal com windowId), pasta com espaco inteira entre aspas, sem janela, sem a identidade da sessao no ambiente; erro, saida != 0 e prazo rejeitam; SESSOES_WPP_CODE troca o caminho', { skip: SO_WINDOWS }, async () => {
   assert.equal(typeof porteiroMod.abrirSessaoReal, 'function', 'abrirSessaoReal testavel (spawn injetado)');
   const real = porteiroMod.abrirSessaoReal;
   const pasta = 'D:\\Meus Docs\\trabalho\\Area\\Comercial';
@@ -4607,7 +4612,7 @@ test('F4b 12b. abrirSessaoReal com cmd.exe de verdade e code.cmd falso: caminho 
   assert.deepEqual(linhas, [`["${pasta}"][][]`]);
 });
 
-test('F4b 13. depois do nome gravado, o titulo da aba e o nome novo: a resposta da aba sai com ele no cabecalho e o "status" lista ele', async () => {
+test('F4b 13. depois do nome gravado, o titulo da aba e o nome novo: a resposta da aba sai com ele no cabecalho e o "status" lista ele', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   const { pedido } = await cenaSessao(h);
   const arq = transcript(h, 'N1', [peer(pedido, false, iso(h.t)), aiTitle('Revisar porteiro do WhatsApp')], 'c--projetos-sessoes-wpp');
@@ -4629,7 +4634,7 @@ test('F4b 13. depois do nome gravado, o titulo da aba e o nome novo: a resposta 
   assert.match(h.enviados.at(-1).texto, /\n- Revisão Porteiro \(/);
 });
 
-test('F4b 14. erro do mensageiro com o recado ja na aba nova: a nova tentativa registra sem reenviar e nomeia do mesmo jeito', async () => {
+test('F4b 14. erro do mensageiro com o recado ja na aba nova: a nova tentativa registra sem reenviar e nomeia do mesmo jeito', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao({ respostasEntrega: [{ status: 'enviado', detalhe: '' }, { status: 'erro', detalhe: 'timeout 90 s' }] });
   const { pedido } = await cenaSessao(h);
   assert.deepEqual(h.enviados, []);
@@ -4721,7 +4726,7 @@ async function voltas(h, t0, segundos) {
 }
 const itemSessao = (h) => estado(h).sessoesNovas[0];
 
-test('F4c 1. janela nova (o 18:55): foto antes {S, [1,2]}; a window4 nasce sem o Claude = janela 4 e nenhum link; o Claude sobe nela = 1 link com windowId 4 (linkEm no disco antes); aba nova na pasta estavel = fala + nome', async () => {
+test('F4c 1. janela nova (o 18:55): foto antes {S, [1,2]}; a window4 nasce sem o Claude = janela 4 e nenhum link; o Claude sobe nela = 1 link com windowId 4 (linkEm no disco antes); aba nova na pasta estavel = fala + nome', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   h.janelas = { sessao: SESSAO_VSCODE, ids: [1, 2], comClaude: [1, 2] };
   h.janelaAoAbrir = 4;
@@ -4790,7 +4795,7 @@ test('F4c 3. painel sozinho: a sessao que a janela nova abre na pasta antes do C
   assert.equal(h.entregas.length, 1);
 });
 
-test('F4c 4. pasta ja aberta: nenhuma janela nova em 20 s e nenhuma candidata = frase "já está aberta" com a pasta curta, o item sai, nenhum link; com candidata aos 20 s continua esperando', async () => {
+test('F4c 4. pasta ja aberta: nenhuma janela nova em 20 s e nenhuma candidata = frase "já está aberta" com a pasta curta, o item sai, nenhum link; com candidata aos 20 s continua esperando', { skip: SO_WINDOWS }, async () => {
   const h = montarSessao();
   h.janelaAoAbrir = null; // o VS Code so trouxe pra frente a janela que ja tinha a pasta
   const { t0 } = await pedirSessao(h);
@@ -4825,7 +4830,7 @@ test('F4c 4. pasta ja aberta: nenhuma janela nova em 20 s e nenhuma candidata = 
   assert.deepEqual(h3.links, []);
 });
 
-test('F4c 5. sem janelas (logs null, logs que lancam, porteiro sem a opcao) = foto null e nenhum link; 20 s sem candidata = frase "já está aberta"', async () => {
+test('F4c 5. sem janelas (logs null, logs que lancam, porteiro sem a opcao) = foto null e nenhum link; 20 s sem candidata = frase "já está aberta"', { skip: SO_WINDOWS }, async () => {
   const casos = {
     'logs null': (h) => { h.janelas = null; },
     'logs lancam': (h) => { h.janelasFalha = true; },
@@ -4913,7 +4918,7 @@ test('F4c 9. prazo: 179 s sem aba = ainda espera; 180 s = frase "em 3 min", o it
   assert.equal(linhasDoLog(h, /nenhuma aba nova valida .* em 3 min/).length, 1);
 });
 
-test('F4c 10. item gravado pela versao anterior (sem janelasAntes/janela/linkEm) nao quebra e segue a espera: sem foto, todos os ids contam; sem janelas, 20 s = "já está aberta"', async () => {
+test('F4c 10. item gravado pela versao anterior (sem janelasAntes/janela/linkEm) nao quebra e segue a espera: sem foto, todos os ids contam; sem janelas, 20 s = "já está aberta"', { skip: SO_WINDOWS }, async () => {
   const velho = (h) => {
     const arq = path.join(h.env.SESSOES_WPP_DIR, 'estado.json');
     const e = JSON.parse(fs.readFileSync(arq, 'utf8'));
@@ -4951,7 +4956,7 @@ test('F4c 10. item gravado pela versao anterior (sem janelasAntes/janela/linkEm)
   assert.deepEqual(h2.enviados.map((y) => y.texto), [SESSAO_JA_ABERTA(NOME_SESSAO, 'repos\\sessoes-wpp')]);
 });
 
-test('F4c 11. abrirSessaoReal (spawn falso) so abre a pasta: 1 chamada, sem --open-url, sem link, sem pausa', async () => {
+test('F4c 11. abrirSessaoReal (spawn falso) so abre a pasta: 1 chamada, sem --open-url, sem link, sem pausa', { skip: SO_WINDOWS }, async () => {
   const sp = spawnCmdFalso();
   const esperas = [];
   await porteiroMod.abrirSessaoReal({ spawn: sp, env: { PATH: 'x' }, esperar: async (ms) => { esperas.push(ms); } })('C:\\projetos\\sessoes-wpp');
@@ -4962,7 +4967,7 @@ test('F4c 11. abrirSessaoReal (spawn falso) so abre a pasta: 1 chamada, sem --op
   assert.deepEqual(esperas, []);
 });
 
-test('F4c 12. abrirLinkReal (spawn falso): 1 cmd.exe com --open-url "vscode://anthropic.claude-code/open?windowId=7", sem janela, sem as herdadas; windowId invalido rejeita sem chamar; erro, saida != 0 e prazo rejeitam', async () => {
+test('F4c 12. abrirLinkReal (spawn falso): 1 cmd.exe com --open-url "vscode://anthropic.claude-code/open?windowId=7", sem janela, sem as herdadas; windowId invalido rejeita sem chamar; erro, saida != 0 e prazo rejeitam', { skip: SO_WINDOWS }, async () => {
   assert.equal(typeof porteiroMod.abrirLinkReal, 'function', 'abrirLinkReal exportada');
   const real = porteiroMod.abrirLinkReal;
   const env = {
@@ -5013,7 +5018,7 @@ test('F4c 12b. abrirLinkReal com cmd.exe de verdade e code.cmd falso: o link com
   assert.deepEqual(linhas, ['[--open-url]["vscode://anthropic.claude-code/open?windowId=7"][]']);
 });
 
-test('F4c 13. janelasVsCodeReal (pasta temporaria): sessao viva = a de nome mais novo COM main.log; ids = window<n> em ordem de numero; comClaude = as com a pasta exthost\\Anthropic.claude-code; sem raiz ou sem sessao viva = null; SESSOES_WPP_VSCODE_LOGS vence o APPDATA', () => {
+test('F4c 13. janelasVsCodeReal (pasta temporaria): sessao viva = a de nome mais novo COM main.log; ids = window<n> em ordem de numero; comClaude = as com a pasta exthost\\Anthropic.claude-code; sem raiz ou sem sessao viva = null; SESSOES_WPP_VSCODE_LOGS vence o APPDATA', { skip: SO_WINDOWS }, () => {
   assert.equal(typeof porteiroMod.janelasVsCodeReal, 'function', 'janelasVsCodeReal exportada');
   const real = porteiroMod.janelasVsCodeReal;
   const raiz = pastaTemp('porteiro-vscode-logs-');
@@ -5190,7 +5195,7 @@ test('F4c 16. janela ja aberta (o pedido "na pasta Area" = a raiz): aba viva na 
   assert.deepEqual(h.links, [2]);
 });
 
-test('F4c 17. a janela da aba que ja estava na pasta nao e achada (janelaDoExthost null ou torto) = frase "já está aberta" aos 20 s, sem link; 1 tentativa so', async () => {
+test('F4c 17. a janela da aba que ja estava na pasta nao e achada (janelaDoExthost null ou torto) = frase "já está aberta" aos 20 s, sem link; 1 tentativa so', { skip: SO_WINDOWS }, async () => {
   for (const devolve of [null, undefined, 0, -1, '2', 2.5, NaN, 2 ** 53, [2]]) {
     const nome = `devolve ${String(devolve)}`;
     const h = montarJaAberta();
@@ -5212,7 +5217,7 @@ test('F4c 17. a janela da aba que ja estava na pasta nao e achada (janelaDoExtho
   }
 });
 
-test('F4c 18. consulta do processo que lanca (ou sem dados) e janelaDoExthost que lanca = pula a aba; 1 tentativa so em 3 voltas; 20 s = frase "já está aberta", sem link', async () => {
+test('F4c 18. consulta do processo que lanca (ou sem dados) e janelaDoExthost que lanca = pula a aba; 1 tentativa so em 3 voltas; 20 s = frase "já está aberta", sem link', { skip: SO_WINDOWS }, async () => {
   const casos = {
     'info lanca': (h) => { h.infoFalha = 'powershell caiu'; },
     'info sem dados': () => {},
@@ -5291,7 +5296,7 @@ test('F4c 20. candidata viva (ainda nao firme) quando a janela ganha o Claude: n
   assert.deepEqual(h2.enviados, [], 'nenhuma frase de pasta ja aberta');
 });
 
-test('F4c 21. janelaDoExthostReal (pasta temporaria): a janela cuja ULTIMA linha "Extension host with pid <n> started" do exthost.log tem o pid; mais de uma = a de id mais alto; sessao sem main.log, window torta, sem log, raiz inexistente e paiPid invalido = null; o rodar liga a real', () => {
+test('F4c 21. janelaDoExthostReal (pasta temporaria): a janela cuja ULTIMA linha "Extension host with pid <n> started" do exthost.log tem o pid; mais de uma = a de id mais alto; sessao sem main.log, window torta, sem log, raiz inexistente e paiPid invalido = null; o rodar liga a real', { skip: SO_WINDOWS }, () => {
   assert.equal(typeof porteiroMod.janelaDoExthostReal, 'function', 'janelaDoExthostReal exportada');
   const real = porteiroMod.janelaDoExthostReal;
   const raiz = pastaTemp('porteiro-exthost-');
@@ -5353,7 +5358,7 @@ test('F4c 21. janelaDoExthostReal (pasta temporaria): a janela cuja ULTIMA linha
   assert.match(codigo, /janelaDoExthost: janelaDoExthostReal\(\{ env \}\)/);
 });
 
-test('F4c 22. sem como achar a janela ja aberta (porteiro sem processos, processos sem info, sem janelaDoExthost) ou sem aba viva na pasta antes = o de antes: 20 s = frase "já está aberta", sem link, nada lanca', async () => {
+test('F4c 22. sem como achar a janela ja aberta (porteiro sem processos, processos sem info, sem janelaDoExthost) ou sem aba viva na pasta antes = o de antes: 20 s = frase "já está aberta", sem link, nada lanca', { skip: SO_WINDOWS }, async () => {
   const casos = {
     'sem processos': () => montarJaAberta({ semProcessos: true }),
     'processos sem info': () => montarJaAberta({ processos: {} }),
@@ -5378,7 +5383,7 @@ test('F4c 22. sem como achar a janela ja aberta (porteiro sem processos, process
   }
 });
 
-test('F4c 23. item gravado antes do campo janelaVelha (ausente ou torto) segue e tenta 1 vez: achou = link; ja tentado (true) = nao consulta de novo e 20 s = frase', async () => {
+test('F4c 23. item gravado antes do campo janelaVelha (ausente ou torto) segue e tenta 1 vez: achou = link; ja tentado (true) = nao consulta de novo e 20 s = frase', { skip: SO_WINDOWS }, async () => {
   for (const campo of ['ausente', 'true', 1, null]) {
     const nome = `janelaVelha ${String(campo)}`;
     const h = montarJaAberta();
@@ -5409,7 +5414,7 @@ test('F4c 23. item gravado antes do campo janelaVelha (ausente ou torto) segue e
   assert.deepEqual(h.links, []);
 });
 
-test('F4c 24. ate 3 abas de antes, da mais nova pra mais velha, so as vivas do VS Code (terminal e aba fechada ficam fora); a 1a janela valida vale e para de consultar', async () => {
+test('F4c 24. ate 3 abas de antes, da mais nova pra mais velha, so as vivas do VS Code (terminal e aba fechada ficam fora); a 1a janela valida vale e para de consultar', { skip: SO_WINDOWS }, async () => {
   assert.ok(process.ppid !== process.pid && pidVivo(process.ppid), 'o pai do processo do teste esta vivo');
   const h = montarJaAberta();
   h.janelas = { sessao: SESSAO_VSCODE, ids: [1, 2, 3], comClaude: [1, 2, 3] };
@@ -5557,7 +5562,7 @@ async function pedirEscondida(h, o = {}) {
   return m;
 }
 
-test('F4f 1. feliz (escondida): abrir-sessao -> 1 abrirSessaoEscondida(pasta, nome) e nada do VS Code; registro cli com o nome firma em 10 s; fala encaminhada; transcript -> custom-title + frase com a pasta curta', async () => {
+test('F4f 1. feliz (escondida): abrir-sessao -> 1 abrirSessaoEscondida(pasta, nome) e nada do VS Code; registro cli com o nome firma em 10 s; fala encaminhada; transcript -> custom-title + frase com a pasta curta', { skip: SO_WINDOWS }, async () => {
   const h = montarEscondida();
   const m = await pedirEscondida(h);
   const A = m.provider_msg_id;
@@ -5720,7 +5725,7 @@ test('F4f 7. nome com acento: registro gravado em outra forma Unicode (NFD) vale
   assert.equal(h.entregas[1].sessionId, 'D1');
 });
 
-test('F4f 8. item de estado velho (sem `escondida`) com o modo escondido ligado segue a logica do VS Code de hoje, sem lancar', async () => {
+test('F4f 8. item de estado velho (sem `escondida`) com o modo escondido ligado segue a logica do VS Code de hoje, sem lancar', { skip: SO_WINDOWS }, async () => {
   const h = montarEscondida();
   centralCli(h);
   const m = msg(h, { content: FALA_SESSAO });
@@ -5738,7 +5743,7 @@ test('F4f 8. item de estado velho (sem `escondida`) com o modo escondido ligado 
   assert.deepEqual(h.escondidas, []);
 });
 
-test('F4f 9. abrirSessaoEscondidaReal (spawn falso): 1 wscript.exe com //nologo, o vbs da pasta central, a pasta e o nome (1 argumento cada), sem janela, sem as herdadas; nome com aspas, %, quebra ou vazio e pasta ruim rejeitam sem chamar; erro, saida != 0 e prazo rejeitam', async () => {
+test('F4f 9. abrirSessaoEscondidaReal (spawn falso): 1 wscript.exe com //nologo, o vbs da pasta central, a pasta e o nome (1 argumento cada), sem janela, sem as herdadas; nome com aspas, %, quebra ou vazio e pasta ruim rejeitam sem chamar; erro, saida != 0 e prazo rejeitam', { skip: SO_WINDOWS }, async () => {
   assert.equal(typeof porteiroMod.abrirSessaoEscondidaReal, 'function', 'abrirSessaoEscondidaReal exportada');
   const real = (o) => porteiroMod.abrirSessaoEscondidaReal({ gravarCentral: MONTAR, ...o }); // A5d2: a montada dublada
   const vbs = path.join(path.dirname(PORTEIRO), 'central', 'abrir-sessao.vbs');
@@ -6090,7 +6095,7 @@ const logT7 = (h, re) =>
 const NAO_ABRIU_T7 = `${CAB}\nA central não abriu no PC. Tenta "abre central" de novo ou abre no PC.`;
 const SEM_CENTRAL_T7 = `${CAB}\nNão sei pra qual sessão é. Responde citando o aviso dela, ou começa com o nome da sessão e dois pontos. "status" lista as sessões.`;
 
-test('T7a1a 26. temCanalDeRecado e procStartMs (unidade); ninguem com o campo = roteamento igual a hoje; sem listarPipes = como hoje', async () => {
+test('T7a1a 26. temCanalDeRecado e procStartMs (unidade); ninguem com o campo = roteamento igual a hoje; sem listarPipes = como hoje', { skip: SO_WINDOWS }, async () => {
   const { temCanalDeRecado, procStartMs } = porteiroMod;
   assert.equal(typeof temCanalDeRecado, 'function', 'temCanalDeRecado exportada');
   assert.equal(typeof procStartMs, 'function', 'procStartMs exportada');
@@ -6140,7 +6145,7 @@ test('T7a1a 26. temCanalDeRecado e procStartMs (unidade); ninguem com o campo = 
   assert.ok(h3.listagens >= 1, 'o duble foi consultado');
 });
 
-test('T7a1a 28. central sem canal ha 30 s + fala -> estaciona (0 claude -p, 0 frase, 0 aberturas); ganha o canal em 1 min -> sai 1 vez pra ela; 3 min sem canal -> centralNaoAbriu 1 vez; travado esvazia', async () => {
+test('T7a1a 28. central sem canal ha 30 s + fala -> estaciona (0 claude -p, 0 frase, 0 aberturas); ganha o canal em 1 min -> sai 1 vez pra ela; 3 min sem canal -> centralNaoAbriu 1 vez; travado esvazia', { skip: SO_WINDOWS }, async () => {
   const h = montarPipes();
   abaComPipe(h, 'S1', 'Faro');
   centralSemCanal(h, { idadeMs: 30 * 1000 });
@@ -6234,7 +6239,7 @@ test('T7a1a 28. central sem canal ha 30 s + fala -> estaciona (0 claude -p, 0 fr
   assert.deepEqual(estado(h3).centralPendentes, []);
 });
 
-test('T7a1a 29. 2 centrais pelo nome (a de nome de arquivo menor sem canal) -> a fala vai pra que tem canal; o "por" da sem canal nao vale; -n > nome de arquivo; ai-title igual nao vira central', async () => {
+test('T7a1a 29. 2 centrais pelo nome (a de nome de arquivo menor sem canal) -> a fala vai pra que tem canal; o "por" da sem canal nao vale; -n > nome de arquivo; ai-title igual nao vira central', { skip: SO_WINDOWS }, async () => {
   const h = montarPipes();
   centralSemCanal(h); // 100001.json: a 1a pelo nome do arquivo
   centralComCanal(h); // 100002.json
@@ -6397,7 +6402,7 @@ const naoMataT7 = (h, motivo) => logT7(h, new RegExp(`central sem canal de recad
 const fechouT7 = (h) => logT7(h, new RegExp(`central sem canal de recado \\(pid ${PID_CS}\\): fechada; abrindo outra`));
 const tituloCentral = (h, sid) => transcript(h, sid, [custom('Central de sessões de teste')]);
 
-test('T7a1b 27. central sem canal ha 3 min + outra aba com canal + fala solta (PC em uso) -> estaciona; fechada e aberta outra; a nova recebe a fala 1 vez com o sessionId novo; nenhuma frase; "status" byte a byte', async () => {
+test('T7a1b 27. central sem canal ha 3 min + outra aba com canal + fala solta (PC em uso) -> estaciona; fechada e aberta outra; a nova recebe a fala 1 vez com o sessionId novo; nenhuma frase; "status" byte a byte', { skip: SO_WINDOWS }, async () => {
   const h = montarT7b();
   abaComPipe(h, 'S1', 'Faro');
   travada(h);
@@ -6517,7 +6522,7 @@ function mudarEstado(h, fn) {
   fs.writeFileSync(arq, JSON.stringify(e));
 }
 
-test('T7a1b 32. guardas do fechar a central travada: cada uma com 0 matarArvore (busy, PC em uso sem fala, ensaio, travado, sem processos, aba do VS Code, name/nameSource/cwd, pid reusado, info que lanca, matar false, pid vivo depois de 2 s, ganhou o canal, teto de 3)', async () => {
+test('T7a1b 32. guardas do fechar a central travada: cada uma com 0 matarArvore (busy, PC em uso sem fala, ensaio, travado, sem processos, aba do VS Code, name/nameSource/cwd, pid reusado, info que lanca, matar false, pid vivo depois de 2 s, ganhou o canal, teto de 3)', { skip: SO_WINDOWS }, async () => {
   // controle: o cenario base fecha e abre (cada guarda abaixo muda 1 coisa)
   let h = await guardaT7();
   assert.deepEqual(h.mortes, [PID_CS], 'controle: fecha');
@@ -6711,7 +6716,7 @@ const semNaoAcheiControle = (h, rotulo) => {
 const centralQueNaoRecebe = (h, o = {}) => travada(h, { comCanal: true, idadeMs: 10 * MIN, ...o });
 const CENTRAL_FALHOU_T7 = `${CAB}\nNão consegui abrir a central no PC.`;
 
-test('T7a1c 30. reativo no WhatsApp: nao_achei da central -> nenhum naoAchei; 1 kill + 1 abertura; a MESMA fala vai 1 vez pra nova com deNovo; reacao e resposta no grupo, sem frase nova; a nova tambem nao_achei -> centralNaoAbriu 1 vez e nenhuma 3a entrega', async () => {
+test('T7a1c 30. reativo no WhatsApp: nao_achei da central -> nenhum naoAchei; 1 kill + 1 abertura; a MESMA fala vai 1 vez pra nova com deNovo; reacao e resposta no grupo, sem frase nova; a nova tambem nao_achei -> centralNaoAbriu 1 vez e nenhuma 3a entrega', { skip: SO_WINDOWS }, async () => {
   const h = montarT7b();
   abaComPipe(h, 'S1', 'Faro');
   centralQueNaoRecebe(h);
@@ -6808,7 +6813,7 @@ test('T7a1c 30. reativo no WhatsApp: nao_achei da central -> nenhum naoAchei; 1 
   semNaoAcheiControle(k, 'NAO_ACHEI 2x');
 });
 
-test('T7a1c 33. "abre central" com a travada ocupada -> mata, zera o teto, "Abrindo" e a vigia so termina com a que recebe; subindo sem canal -> "Abrindo" sem abrir outra; com canal -> "ja esta aberta"', async () => {
+test('T7a1c 33. "abre central" com a travada ocupada -> mata, zera o teto, "Abrindo" e a vigia so termina com a que recebe; subindo sem canal -> "Abrindo" sem abrir outra; com canal -> "ja esta aberta"', { skip: SO_WINDOWS }, async () => {
   // a travada ocupada e o teto cheio: o "abre central" mata mesmo ocupada, zera o teto e abre outra
   const h = montarT7b();
   abaComPipe(h, 'S1', 'Faro');
@@ -6899,7 +6904,7 @@ test('T7a1c 33. "abre central" com a travada ocupada -> mata, zera o teto, "Abri
   assert.deepEqual(h4.mortes, []);
 });
 
-test('T7a1c 34. pontas: nenhum naoAchei da central; encaminhar e abrir-sessao com o por da travada ignorados; porteiro religado com fala estacionada solta igual; "trava" esvazia; F4h nao conta a travada no mesmoNome', async () => {
+test('T7a1c 34. pontas: nenhum naoAchei da central; encaminhar e abrir-sessao com o por da travada ignorados; porteiro religado com fala estacionada solta igual; "trava" esvazia; F4h nao conta a travada no mesmoNome', { skip: SO_WINDOWS }, async () => {
   // encaminhar e abrir-sessao com o `por` da travada (so ela viva): ignorados
   const h = montarT7b();
   abaComPipe(h, 'S1', 'Faro');
@@ -6994,7 +6999,7 @@ test('T7a1c 34. pontas: nenhum naoAchei da central; encaminhar e abrir-sessao co
   semNaoAcheiControle(g, 'F4h');
 });
 
-test('T7a1c 33b. "abre central" com a travada: fechou, mas a nova nao abriu (wscript falhou) -> "nao consegui abrir" e sem vigia; aba comum so com o ai-title da central e nao_achei -> naoAchei com o titulo dela, como antes, e nada estaciona', async () => {
+test('T7a1c 33b. "abre central" com a travada: fechou, mas a nova nao abriu (wscript falhou) -> "nao consegui abrir" e sem vigia; aba comum so com o ai-title da central e nao_achei -> naoAchei com o titulo dela, como antes, e nada estaciona', { skip: SO_WINDOWS }, async () => {
   // a travada fechou, mas o abrir falhou: nunca "Abrindo" (o dono esperaria uma central que nao vem)
   const h = montarT7b();
   abaComPipe(h, 'S1', 'Faro');
@@ -7036,7 +7041,7 @@ const relogioT7e1 = (...ts) => {
   return () => (fila.length > 1 ? fila.shift() : fila[0]);
 };
 
-test('T7e1 51. ociosoReal (execFile dublado, nunca o powershell): argumentos e prazo de 20 s de hoje; killed = prazo; code numerico = saida com so a 1a linha do stderr (ate 160); ENOENT = abrir; status=ok idle_ms = numero; lixo = formato; nunca lanca', async () => {
+test('T7e1 51. ociosoReal (execFile dublado, nunca o powershell): argumentos e prazo de 20 s de hoje; killed = prazo; code numerico = saida com so a 1a linha do stderr (ate 160); ENOENT = abrir; status=ok idle_ms = numero; lixo = formato; nunca lanca', { skip: SO_WINDOWS }, async () => {
   assert.equal(typeof porteiroMod.ociosoReal, 'function', 'ociosoReal exportado');
   const chamadas = [];
   const rodar = (roteiro, ...ts) =>
@@ -7220,7 +7225,7 @@ test('A3a P2. a central do config: o nome dado igual ao do config (sem caso e se
   assert.deepEqual(h2.entregas.map((x) => x.sessionId), ['SN']);
 });
 
-test('A3a P3. fechar a central travada pela pasta e pelo nome do config: com os dois fecha e abre outra (pasta sem caso e com a barra do fim); o cwd na pasta de antes ou o nome de antes nao mata', async () => {
+test('A3a P3. fechar a central travada pela pasta e pelo nome do config: com os dois fecha e abre outra (pasta sem caso e com a barra do fim); o cwd na pasta de antes ou o nome de antes nao mata', { skip: SO_WINDOWS }, async () => {
   const MINHA = { pasta: 'D:\\minha-central', nome: 'Minha Central' };
   let h = await guardaT7({ central: MINHA, reg: { name: MINHA.nome, cwd: MINHA.pasta } });
   assert.deepEqual(h.mortes, [PID_CS], 'a do config: fecha');

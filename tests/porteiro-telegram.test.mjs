@@ -348,6 +348,11 @@ const falaDaAba = (texto) => ({ type: 'assistant', message: { role: 'assistant',
 // ---------------------------------------------------------------------------------------------------------------
 // 1. Ligar
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('1. ligar: config.json (campo desconhecido nao invalida), chave do env ou do registro, bot certo, menu, ensaio sem API, log sem a chave', async () => {
   const dir = pastaTemp('porteiro-tg-cfg-');
   const cfg = (x) => fs.writeFileSync(path.join(dir, 'config.json'), typeof x === 'string' ? x : JSON.stringify(x));
@@ -2270,7 +2275,7 @@ test('T4a 8. regressao: sem tg o passoAudioTg volta na hora e nada nasce (pasta,
   assert.ok(!fs.existsSync(anexosDe(h2)), 'sem midia: a pasta de anexos nem nasce');
 });
 
-test('T4a 9. transcreverReal (execFile dublado, nunca o python): argumentos (A5b: os 5), env e prazo; ultima linha JSON; erro, prazo e JSON ruim = ok:false; o python certo (A5b: sem o pythonDoPorteiro); filtro de alucinacao', async () => {
+test('T4a 9. transcreverReal (execFile dublado, nunca o python): argumentos (A5b: os 5), env e prazo; ultima linha JSON; erro, prazo e JSON ruim = ok:false; o python certo (A5b: sem o pythonDoPorteiro); filtro de alucinacao', { skip: SO_WINDOWS }, async () => {
   const P = await import('../porteiro.mjs');
   const chamadas = [];
   const exec = (roteiro) => (bin, args, opts, cb) => {
@@ -3831,7 +3836,7 @@ async function soltarCentralTg(h) {
   return r;
 }
 
-test('T7a1a 28 (Telegram). fala solta pra central sem canal -> estaciona (0 claude -p, nada no grupo); ganha o canal -> sai 1 vez com o mesmo id; 3 min sem canal -> centralNaoAbriu no chamado dela, 1 vez', async () => {
+test('T7a1a 28 (Telegram). fala solta pra central sem canal -> estaciona (0 claude -p, nada no grupo); ganha o canal -> sai 1 vez com o mesmo id; 3 min sem canal -> centralNaoAbriu no chamado dela, 1 vez', { skip: SO_WINDOWS }, async () => {
   const h = montarPipesTg();
   abaComPipeTg(h, 'S1', 'Faro');
   centralTg(h, 'CS', false, { idadeMs: 30 * 1000 });
@@ -3959,7 +3964,7 @@ const NAO_ACHEI_CONTROLE_TG = /Não achei a sessão Controle/i;
 const enviosComFrase = (h) => h.tg.de('enviar').map((c) => c.args[0]).filter((x) => String(x.html).includes('A central travou'));
 const textoTg = (h) => JSON.stringify(h.tg.chamadas.filter((c) => ['enviar', 'editar'].includes(c.metodo)).map((c) => c.args));
 
-test('T7a1c 31. Telegram reativo (fala solta, em cima do chamado da travada, toque e audio): na espera o chamado fica em "enviando"; ao soltar, falaRecebida com herdarDe, "entregue" e 1 linha do sistema com notificacao; nada no grupo; o preventivo passa sem a frase', async () => {
+test('T7a1c 31. Telegram reativo (fala solta, em cima do chamado da travada, toque e audio): na espera o chamado fica em "enviando"; ao soltar, falaRecebida com herdarDe, "entregue" e 1 linha do sistema com notificacao; nada no grupo; o preventivo passa sem a frase', { skip: SO_WINDOWS }, async () => {
   const cenas = [
     ['fala solta', async (h) => { await falarTg(h, 'bom dia'); }, 'bom dia'],
     ['em cima do chamado da travada', async (h, tela) => { await falarTg(h, 'pode seguir', { respondeA: tela.messageId }); }, 'pode seguir'],
@@ -4070,7 +4075,7 @@ test('T7a1c 31. Telegram reativo (fala solta, em cima do chamado da travada, toq
   assert.equal(p.enviados.length, 0);
 });
 
-test('T7a1c 33 (Telegram). /central com a travada ocupada -> mata e "Abrindo" na linha do sistema; a nova sem canal nao encerra a vigia: centralNaoAbriu 1 vez em 3 min; nada no grupo', async () => {
+test('T7a1c 33 (Telegram). /central com a travada ocupada -> mata e "Abrindo" na linha do sistema; a nova sem canal nao encerra a vigia: centralNaoAbriu 1 vez em 3 min; nada no grupo', { skip: SO_WINDOWS }, async () => {
   const h = montarT7cTg();
   abaComPipeTg(h, 'S1', 'Faro');
   centralT7cTg(h, 'CS', { comCanal: false, idadeMs: 3 * MIN, status: 'busy' });
@@ -4097,7 +4102,7 @@ test('T7a1c 33 (Telegram). /central com a travada ocupada -> mata e "Abrindo" na
   assert.equal(h.aberturas, 1);
 });
 
-test('T7a1c 34 (Telegram). T5b nao conta a travada no mesmoNome: resposta em cima do chamado da central que fechou vai pra nova; nenhum naoAchei da central', async () => {
+test('T7a1c 34 (Telegram). T5b nao conta a travada no mesmoNome: resposta em cima do chamado da central que fechou vai pra nova; nenhum naoAchei da central', { skip: SO_WINDOWS }, async () => {
   const h = montarT7cTg();
   abaComPipeTg(h, 'S1', 'Faro');
   const tela = await chamadoNaTela(h, 'CV', CENTRAL, FINAL, NOME_DO_N_TG); // a central que fechou (sem registro)
@@ -4113,7 +4118,7 @@ test('T7a1c 34 (Telegram). T5b nao conta a travada no mesmoNome: resposta em cim
   assert.equal(h.enviados.length, 0);
 });
 
-test('T7a1c 31b (Telegram). a frase da reabertura sai depois do "entregue" e so quando o porteiro reabriu por aquela central (a que fechou sozinha + o abrir sozinho = sem a frase)', async () => {
+test('T7a1c 31b (Telegram). a frase da reabertura sai depois do "entregue" e so quando o porteiro reabriu por aquela central (a que fechou sozinha + o abrir sozinho = sem a frase)', { skip: SO_WINDOWS }, async () => {
   // ordem na tela: o chamado da nova vira "entregue" antes da linha do sistema com a frase
   const h = montarT7cTg();
   abaComPipeTg(h, 'S1', 'Faro');

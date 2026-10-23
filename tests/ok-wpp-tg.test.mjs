@@ -19,6 +19,9 @@ import * as okWpp from '../ok-wpp.mjs';
 import { montarOkTg } from '../lib/ok-tg.mjs';
 import { horaBRT } from '../lib/formato.mjs';
 import { NUMERO_DONO, NUMERO_ROBO, GRUPO, WHATSAPP } from './lib/dados-whatsapp.mjs';
+// Mac-testes (C, ambiente): as horas esperadas aqui sao as de Brasilia (o fuso do PC); maquina noutro fuso (o Mac do
+// dono veio com o relogio em New York) quebrava a conta. Sem TZ = Brasilia, pra este processo e pros filhos.
+process.env.TZ ??= 'America/Sao_Paulo';
 
 const { criarOkWpp, montarMensagemPedido } = okWpp;
 const OK_WPP = fileURLToPath(new URL('../ok-wpp.mjs', import.meta.url));

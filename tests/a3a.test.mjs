@@ -47,7 +47,12 @@ const REPO_NORMAL = REPO[0].toUpperCase() + REPO.slice(1);
 
 // ---------- 1-3. config ----------
 
-test('A3a 1. sessoesDoConfig: as pastas absolutas boas, normalizadas (letra maiuscula, sem barra no fim, . e .. resolvidos), sem repetir, no maximo 20, na ordem; o resto fica de fora; soNaRaiz so false com === false', () => {
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
+test('A3a 1. sessoesDoConfig: as pastas absolutas boas, normalizadas (letra maiuscula, sem barra no fim, . e .. resolvidos), sem repetir, no maximo 20, na ordem; o resto fica de fora; soNaRaiz so false com === false', { skip: SO_WINDOWS }, () => {
   const { sessoesDoConfig } = config;
   assert.equal(typeof sessoesDoConfig, 'function');
   // o config do dono
@@ -95,7 +100,7 @@ test('A3a 1. sessoesDoConfig: as pastas absolutas boas, normalizadas (letra maiu
   }
 });
 
-test('A3a 2. identidadeCentral: o nome do config (aparado, so ASCII no formato) senao PADRAO_CENTRAL; a pasta do config com as regras de uma raiz senao a do repositorio; um campo ruim nao derruba o outro', () => {
+test('A3a 2. identidadeCentral: o nome do config (aparado, so ASCII no formato) senao PADRAO_CENTRAL; a pasta do config com as regras de uma raiz senao a do repositorio; um campo ruim nao derruba o outro', { skip: SO_WINDOWS }, () => {
   const { identidadeCentral, PADRAO_CENTRAL } = config;
   assert.equal(typeof identidadeCentral, 'function');
   assert.deepEqual(PADRAO_CENTRAL, { nome: PADRAO });
@@ -135,7 +140,7 @@ test('A3a 2. identidadeCentral: o nome do config (aparado, so ASCII no formato) 
   }
 });
 
-test('A3a 3. claudeDoConfig: claude.bin > CLAUDE_BIN > %USERPROFILE%\\.local\\bin\\claude.exe > o 1o claude.exe do PATH; so absoluto, .exe, sem caractere ruim e que existe; nenhum = o local mesmo assim; sem USERPROFILE = claude.exe; nunca lanca', () => {
+test('A3a 3. claudeDoConfig: claude.bin > CLAUDE_BIN > %USERPROFILE%\\.local\\bin\\claude.exe > o 1o claude.exe do PATH; so absoluto, .exe, sem caractere ruim e que existe; nenhum = o local mesmo assim; sem USERPROFILE = claude.exe; nunca lanca', { skip: SO_WINDOWS }, () => {
   const { claudeDoConfig } = config;
   assert.equal(typeof claudeDoConfig, 'function');
   const PERFIL = 'C:\\Users\\Pessoa Teste';
@@ -192,7 +197,7 @@ test('A3a 3. claudeDoConfig: claude.bin > CLAUDE_BIN > %USERPROFILE%\\.local\\bi
 
 // ---------- 4-6. porteiro: frases e abridores ----------
 
-test('A3a 4. as frases da pasta (o ultimo nome de cada raiz, sem repetir) e a nota do OK com o caminho do repositorio (barras normais; aspas so com espaco)', () => {
+test('A3a 4. as frases da pasta (o ultimo nome de cada raiz, sem repetir) e a nota do OK com o caminho do repositorio (barras normais; aspas so com espaco)', { skip: SO_WINDOWS }, () => {
   const { FRASES, caminhoPraComando } = porteiro;
   assert.equal(typeof caminhoPraComando, 'function');
   assert.equal(caminhoPraComando('C:\\projetos\\sessoes-wpp\\ok-wpp.mjs'), 'C:/projetos/sessoes-wpp/ok-wpp.mjs');
@@ -231,7 +236,7 @@ function spawnFalso(evento = 'spawn') {
 const MONTADA = 'D:\\estado\\central';
 const MONTAR = (o) => ({ pasta: MONTADA, modo: o.modo });
 
-test('A3a 5. abrirCentralReal: wscript //nologo abrir-central.vbs <pasta> <nome> <claude> <montada> <modo>, destacado; a central passa pelo identidadeCentral (nome ruim = o padrao; pasta ruim = a do repositorio); sem claude = claudeDoConfig({}); claude ruim = rejeita sem rodar nada', async () => {
+test('A3a 5. abrirCentralReal: wscript //nologo abrir-central.vbs <pasta> <nome> <claude> <montada> <modo>, destacado; a central passa pelo identidadeCentral (nome ruim = o padrao; pasta ruim = a do repositorio); sem claude = claudeDoConfig({}); claude ruim = rejeita sem rodar nada', { skip: SO_WINDOWS }, async () => {
   const log = () => {};
   const CLAUDE = 'D:\\bin\\claude.exe';
   let sp = spawnFalso();
@@ -267,7 +272,7 @@ test('A3a 5. abrirCentralReal: wscript //nologo abrir-central.vbs <pasta> <nome>
   }
 });
 
-test('A3a 6. abrirSessaoEscondidaReal com claude: o ambiente do wscript leva SESSOES_WPP_CLAUDE (o abrir-sessao.vbs le); sem claude = como antes; claude ruim = rejeita sem rodar nada', async () => {
+test('A3a 6. abrirSessaoEscondidaReal com claude: o ambiente do wscript leva SESSOES_WPP_CLAUDE (o abrir-sessao.vbs le); sem claude = como antes; claude ruim = rejeita sem rodar nada', { skip: SO_WINDOWS }, async () => {
   const PASTA = 'C:\\projetos\\x';
   const CLAUDE = 'D:\\bin\\claude.exe';
   let sp = spawnFalso('exit');
@@ -420,7 +425,7 @@ function rodarVbs(args) {
   return { status: r.status, linhas: String(r.stdout || '').split(/\r?\n/).filter(Boolean), stderr: String(r.stderr || ''), local };
 }
 
-test('A3a 11. abrir-central.vbs (cscript, ensaio): o perfil e as 2 linhas de comando com a pasta, o nome e o claude dos argumentos (A5d2: mais a pasta montada e o modo); pasta da central = a do .vbs; saida 2 (argumento faltando, vazio ou com caractere ruim; a raiz do disco) e 3 (pasta ou claude que nao existe); nada gravado', () => {
+test('A3a 11. abrir-central.vbs (cscript, ensaio): o perfil e as 2 linhas de comando com a pasta, o nome e o claude dos argumentos (A5d2: mais a pasta montada e o modo); pasta da central = a do .vbs; saida 2 (argumento faltando, vazio ou com caractere ruim; a raiz do disco) e 3 (pasta ou claude que nao existe); nada gravado', { skip: SO_WINDOWS }, () => {
   const raiz = pastaTemp('a3a-central-');
   const pasta = path.join(raiz, 'minha pasta');
   const claude = path.join(raiz, 'bin', 'claude.exe');

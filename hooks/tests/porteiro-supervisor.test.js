@@ -20,6 +20,9 @@ const { spawnSync } = require('child_process');
 const { pastaTemp } = require('../../tests/lib/pasta-temp.cjs');
 
 const HOOK = path.join(__dirname, '..', 'porteiro-supervisor.js');
+// Mac-testes (A): os testes que esperam o .vbs rodar (wscript) so fazem sentido no Windows; fora dele o hook vai pelo
+// launchd (os testes M4a darwin do fim do arquivo, com dubles)
+const SO_WINDOWS = process.platform !== 'win32' && 'so no Windows (o hook religa pelo wscript e o .vbs)';
 const VBS_TESTE = [
   'Set sh = CreateObject("Wscript.Shell")',
   'm = sh.ExpandEnvironmentStrings("%SUP_TESTE_MARCA%")',
@@ -51,6 +54,9 @@ function rodar(p) {
     timeout: 15000,
     env: {
       ...process.env,
+      // Mac-testes: HOME temporario = no Mac o hook nunca acha o plist de verdade (nada de launchctl kickstart no
+      // porteiro do dono enquanto a bateria roda)
+      HOME: p.d,
       SESSOES_WPP_DIR: p.estado,
       SESSOES_WPP_LOG: p.log,
       SESSOES_WPP_PORTEIRO_VBS: p.vbs,
@@ -85,7 +91,7 @@ function semLancar(p, r) {
   assert.equal(esperarMarca(p.marca, 800), false, 'o .vbs nao devia ter rodado');
 }
 
-test('sem trava: religa pelo .vbs, marca a tentativa, loga e fica mudo no stdout', () => {
+test('sem trava: religa pelo .vbs, marca a tentativa, loga e fica mudo no stdout', { skip: SO_WINDOWS }, () => {
   const p = pasta();
   const r = rodar(p);
   assert.equal(r.status, 0);
@@ -95,7 +101,7 @@ test('sem trava: religa pelo .vbs, marca a tentativa, loga e fica mudo no stdout
   assert.match(lerLog(p), /supervisor: porteiro sem trava; religando/);
 });
 
-test('trava com pid morto: religa e o log cita o pid', () => {
+test('trava com pid morto: religa e o log cita o pid', { skip: SO_WINDOWS }, () => {
   const p = pasta();
   const morto = pidMorto();
   fs.writeFileSync(path.join(p.estado, 'porteiro.lock'), String(morto));
@@ -135,7 +141,7 @@ test('tentativa ha menos de 3 min: nao repete (porteiro que morre ao subir nao v
   assert.equal(esperarMarca(p.marca, 800), false);
 });
 
-test('tentativa ha mais de 3 min: tenta de novo', () => {
+test('tentativa ha mais de 3 min: tenta de novo', { skip: SO_WINDOWS }, () => {
   const p = pasta();
   fs.writeFileSync(path.join(p.estado, 'supervisor.json'), JSON.stringify({ em: Date.now() - 4 * 60 * 1000 }));
   const r = rodar(p);
@@ -143,7 +149,7 @@ test('tentativa ha mais de 3 min: tenta de novo', () => {
   assert.equal(esperarMarca(p.marca, 8000), true);
 });
 
-test('supervisor.json corrompido: trata como sem tentativa e religa', () => {
+test('supervisor.json corrompido: trata como sem tentativa e religa', { skip: SO_WINDOWS }, () => {
   const p = pasta();
   fs.writeFileSync(path.join(p.estado, 'supervisor.json'), '{quebrado');
   const r = rodar(p);
@@ -151,7 +157,7 @@ test('supervisor.json corrompido: trata como sem tentativa e religa', () => {
   assert.equal(esperarMarca(p.marca, 8000), true);
 });
 
-test('lancador ausente: nao marca tentativa, loga o motivo, exit 0 e stdout vazio', () => {
+test('lancador ausente: nao marca tentativa, loga o motivo, exit 0 e stdout vazio', { skip: SO_WINDOWS }, () => {
   const p = pasta({ vbs: false });
   const r = rodar(p);
   assert.equal(r.status, 0);

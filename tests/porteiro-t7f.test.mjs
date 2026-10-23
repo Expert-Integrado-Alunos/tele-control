@@ -370,6 +370,11 @@ const NAO_ACHEI = 'Não achei a sessão Faro aberta no PC. "status" lista as que
 
 // ===============================================================================================================
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('T7f 93. fala do dono nao gera mensagem nova (enviando e entregue so no estado); o chamado respondido na tela com botoes perde os botoes numa edicao, sem notificar; sem chamado na tela, nada', async () => {
   // (a) em cima do chamado, toque na opcao e "Nome: texto" com o aviso da aba na tela (com botoes)
   const cenas = [
@@ -601,7 +606,7 @@ test('T7f 96. resposta da central que precisa do dono sai como hoje (mensagem no
   assert.equal(x.tg.de('enviar')[0].args[0].responderA, mid(ux));
 });
 
-test('T7f 97. problema continua saindo (mensagem nova com notificacao, em cima da fala dele; o chamado sem botoes sai depois) e a linha do sistema da central travada (T7a1) tambem', async () => {
+test('T7f 97. problema continua saindo (mensagem nova com notificacao, em cima da fala dele; o chamado sem botoes sai depois) e a linha do sistema da central travada (T7a1) tambem', { skip: SO_WINDOWS }, async () => {
   // (a) a aba nao foi achada: problema em cima da fala dele
   const h = montar({ respostasEntrega: [{ status: 'nao_achei', detalhe: '' }] });
   aba(h, 'S1', 'Faro');

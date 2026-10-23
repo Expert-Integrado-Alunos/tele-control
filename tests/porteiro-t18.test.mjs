@@ -244,6 +244,11 @@ const ociosoLanca = (h) => Object.defineProperty(h, 'idle', { get() { throw new 
 
 // ---------- contrato 5: as duas vivas ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('T18b 1. o mesmo sessionId vivo na escondida e no VS Code: o sessoesVivas fica com a do VS Code (nas 2 ordens de arquivo) e a fala vai pelo nome dela', async () => {
   for (const [quem, pids] of [['escondida antes no disco', [ESC, 52001]], ['VS Code antes no disco', [ESC, 32001]]]) {
     const h = montar();
@@ -337,7 +342,7 @@ test('T18b 2. a espera da retomada firma tambem com a viva do VS Code (qualquer 
 
 // ---------- contrato 4: devolver ao VS Code ----------
 
-test('T18b 3 (4a). a mesma conversa viva no VS Code e a escondida parada ha 1 min sem fala esperando: o porteiro fecha a escondida (so o pid dela) e esquece; com 59 s ainda nao', async () => {
+test('T18b 3 (4a). a mesma conversa viva no VS Code e a escondida parada ha 1 min sem fala esperando: o porteiro fecha a escondida (so o pid dela) e esquece; com 59 s ainda nao', { skip: SO_WINDOWS }, async () => {
   const h = montar();
   escondida(h, { parada: 59 * 1000 });
   vscode(h);
@@ -355,7 +360,7 @@ test('T18b 3 (4a). a mesma conversa viva no VS Code e a escondida parada ha 1 mi
   assert.deepEqual(h.mortes, [ESC], 'esquecida: nao fecha de novo');
 });
 
-test('T18b 4 (4b). sem o VS Code, a escondida parada ha 30 min sem fala esperando: fecha; com 29 min nao; a fala entregue depois da ultima mudanca dela segura', async () => {
+test('T18b 4 (4b). sem o VS Code, a escondida parada ha 30 min sem fala esperando: fecha; com 29 min nao; a fala entregue depois da ultima mudanca dela segura', { skip: SO_WINDOWS }, async () => {
   let h = montar();
   escondida(h, { parada: 29 * MIN });
   gravarRetomada(h);
@@ -377,7 +382,7 @@ test('T18b 4 (4b). sem o VS Code, a escondida parada ha 30 min sem fala esperand
   assert.deepEqual(Object.keys(estado(h).retomadas), [S1]);
 });
 
-test('T18b 5. nao fecha: ocupada, fala esperando (fila, nova tentativa, retomada, central), registro que sumiu ou mudou (outro pid, VS Code, morto, sem hora), processo que nao bate (nome, hora), a central (nome ou config), travado e ensaio', async () => {
+test('T18b 5. nao fecha: ocupada, fala esperando (fila, nova tentativa, retomada, central), registro que sumiu ou mudou (outro pid, VS Code, morto, sem hora), processo que nao bate (nome, hora), a central (nome ou config), travado e ensaio', { skip: SO_WINDOWS }, async () => {
   const cenas = [
     ['ocupada', (h) => escondida(h, { status: 'busy', parada: 40 * MIN }), true],
     ['fala na fila', (h) => { escondida(h, { parada: 40 * MIN }); mexer(h, (e) => { e.filaEntrega = [{ id: 'q-1', tipo: 'repasse', pedido: { sessionId: S1 } }]; }); }, true],
@@ -435,7 +440,7 @@ test('T18b 5. nao fecha: ocupada, fala esperando (fila, nova tentativa, retomada
   assert.equal(comLog(h, `retomada ${S1}: ensaio nao fecha`), 1);
 });
 
-test('T18b 6. estado torto nao quebra (a faxina tira a torta, no maximo 50); encerrar que falha ou pid que nao morre: fica e so tenta de novo em 10 min', async () => {
+test('T18b 6. estado torto nao quebra (a faxina tira a torta, no maximo 50); encerrar que falha ou pid que nao morre: fica e so tenta de novo em 10 min', { skip: SO_WINDOWS }, async () => {
   let h = montar();
   await h.p.passoMinuto();
   mexer(h, (e) => { e.retomadas = 'x'; });
@@ -493,7 +498,7 @@ test('T18b 6. estado torto nao quebra (a faxina tira a torta, no maximo 50); enc
 
 // ---------- T18c: volta pro PC sem o «Open here anyway» (PLANO-TELEGRAM.md, "T18c") ----------
 
-test('T18c 1. o dono no PC (ocioso abaixo de 60 s) e a escondida parada ha 1 min sem o VS Code: fecha com "o dono esta no PC"; com 59 s nao; ocioso de 60 s ou 5 min nao (so nos 30 min, pela parada); ocioso que falha, lanca ou devolve lixo nao', async () => {
+test('T18c 1. o dono no PC (ocioso abaixo de 60 s) e a escondida parada ha 1 min sem o VS Code: fecha com "o dono esta no PC"; com 59 s nao; ocioso de 60 s ou 5 min nao (so nos 30 min, pela parada); ocioso que falha, lanca ou devolve lixo nao', { skip: SO_WINDOWS }, async () => {
   let h = montar();
   h.idle = 0;
   escondida(h, { parada: 59 * 1000 });
@@ -536,7 +541,7 @@ test('T18c 1. o dono no PC (ocioso abaixo de 60 s) e a escondida parada ha 1 min
   }
 });
 
-test('T18c 2. a ordem dos motivos: a mesma conversa viva no VS Code e o dono no PC juntos fecham pelo VS Code (o passo rapido nem le o ocioso)', async () => {
+test('T18c 2. a ordem dos motivos: a mesma conversa viva no VS Code e o dono no PC juntos fecham pelo VS Code (o passo rapido nem le o ocioso)', { skip: SO_WINDOWS }, async () => {
   for (const passo of ['passoMinuto', 'passoRetomadas']) {
     const h = montar();
     h.idle = 0;
@@ -552,7 +557,7 @@ test('T18c 2. a ordem dos motivos: a mesma conversa viva no VS Code e o dono no 
   }
 });
 
-test('T18c 3. comando rodando na escondida (bash, sh, powershell ou pwsh na arvore): nao fecha em nenhum dos 3 motivos, espera calada (1 linha, sem os 10 min) e fecha no passo seguinte ao fim do comando', async () => {
+test('T18c 3. comando rodando na escondida (bash, sh, powershell ou pwsh na arvore): nao fecha em nenhum dos 3 motivos, espera calada (1 linha, sem os 10 min) e fecha no passo seguinte ao fim do comando', { skip: SO_WINDOWS }, async () => {
   const motivos = [
     ['VS Code', (h) => { escondida(h, { parada: MIN }); vscode(h); }, 'a mesma conversa esta no VS Code'],
     ['dono no PC', (h) => { h.idle = 0; escondida(h, { parada: MIN }); }, 'o dono esta no PC'],
@@ -609,7 +614,7 @@ test('T18c 3. comando rodando na escondida (bash, sh, powershell ou pwsh na arvo
   }
 });
 
-test('T18c 4. a consulta dos comandos que lanca, que falta ou sem dados: nao fecha (1 linha) e so tenta de novo 10 min depois', async () => {
+test('T18c 4. a consulta dos comandos que lanca, que falta ou sem dados: nao fecha (1 linha) e so tenta de novo 10 min depois', { skip: SO_WINDOWS }, async () => {
   const cenas = [
     ['lanca', (h) => { h.filhosFalha = true; }, 'consulta dos comandos falhou: wmi caiu', (h) => { h.filhosFalha = false; }],
     ['falta', (h) => { delete h.opcoes.processos.filhos; }, 'sem como conferir os comandos', null],
@@ -649,7 +654,7 @@ test('T18c 4. a consulta dos comandos que lanca, que falta ou sem dados: nao fec
   }
 });
 
-test('T18c 5. o passo rapido (passoRetomadas): sem retomada volta na hora (nem le o ocioso nem grava o estado); ocupada nao le o ocioso; parada ha 1 min com o dono no PC fecha (1 leitura do ocioso pra todas); dono fora, ocioso que falha ou lanca, travado e ensaio nao fecham (travado e ensaio nem leem)', async () => {
+test('T18c 5. o passo rapido (passoRetomadas): sem retomada volta na hora (nem le o ocioso nem grava o estado); ocupada nao le o ocioso; parada ha 1 min com o dono no PC fecha (1 leitura do ocioso pra todas); dono fora, ocioso que falha ou lanca, travado e ensaio nao fecham (travado e ensaio nem leem)', { skip: SO_WINDOWS }, async () => {
   // sem retomada: nem le o ocioso nem regrava o estado (o arquivo fica com a hora de antes)
   let h = montar();
   h.idle = 0;
@@ -747,7 +752,7 @@ test('T18c 6. descendentesDe (pura): filhos e netos nascidos depois do pai, sem 
   assert.equal(descendentesDe(undefined, 100), null);
 });
 
-test('T18c 7. comando rodando: confere de novo so 1 vez por minuto (o passo rapido de 15 s nem le o ocioso nem consulta os processos) e, com o comando acabado, fecha na conferencia seguinte; a saida do WMI sem a escondida nao fecha', async () => {
+test('T18c 7. comando rodando: confere de novo so 1 vez por minuto (o passo rapido de 15 s nem le o ocioso nem consulta os processos) e, com o comando acabado, fecha na conferencia seguinte; a saida do WMI sem a escondida nao fecha', { skip: SO_WINDOWS }, async () => {
   const h = montar();
   h.idle = 0;
   escondida(h, { parada: MIN });

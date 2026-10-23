@@ -33,7 +33,12 @@ const NAO_ENTENDI = (h) => `Não entendi o áudio das ${h}. Manda de novo ou esc
 
 // ---------- 1. transcricaoDoConfig ----------
 
-test('A5b 1. transcricaoDoConfig: sem o bloco (ou bloco/cfg/opcoes que nao sao objeto) = o padrao desligado com o python do PATH; ligada so com true; os bons aparados (idioma em minuscula); cada ruim cai so no proprio padrao', () => {
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
+test('A5b 1. transcricaoDoConfig: sem o bloco (ou bloco/cfg/opcoes que nao sao objeto) = o padrao desligado com o python do PATH; ligada so com true; os bons aparados (idioma em minuscula); cada ruim cai so no proprio padrao', { skip: SO_WINDOWS }, () => {
   const f = config.transcricaoDoConfig;
   assert.equal(typeof f, 'function');
   for (const cfg of [undefined, null, {}, [], 'x', 7, { transcricao: null }, { transcricao: [] }, { transcricao: 'sim' }]) {
@@ -70,7 +75,7 @@ test('A5b 1. transcricaoDoConfig: sem o bloco (ou bloco/cfg/opcoes que nao sao o
   assert.equal(f({ transcricao: { modeloCpu: ' small ' } }, { env: {} }).modeloCpu, 'small', 'aparado');
 });
 
-test('A5b 2. transcricaoDoConfig python: o do config absoluto X:\\...\\*.exe sem aspas/%/;/controle (aparado); senao o SESSOES_WPP_PYTHON aparado; senao "python"; nunca o palpite de pasta do LOCALAPPDATA', () => {
+test('A5b 2. transcricaoDoConfig python: o do config absoluto X:\\...\\*.exe sem aspas/%/;/controle (aparado); senao o SESSOES_WPP_PYTHON aparado; senao "python"; nunca o palpite de pasta do LOCALAPPDATA', { skip: SO_WINDOWS }, () => {
   const f = config.transcricaoDoConfig;
   const py = (python, env = {}) => f({ transcricao: { python } }, { env }).python;
   assert.equal(py('C:\\Py\\python.exe'), 'C:\\Py\\python.exe');
@@ -94,7 +99,7 @@ test('A5b 2. transcricaoDoConfig python: o do config absoluto X:\\...\\*.exe sem
 
 // ---------- 2. transcreverReal ----------
 
-test('A5b 3. transcreverReal (execFile dublado, nunca o python): roda transcrever.py <arquivo> <idioma> <modeloGpu> <modeloCpu> com o python dado; o que faltar sai do transcricaoDoConfig({}, {env}); o pythonDoPorteiro saiu', async () => {
+test('A5b 3. transcreverReal (execFile dublado, nunca o python): roda transcrever.py <arquivo> <idioma> <modeloGpu> <modeloCpu> com o python dado; o que faltar sai do transcricaoDoConfig({}, {env}); o pythonDoPorteiro saiu', { skip: SO_WINDOWS }, async () => {
   const chamadas = [];
   const exec = (bin, args, opts, cb) => {
     chamadas.push({ bin, args, opts });

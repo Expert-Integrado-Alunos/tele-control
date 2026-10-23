@@ -25,6 +25,11 @@ const SEGREDO_FALSO = 'AA' + 'b'.repeat(33);
 const TOKEN = ['123456789', SEGREDO_FALSO].join(':');
 
 // ---------- versao ----------
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('versaoDe tira o x.y.z do texto; sem numero = null', () => {
   assert.equal(versaoDe('2.1.299 (Claude Code)'), '2.1.299');
   assert.equal(versaoDe('v22.13.1'), '22.13.1');
@@ -346,7 +351,7 @@ test('a skill /instalar so roda pelo /instalar e so chama passos e opcoes que ex
   assert.ok(!/\d{5,16}:[A-Za-z0-9_-]{20,}/.test(texto), 'nenhuma chave de bot no texto');
 });
 
-test('a skill /instalar (T9): o exemplo do config sobrevive ao Git Bash (a barra invertida dupla vira uma) e grava a pasta', async () => {
+test('a skill /instalar (T9): o exemplo do config sobrevive ao Git Bash (a barra invertida dupla vira uma) e grava a pasta', { skip: SO_WINDOWS }, async () => {
   const texto = fs.readFileSync(path.join(import.meta.dirname, '..', '.claude', 'skills', 'instalar', 'SKILL.md'), 'utf8');
   const exemplo = /`(\{"apps":.*\})`/.exec(texto);
   assert.ok(exemplo, 'tem o exemplo do config');
@@ -406,7 +411,7 @@ test('linha de comando config: config.json ilegivel nao e tocado', async () => {
   assert.equal(fs.readFileSync(path.join(a.estado, 'config.json'), 'utf8'), '{ quebrado');
 });
 
-test('linha de comando config (T9): pasta de projeto pela regra do porteiro; a que o Git Bash quebrou nao entra calada', async () => {
+test('linha de comando config (T9): pasta de projeto pela regra do porteiro; a que o Git Bash quebrou nao entra calada', { skip: SO_WINDOWS }, async () => {
   // O Git Bash troca a barra invertida dupla por uma so: '{"...":["D:\\rede"]}' digitado chega como abaixo (\r = CR)
   const quebrada = '{"sessoes":{"raizes":["D:\\rede"]}}';
   const a = ambienteDeTeste();

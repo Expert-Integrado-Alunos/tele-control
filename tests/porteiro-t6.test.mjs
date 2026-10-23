@@ -334,7 +334,12 @@ async function receber(h, sessionId, pedido) {
 
 // ---------- T6 1 a 3 ----------
 
-test('T6 1. feliz: fala do Telegram -> central -> abrir-sessao com o tg-u = a sessao escondida abre sem ler o grupo; item e pedido com canal telegram e a fala dele (messageId da original); recado "Telegram do Davi"; o nome entra no transcript e (T32) o "Abri a sessão" sai na linha do sistema SEM notificar, em cima da fala dele', async () => {
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
+test('T6 1. feliz: fala do Telegram -> central -> abrir-sessao com o tg-u = a sessao escondida abre sem ler o grupo; item e pedido com canal telegram e a fala dele (messageId da original); recado "Telegram do Davi"; o nome entra no transcript e (T32) o "Abri a sessão" sai na linha do sistema SEM notificar, em cima da fala dele', { skip: SO_WINDOWS }, async () => {
   const { h, A, u } = await cenaT6();
   const linhasAntes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
@@ -621,7 +626,7 @@ test('T6 8. Telegram desligado: o tg-u segue o caminho do grupo (le o grupo e na
   assert.deepEqual(estado(h).sessoesNovas, []);
 });
 
-test('T6 9. regressao (F4f) com o Telegram ligado: fala do grupo = le o grupo; item e pedido sem canal; "Abri a sessão" no grupo; nada no Telegram', async () => {
+test('T6 9. regressao (F4f) com o Telegram ligado: fala do grupo = le o grupo; item e pedido sem canal; "Abri a sessão" no grupo; nada no Telegram', { skip: SO_WINDOWS }, async () => {
   const h = montarT6();
   aba(h, 'SC', CENTRAL, 'repos-99');
   ligarTg(h);
@@ -652,7 +657,7 @@ test('T6 9. regressao (F4f) com o Telegram ligado: fala do grupo = le o grupo; i
 
 // ---------- T6 10 a 12 ----------
 
-test('T6 10. o nome nao pegou em 2 min (sessao sem transcript): a linha do sistema do Telegram SEM notificar (o titulo ja vem do -n), em cima da fala dele (T32), nada no grupo e nenhum chamado da sessao nova', async () => {
+test('T6 10. o nome nao pegou em 2 min (sessao sem transcript): a linha do sistema do Telegram SEM notificar (o titulo ja vem do -n), em cima da fala dele (T32), nada no grupo e nenhum chamado da sessao nova', { skip: SO_WINDOWS }, async () => {
   const { h, A, u } = await cenaT6();
   const antes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
@@ -670,7 +675,7 @@ test('T6 10. o nome nao pegou em 2 min (sessao sem transcript): a linha do siste
   assert.deepEqual(h.enviados, []);
 });
 
-test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pendente sobrevive no disco (a entrega e a frase do nome seguem pro Telegram, em cima da fala dele: T32); item gravado sem canal = WhatsApp', async () => {
+test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pendente sobrevive no disco (a entrega e a frase do nome seguem pro Telegram, em cima da fala dele: T32); item gravado sem canal = WhatsApp', { skip: SO_WINDOWS }, async () => {
   let { h, A, u } = await cenaT6();
   const antes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
@@ -696,7 +701,7 @@ test('T6 11. porteiro religado no meio: o canal do item esperando e do nome pend
   assert.deepEqual(h.enviados.map((x) => x.texto), [`${CAB}\n${TXT6.aberta(CURTA)}`]);
 });
 
-test('T32 1. o citar do nome pendente que volta torto do disco nao vale: a linha "Abri a sessão" sai sem citar novo, ainda sem notificar', async () => {
+test('T32 1. o citar do nome pendente que volta torto do disco nao vale: a linha "Abri a sessão" sai sem citar novo, ainda sem notificar', { skip: SO_WINDOWS }, async () => {
   const { h, A } = await cenaT6();
   const antes = linhasSistema(h);
   pedirEv(h, { providerMsgId: A });
@@ -772,7 +777,7 @@ function abaVsCode(h, sessionId) {
   }));
 }
 
-test('T6 14. sem o abridor escondido (o caminho do VS Code): o item e o pedido levam o canal; o VS Code que falha, a pasta ja aberta (20 s) e a aba que nao aparece em 3 min = a frase na linha do sistema do Telegram, em cima da fala dele; nada no grupo', async () => {
+test('T6 14. sem o abridor escondido (o caminho do VS Code): o item e o pedido levam o canal; o VS Code que falha, a pasta ja aberta (20 s) e a aba que nao aparece em 3 min = a frase na linha do sistema do Telegram, em cima da fala dele; nada no grupo', { skip: SO_WINDOWS }, async () => {
   // feliz: janela nova e a aba nova firma em 10 s
   let { h, A, u } = await cenaT6({ vsCode: true });
   pedirEv(h, { providerMsgId: A });

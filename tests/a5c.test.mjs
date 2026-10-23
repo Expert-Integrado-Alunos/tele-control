@@ -47,6 +47,11 @@ const ocupada = (fnTrava) => {
 
 // ---------- 1. a trava propria (lib/trava.mjs) ----------
 
+// Mac-testes (A): os testes marcados com SO_WINDOWS conferem a premissa do Windows (caminho X:\, .exe, wscript/.vbs,
+// cmd.exe, APPDATA/LOCALAPPDATA, pipe \\.\pipe, barra invertida na frase, PowerShell, VS Code/Orca abertos pelo
+// porteiro); fora do win32 eles pulam. O caminho do Mac tem os testes proprios em tests/mac-*.test.mjs.
+const SO_WINDOWS = process.platform !== 'win32' && 'premissa do Windows (o Mac tem os tests/mac-*)';
+
 test('A5c 1. comTrava pega e solta: <arquivo>.lock criado com {pid, at, token} durante o trecho, devolve o valor do fn e some no fim', () => {
   const arq = arquivoNovo();
   let visto = null;
@@ -194,7 +199,7 @@ test('A5c 9. comTrava: process.exit dentro do trecho solta a trava (processo fil
 
 // ---------- 2. travasDoConfig ----------
 
-test('A5c 10. travasDoConfig: os 3 caminhos aparados, absolutos e normalizados; lib .js ou .cjs, os outros .json; fora disso null (um ruim nao derruba o outro)', () => {
+test('A5c 10. travasDoConfig: os 3 caminhos aparados, absolutos e normalizados; lib .js ou .cjs, os outros .json; fora disso null (um ruim nao derruba o outro)', { skip: SO_WINDOWS }, () => {
   const nulos = { lib: null, deployMarker: null, disparoLedger: null };
   for (const cfg of [undefined, null, 7, 'x', [], {}, { travas: null }, { travas: [] }, { travas: 'C:\\x.js' }, { travas: {} }]) {
     assert.deepEqual(travasDoConfig(cfg), nulos, JSON.stringify(cfg));
