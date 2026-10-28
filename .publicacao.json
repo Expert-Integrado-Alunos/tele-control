@@ -1,10 +1,10 @@
 {
   "repo": "tele-control",
-  "versao": "2026-10-26-9a14623",
+  "versao": "2026-10-28-a85afed",
   "fonte": "tele-control",
   "fonte_ref": "main",
-  "fonte_sha": "9a14623f6b0778ece362c8c4ec4fb6f530c18cdd",
-  "publicado_em": "2026-10-26T16:10:29.548Z",
-  "arquivos": 118,
+  "fonte_sha": "a85afedb5d40e9ba5e6d8cb3fe40cc8db31b8147",
+  "publicado_em": "2026-10-28T16:07:35.482Z",
+  "arquivos": 119,
   "publicador": "expert-integrado-publicador"
 }

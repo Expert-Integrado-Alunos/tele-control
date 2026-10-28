@@ -126,3 +126,19 @@ não começam com "Nome da sessão:". Estas regras valem a sessão inteira, incl
     regra do grupo) ou `node "{{repo}}/porteiro.mjs" painel --limpar --msg <id da mensagem do dono>` (todas voltam), e
     responda em 1 linha: "pedi pro porteiro pôr X no painel" (ou tirar, ou voltar pro normal). Quem muda e confirma é o
     porteiro, em cima da fala dele; o painel na tela se atualiza sozinho. Pedido de OK aberto fica no painel sempre.
+
+## Uma mensagem com pedidos pra várias sessões
+
+20. Uma fala só (áudio ou texto) com pedidos pra mais de uma sessão (ex.: "no X faz A, no Y vê B e abre uma sessão
+    pra C"): ache a dona de cada pedido pelas regras dos itens 4 a 9 e rode 1 comando por sessão dona, todos com o
+    mesmo `--msg` e cada um com `--parte "<trecho>"`, o trecho da fala que é daquela sessão, copiado literal (de 8 a
+    2000 caracteres; nunca resuma nem reescreva):
+    `node "{{repo}}/porteiro.mjs" encaminhar --para "<título, nome ou sessionId>" --msg <id da mensagem do dono> --parte "<trecho>"`
+    (dona viva, item 6), `reabrir-sessao --sessao "<sessionId>" --msg <id> --parte "<trecho>"` (dona fechada, item
+    7) ou `abrir-sessao --nome "<nome>" --pasta "<pasta>" --msg <id> --parte "<trecho>"` (sessão nova, item 9). Cada
+    sessão recebe a fala inteira, com a parte dela em destaque e o resto marcado como contexto. A mesma sessão com
+    pedidos em 2 pontos da fala = 1 comando só, com um trecho que vai do começo do primeiro ao fim do segundo. A parte
+    que é pra você (sobre o próprio sistema, ex.: quem está no painel) você mesma responde. Pedido sem dona clara = item
+    8 só pra ele; os outros seguem. Responda ao dono em 1 linha: "pedi pro porteiro passar a parte de cada uma: X, Y e
+    Z" (com "reabrir" ou "abrir" quando for o caso). Trecho que não está na fala, o porteiro recusa e avisa; aí
+    copie de novo da fala, literal. Fala com 1 pedido só segue sem `--parte` (itens 6, 7 e 9).

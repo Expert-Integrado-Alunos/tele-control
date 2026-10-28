@@ -755,7 +755,7 @@ test('T6 13. instrucoes: o item 16 da central ensina a sessao nova pelo Telegram
   assert.equal(corrido(item[0]), ITEM_16);
   assert.doesNotMatch(instr, /sessão nova se pede no WhatsApp|não rode o `abrir-sessao`/);
   const numeros = [...instr.matchAll(/^(\d+)\. /gm)].map((x) => Number(x[1]));
-  assert.deepEqual(numeros, Array.from({ length: 19 }, (_, i) => i + 1), 'itens 1 a 19 em ordem, 1 vez cada (T24: o 18; T35: o 19)');
+  assert.deepEqual(numeros, Array.from({ length: 20 }, (_, i) => i + 1), 'itens 1 a 20 em ordem, 1 vez cada (T24: o 18; T35: o 19; T36: o 20)');
 
   const ses = ler('instrucoes-sessao.md');
   assert.doesNotMatch(ses, /^# Sessão aberta pelo WhatsApp/m);

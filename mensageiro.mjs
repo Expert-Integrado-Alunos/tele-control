@@ -63,11 +63,16 @@ const fimRecadoOkTg = (id, D, reforco = false) => `Veio do toque ${D.de} no bot�
  * A4b: `dono` = o {nome, artigo} do config.json (o donoDoConfig, que o porteiro passa pro criarMensageiro): o rotulo
  * ("Telegram da Ana"), a citada ("Ela respondeu") e o fim saem com as frasesDoDono dele; sem dono = o PADRAO_DONO
  * ("do dono").
+ * T36 (PLANO-TELEGRAM.md "T36"): `p.parte` (string nao vazia) = o trecho da fala que e desta aba. A citacao (tambem a do
+ * reforco) sai da parte e, antes da fala inteira, 1 linha diz que o resto foi pra outras sessoes e e so contexto.
  */
 export function montarRecado(p, dono = PADRAO_DONO) {
   const D = frasesDoDono(dono);
   const texto = String(p?.texto ?? '').replaceAll('RECADO>>>', 'RECADO>>');
-  const umaLinha = texto.replace(/\s+/g, ' ').trim();
+  // T36: a parte da fala que e desta aba (a mensagem dele tinha pedidos pra mais de uma sessao; o porteiro ja conferiu
+  // que o trecho esta na fala). A citacao sai da parte; sem parte, tudo igual.
+  const parte = typeof p?.parte === 'string' ? p.parte.replaceAll('RECADO>>>', 'RECADO>>').replace(/\s+/g, ' ').trim() : '';
+  const umaLinha = parte || texto.replace(/\s+/g, ' ').trim();
   const cps = Array.from(umaLinha);
   const fala1 = cps.length > FALA1_MAX ? `${cps.slice(0, FALA1_MAX - 3).join('')}...` : umaLinha;
   const origem = p?.audio ? `${p.hora}, áudio transcrito, id ${p.providerMsgId}` : `${p.hora}, id ${p.providerMsgId}`;
@@ -88,6 +93,7 @@ export function montarRecado(p, dono = PADRAO_DONO) {
     `${de} (${origem}). Abra a sua resposta com esta linha, literal:`,
     `> ${de} (${p.hora}): «${fala1}»`,
     '',
+    ...(parte ? [`A mensagem ${D.de} tem pedidos pra mais de uma sessão. A parte pra você: «${parte}». O resto foi pra outras sessões: é só contexto, não aja nele. A mensagem inteira:`] : []),
     texto,
   ];
   // F4h: ele citou a mensagem de uma aba com o mesmo nome que fechou (a central reaberta): a pergunta dela, numa linha.

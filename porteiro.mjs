@@ -219,6 +219,10 @@ const EXTHOST_INICIO_RE = /Extension host with pid (\d+) started/g;
 const ABA_NOVA_FIRME_MS = 10 * 1000; // o mesmo sessionId vivo em 2 checagens com isso entre elas = a aba nova
 const NOME_PRAZO_MS = 2 * MIN; // transcript da aba nova que nao aparece nisso depois do "enviado" = nome nao gravado
 const NOME_SESSAO_MAX = 60; // caracteres do nome da sessao nova
+// T36 (PLANO-TELEGRAM.md, "T36"): a parte da fala que e de uma sessao (`--parte` do encaminhar, do reabrir-sessao e do
+// abrir-sessao), em caracteres, conferida contra a fala
+const PARTE_MIN = 8;
+const PARTE_MAX = 2000;
 // T8: sessionId de conversa do Claude Code (o `--resume` e o `--session-id` da copia so aceitam isso)
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REABRIR_CADEIA_MAX = 20; // saltos da cadeia de copias (e.reabertas)
@@ -451,6 +455,8 @@ export const FRASES = {
   encNaoAcheiMsg: (para) => `${CABECALHO}\nNão achei a mensagem pra passar pra ${para}.`,
   encNaoAcheiAba: (para) => `${CABECALHO}\nNão achei a aba ${para} aberta no PC.`,
   encCentral: `${CABECALHO}\nNão passei a mensagem: o destino era a própria central.`,
+  // T36: a parte que a central mandou nao esta na fala dele (ou e curta ou longa demais)
+  encParteNaoBate: (para) => `${CABECALHO}\nNão achei esse trecho na sua mensagem; não passei pra ${para}.`,
   centralAberta: `${CABECALHO}\nA central já está aberta.`,
   abrindoCentral: `${CABECALHO}\nAbrindo a central no PC.`,
   centralFalhou: `${CABECALHO}\nNão consegui abrir a central no PC.`,
@@ -1107,6 +1113,46 @@ function msDaHora(ts) {
   let s = ts.trim().replace(' ', 'T');
   if (/[+-]\d{2}$/.test(s)) s += ':00';
   return Date.parse(s);
+}
+
+// ---------- T36: a parte da fala que e de uma sessao ----------
+
+const juntarEspacos = (s) => String(s).replace(/\s+/g, ' ').trim();
+const ASPAS_EM_VOLTA = [['«', '»'], ['"', '"'], ['“', '”'], ["'", "'"]];
+
+/**
+ * T36 (PLANO-TELEGRAM.md, "T36"): o trecho `parte` (a parte de uma sessao, que a central copia da fala) DENTRO da fala
+ * `texto`: espacos juntados nos 2, sem diferenca de maiuscula, as aspas em volta da parte saem (1 par). -> o pedaco da
+ * fala (com as letras dela e os espacos juntados) | null (nao e string, menos de PARTE_MIN ou mais de PARTE_MAX
+ * caracteres, ou nao esta na fala). A central so aponta o pedaco: o que a aba recebe continua sendo a fala dele.
+ */
+export function parteDaFala(texto, parte) {
+  if (typeof texto !== 'string' || typeof parte !== 'string') return null;
+  let p = juntarEspacos(parte);
+  for (const [a, b] of ASPAS_EM_VOLTA) {
+    if (p.length > a.length + b.length && p.startsWith(a) && p.endsWith(b)) {
+      p = juntarEspacos(p.slice(a.length, p.length - b.length));
+      break;
+    }
+  }
+  const n = Array.from(p).length;
+  if (n < PARTE_MIN || n > PARTE_MAX) return null;
+  const f = juntarEspacos(texto);
+  const fl = f.toLowerCase();
+  const pl = p.toLowerCase();
+  if (fl.length === f.length && pl.length === p.length) {
+    const i = fl.indexOf(pl);
+    return i === -1 ? null : f.slice(i, i + p.length);
+  }
+  return f.includes(p) ? p : null; // letra que muda de tamanho no minusculo: so o igual exato
+}
+
+/** T36: as 2 partes existem e sao diferentes (espacos juntados, sem diferenca de maiuscula) = pedidos diferentes da fala. */
+export function partesDiferentes(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = juntarEspacos(a).toLowerCase();
+  const y = juntarEspacos(b).toLowerCase();
+  return x !== '' && y !== '' && x !== y;
 }
 
 // ---------- F4b: nome e pasta da sessao nova (o CLI e o porteiro usam a mesma regra) ----------
@@ -3556,6 +3602,15 @@ export function criarPorteiro({
     return Number.isSafeInteger(rec?.messageId) ? rec.messageId : null;
   }
 
+  // T36: a parte do evento (`--parte` da central) contra a fala: sem o campo (undefined ou null) = {parte: null} (a fala
+  // inteira, como antes); campo que nao bate (nao e string, curto, longo ou fora da fala) = {torta: true}; senao
+  // {parte: o pedaco da fala}.
+  function parteDoEvento(ev, fala) {
+    if (ev.parte === undefined || ev.parte === null) return { parte: null };
+    const parte = parteDaFala(fala.texto, ev.parte);
+    return parte === null ? { torta: true } : { parte };
+  }
+
   // Evento {tipo:'encaminhar', at, para, providerMsgId, por} do CLI `encaminhar`. So vale vindo da central viva (`por`);
   // a fala e procurada numa leitura do grupo com a mesma regra de remetente da leitura normal, no maximo 2 h; o destino
   // entre as sessoes vivas (sessionId exato, senao o casamento de nome do rotear); a central nunca e destino. Dado
@@ -3563,6 +3618,9 @@ export function criarPorteiro({
   // T3c: id `tg-u...` com o Telegram ligado = a fala vem de e.tg.recebidas (sem ler o grupo), o pedido sai com `canal:
   // 'telegram'` (a resposta da aba volta pelo Telegram, T3b) e as frases vao pra linha do sistema do Telegram (notifica),
   // nada no grupo. Telegram desligado = o caminho do grupo (la o id nao existe: "Não achei a mensagem").
+  // T36: `parte` (opcional) = o trecho da fala que e desta aba (a fala com pedidos pra varias sessoes); fora da fala =
+  // "Não achei esse trecho na sua mensagem; não passei pra X." e nada sai; senao o pedido leva `parte` (o mensageiro
+  // poe a parte na linha de citacao e em destaque, com a fala inteira so de contexto).
   async function encaminhar(e, ev, agoraMs) {
     // mesma linha lida de novo (eventos.jsonl recomecado do 0) = tratada 1 vez so; pedacos curtos (vai pro estado)
     const chave = ['enc', ev.por, ev.at, ev.providerMsgId, ev.para].map((x) => String(x ?? '').slice(0, 120)).join('|');
@@ -3595,6 +3653,12 @@ export function criarPorteiro({
     if (fala.porque) {
       log(`encaminhar da central: ${fala.porque}; nao entrega`);
       await frase(FRASES.encNaoAcheiMsg(naFrase));
+      return;
+    }
+    const pt = parteDoEvento(ev, fala); // T36
+    if (pt.torta) {
+      log('encaminhar da central: a parte nao esta na fala; nao entrega');
+      await frase(FRASES.encParteNaoBate(naFrase));
       return;
     }
 
@@ -3636,7 +3700,8 @@ export function criarPorteiro({
       encaminhado: true,
     };
     if (peloTg) pedido.canal = 'telegram';
-    log(`encaminhar da central ${central.sessionId} pra aba ${alvo.sessionId} (${pedido.providerMsgId})`);
+    if (pt.parte) pedido.parte = pt.parte; // T36: so a parte dela em destaque; a fala inteira vai junto
+    log(`encaminhar da central ${central.sessionId} pra aba ${alvo.sessionId} (${pedido.providerMsgId})${pt.parte ? ' com a parte dela' : ''}`);
     enfileirar(e, pedido); // F3.7: o passoEntrega chama o mensageiro
   }
 
@@ -3645,14 +3710,18 @@ export function criarPorteiro({
   // A fala original `id` ja tem sessao nova: 'esperando' = VS Code aberto esperando a aba (item em e.sessoesNovas);
   // 'passada' = pedido de sessao nova (`nomear`) na fila, na nova tentativa ou entregue dentro das 2 h (hora ilegivel
   // conta); null = nenhuma. Retry do abrir-sessao da central nunca abre a 2a janela com a mesma ordem.
-  function sessaoDaFala(e, id, agoraMs) {
-    if (e.sessoesNovas.some((x) => x && x.id === id)) return 'esperando';
+  // T36: `parte` = a parte deste pedido; a sessao nova de OUTRA parte da mesma fala (as 2 partes existem e sao
+  // diferentes, partesDiferentes) nao conta. Sem parte em qualquer lado (= a fala inteira) conta como hoje.
+  function sessaoDaFala(e, id, agoraMs, parte = null) {
+    const mesma = (outra) => !partesDiferentes(outra, parte);
+    if (e.sessoesNovas.some((x) => x && x.id === id && mesma(x.fala?.parte))) return 'esperando';
     for (const [k, x] of Object.entries(e.entregas)) {
-      if (!x?.pedido?.nomear || !doOriginal(k, id)) continue;
+      if (!x?.pedido?.nomear || !doOriginal(k, id) || !mesma(x.pedido.parte)) continue;
       const t = Date.parse(x.at);
       if (!Number.isFinite(t) || agoraMs - t < ENTREGA_TTL_MS) return 'passada';
     }
-    const naFila = [...e.filaEntrega, ...e.repassar].some((q) => q?.pedido?.nomear && doOriginal(q.pedido.providerMsgId, id));
+    const naFila = [...e.filaEntrega, ...e.repassar].some((q) => q?.pedido?.nomear && doOriginal(q.pedido.providerMsgId, id)
+      && mesma(q.pedido.parte));
     return naFila ? 'passada' : null;
   }
 
@@ -3673,6 +3742,7 @@ export function criarPorteiro({
   // T6: id `tg-u...` com o Telegram ligado = a fala do falaDoTelegram (sem ler o grupo), as frases na linha do sistema do
   // Telegram (notifica, em cima da mensagem dele) e o item com `canal: 'telegram'`. Telegram desligado = o caminho do
   // grupo (la o id nao existe: "Não achei a mensagem").
+  // T36: `parte` (opcional) como no `encaminhar`; a fala com outra parte pode abrir outra sessao nova (sessaoDaFala).
   async function abrirSessao(e, ev, agoraMs) {
     const chave = ['abs', ev.por, ev.at, ev.providerMsgId, ev.nome, ev.pasta].map((x) => String(x ?? '').slice(0, 120)).join('|');
     if (e.vistosEventos.includes(chave)) return;
@@ -3706,7 +3776,13 @@ export function criarPorteiro({
       await frase(FRASES.encNaoAcheiMsg(naFrase));
       return;
     }
-    const ja = sessaoDaFala(e, id, agoraMs);
+    const pt = parteDoEvento(ev, fala); // T36
+    if (pt.torta) {
+      log('abrir-sessao da central: a parte nao esta na fala; nao abre');
+      await frase(FRASES.encParteNaoBate(naFrase));
+      return;
+    }
+    const ja = sessaoDaFala(e, id, agoraMs, pt.parte);
     if (ja === 'esperando') {
       log(`abrir-sessao da central: ${id.slice(0, 80)} ja esta esperando a aba nova; nao abre outra`);
       return;
@@ -3730,6 +3806,7 @@ export function criarPorteiro({
       return;
     }
     const falaDoItem = { texto: fala.texto, audio: fala.audio, hora: fala.hora, messageId: fala.messageId, anexos: fala.anexos };
+    if (pt.parte) falaDoItem.parte = pt.parte; // T36: vai no pedido quando a sessao nova firmar
     if (typeof abrirSessaoEscondida === 'function') {
       // F4f: claude -n num console escondido (sem VS Code, sem foto de janela, sem link); quem ja estava vivo na pasta
       // antes de abrir nunca e a nova
@@ -3903,6 +3980,7 @@ export function criarPorteiro({
           pasta: x.pasta, // so pra frase (pasta curta); o mensageiro nao usa
         };
         if (x.canal === 'telegram') pedido.canal = 'telegram'; // T6: a resposta da sessao nova volta pelo Telegram
+        if (typeof f.parte === 'string' && f.parte) pedido.parte = f.parte; // T36
         log(`abrir-sessao: ${escondida ? 'sessao escondida' : 'aba nova'} ${cand.sessionId} em ${x.pasta.slice(0, 160)}; passando a fala (${pedido.providerMsgId})`);
         enfileirar(e, pedido); // o passoEntrega chama o mensageiro
         continue;
@@ -4226,6 +4304,8 @@ export function criarPorteiro({
   // cadeia aberta = o encaminhar de sempre; a fala ja esperando uma retomada = so log; retomada esperando = junta; nao
   // reabrivel = "Não dá pra reabrir a aba X pelo celular: <motivo>."; senao retoma a conversa (T18). A fala vai pra ela
   // como encaminhada (a central que so pediu a reabertura fica calada, F8).
+  // T36: `parte` (opcional) como no `encaminhar` (vai junto quando a aba esta aberta); a fala esperando a retomada de
+  // OUTRA aba com outra parte (as 2 existem e sao diferentes) nao barra esta; a mesma aba, ou sem parte, barra como hoje.
   async function reabrirSessao(e, ev, agoraMs) {
     const chave = ['reab', ev.por, ev.at, ev.providerMsgId, ev.sessao].map((x) => String(x ?? '').slice(0, 120)).join('|');
     if (e.vistosEventos.includes(chave)) return;
@@ -4260,13 +4340,22 @@ export function criarPorteiro({
       await frase(FRASES.encNaoAcheiMsg(t || nomeNaFrase(sid)));
       return;
     }
+    const pt = parteDoEvento(ev, fala); // T36
+    if (pt.torta) {
+      log('reabrir-sessao da central: a parte nao esta na fala; nao reabre');
+      await frase(FRASES.encParteNaoBate(t || nomeNaFrase(sid)));
+      return;
+    }
     if (vivas.some((s) => s.sessionId === alvo)) {
       log(`reabrir-sessao da central: a aba ${alvo} esta aberta; vai pelo encaminhar`);
-      await encaminhar(e, { tipo: 'encaminhar', at: ev.at, por: ev.por, providerMsgId: id, para: alvo }, agoraMs);
+      const enc = { tipo: 'encaminhar', at: ev.at, por: ev.por, providerMsgId: id, para: alvo };
+      if (pt.parte) enc.parte = pt.parte;
+      await encaminhar(e, enc, agoraMs);
       return;
     }
     const esperando = (Array.isArray(e.reaberturas) ? e.reaberturas : []).find((x) => x && typeof x === 'object'
-      && Array.isArray(x.pedidos) && x.pedidos.some((p) => doOriginal(p?.providerMsgId, id)));
+      && Array.isArray(x.pedidos) && x.pedidos.some((p) => doOriginal(p?.providerMsgId, id)
+        && (x.de === alvo || !partesDiferentes(p?.parte, pt.parte))));
     if (esperando) {
       log(`reabrir-sessao da central: ${id.slice(0, 80)} ja esta esperando a aba ${esperando.de} voltar; nao retoma de novo`);
       return;
@@ -4284,6 +4373,7 @@ export function criarPorteiro({
       encaminhado: true,
     };
     if (peloTg) pedido.canal = 'telegram';
+    if (pt.parte) pedido.parte = pt.parte; // T36
     const andamento = e.reaberturas.find((x) => x && typeof x === 'object' && x.de === alvo && Array.isArray(x.pedidos));
     if (andamento) {
       andamento.pedidos.push(pedido);
@@ -9336,7 +9426,7 @@ function imprimirEstado(ensaio) {
   console.log(JSON.stringify(saida, null, 2));
 }
 
-// `encaminhar --para "<titulo, nome ou sessionId>" --msg <providerMsgId>` (F3.9): a central passa uma fala do dono pra
+// `encaminhar --para "<titulo, nome ou sessionId>" --msg <providerMsgId> [--parte "<trecho>"]` (F3.9; --parte = T36): a central passa uma fala do dono pra
 // aba dona. So grava 1 evento no eventos.jsonl, com `por` = a sessao que rodou; NAO le o WhatsApp. Quem confere que veio
 // da central viva, acha a fala do dono e o destino e o porteiro, no passoEventos. Valor ausente, vazio ou que comeca
 // com "--" = exit 1 com {ok:false, erro}.
@@ -9344,6 +9434,18 @@ function valorDaOpcao(args, nome) {
   const i = args.indexOf(`--${nome}`);
   const v = i === -1 ? undefined : args[i + 1];
   return typeof v === 'string' && !v.startsWith('--') ? v.trim() : '';
+}
+
+// T36: `--parte "<trecho>"` (opcional) no encaminhar, no reabrir-sessao e no abrir-sessao: o trecho da fala do dono que
+// e pra aquela sessao. Ausente = {} (o evento sai como hoje); presente e vazio, ou fora de PARTE_MIN..PARTE_MAX caracteres
+// (espacos juntados) = {erro}. Quem confere que o trecho esta na fala e o porteiro (parteDaFala).
+function parteDaOpcao(args) {
+  if (!args.includes('--parte')) return {};
+  const v = valorDaOpcao(args, 'parte');
+  if (!v) return { erro: 'faltou o trecho depois de --parte' };
+  const n = Array.from(juntarEspacos(v)).length;
+  if (n < PARTE_MIN || n > PARTE_MAX) return { erro: `--parte precisa de ${PARTE_MIN} a ${PARTE_MAX} caracteres` };
+  return { parte: v };
 }
 
 function encaminharCli(args, ensaio) {
@@ -9355,10 +9457,14 @@ function encaminharCli(args, ensaio) {
   const providerMsgId = valorDaOpcao(args, 'msg');
   if (!para) return falha('faltou --para "<titulo, nome ou sessionId da aba>"');
   if (!providerMsgId) return falha('faltou --msg <id da mensagem do dono>');
+  const pt = parteDaOpcao(args);
+  if (pt.erro) return falha(pt.erro);
   const C = caminhosDo(process.env, ensaio);
   const por = process.env.CLAUDE_CODE_SESSION_ID || null;
+  const ev = { v: 1, tipo: 'encaminhar', at: iso(Date.now()), para, providerMsgId, por };
+  if (pt.parte) ev.parte = pt.parte;
   try {
-    lib.anexarEvento(C.estadoDir, { v: 1, tipo: 'encaminhar', at: iso(Date.now()), para, providerMsgId, por });
+    lib.anexarEvento(C.estadoDir, ev);
   } catch (err) {
     return falha(`nao gravei o evento: ${String(err?.message || err).slice(0, 160)}`);
   }
@@ -9367,7 +9473,7 @@ function encaminharCli(args, ensaio) {
   return undefined;
 }
 
-// `abrir-sessao --nome "<nome>" --pasta "<pasta>" --msg <providerMsgId>` (F4b): a central pede uma sessao nova pro pedido
+// `abrir-sessao --nome "<nome>" --pasta "<pasta>" --msg <providerMsgId> [--parte "<trecho>"]` (F4b; --parte = T36): a central pede uma sessao nova pro pedido
 // do dono. O mesmo desenho do `encaminhar`: so grava 1 evento, com `por` = a sessao que rodou; quem confere a central, a
 // fala, a pasta e abre o VS Code e o porteiro. Nome aparado, 1 a 60 caracteres, numa linha so. Falta ou nome ruim = exit 1
 // com {ok:false, erro}.
@@ -9384,10 +9490,14 @@ function abrirSessaoCli(args, ensaio) {
   if (!nome) return falha(`nome invalido: de 1 a ${NOME_SESSAO_MAX} caracteres, numa linha so`);
   if (!pasta) return falha('faltou --pasta "<pasta da sessao>"');
   if (!providerMsgId) return falha('faltou --msg <id da mensagem do dono>');
+  const pt = parteDaOpcao(args);
+  if (pt.erro) return falha(pt.erro);
   const C = caminhosDo(process.env, ensaio);
   const por = process.env.CLAUDE_CODE_SESSION_ID || null;
+  const ev = { v: 1, tipo: 'abrir-sessao', at: iso(Date.now()), nome, pasta, providerMsgId, por };
+  if (pt.parte) ev.parte = pt.parte;
   try {
-    lib.anexarEvento(C.estadoDir, { v: 1, tipo: 'abrir-sessao', at: iso(Date.now()), nome, pasta, providerMsgId, por });
+    lib.anexarEvento(C.estadoDir, ev);
   } catch (err) {
     return falha(`nao gravei o evento: ${String(err?.message || err).slice(0, 160)}`);
   }
@@ -9396,7 +9506,7 @@ function abrirSessaoCli(args, ensaio) {
   return undefined;
 }
 
-// `reabrir-sessao --sessao "<sessionId>" --msg <providerMsgId>` (T8): a central pede a copia da aba fechada pro pedido do
+// `reabrir-sessao --sessao "<sessionId>" --msg <providerMsgId> [--parte "<trecho>"]` (T8; --parte = T36): a central pede a copia da aba fechada pro pedido do
 // dono (a dona achada pelo `abas.mjs --fechadas`). O mesmo desenho do `encaminhar`: so grava 1 evento, com `por` = a
 // sessao que rodou; quem confere a central, a fala e se da pra reabrir e o porteiro. Falta = exit 1 com {ok:false, erro}.
 function reabrirSessaoCli(args, ensaio) {
@@ -9408,10 +9518,14 @@ function reabrirSessaoCli(args, ensaio) {
   const providerMsgId = valorDaOpcao(args, 'msg');
   if (!sessao) return falha('faltou --sessao "<sessionId da aba fechada>"');
   if (!providerMsgId) return falha('faltou --msg <id da mensagem do dono>');
+  const pt = parteDaOpcao(args);
+  if (pt.erro) return falha(pt.erro);
   const C = caminhosDo(process.env, ensaio);
   const por = process.env.CLAUDE_CODE_SESSION_ID || null;
+  const ev = { v: 1, tipo: 'reabrir-sessao', at: iso(Date.now()), sessao, providerMsgId, por };
+  if (pt.parte) ev.parte = pt.parte;
   try {
-    lib.anexarEvento(C.estadoDir, { v: 1, tipo: 'reabrir-sessao', at: iso(Date.now()), sessao, providerMsgId, por });
+    lib.anexarEvento(C.estadoDir, ev);
   } catch (err) {
     return falha(`nao gravei o evento: ${String(err?.message || err).slice(0, 160)}`);
   }

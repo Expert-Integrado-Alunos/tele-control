@@ -603,7 +603,7 @@ test('T7b3 93. instrucoes da central: itens 10, 13 e 17 com o OK pelo botao Sim 
   assert.equal(item(13, '\\r?\\n\\r?\\n## '), ITEM_13);
   assert.equal(item(17, '\\r?\\n\\r?\\n## '), ITEM_17); // T24: o 17 fecha a secao do Telegram; o 18 vem na secao seguinte
   const numeros = [...instr.matchAll(/^(\d+)\. /gm)].map((x) => Number(x[1]));
-  assert.deepEqual(numeros, Array.from({ length: 19 }, (_, i) => i + 1), 'itens 1 a 19 em ordem, 1 vez cada (T24: o 18; T35: o 19)');
+  assert.deepEqual(numeros, Array.from({ length: 20 }, (_, i) => i + 1), 'itens 1 a 20 em ordem, 1 vez cada (T24: o 18; T35: o 19; T36: o 20)');
 });
 
 test('T7b3 93b. instrucoes da sessao escondida: item 3 com o OK pelo botao do pedido no Telegram ou a resposta no grupo; itens 1 a 6 em ordem (T8: a 6)', () => {
