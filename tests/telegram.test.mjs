@@ -890,3 +890,110 @@ describe('T29d: enviar com respostaForcada', () => {
     assert.equal(f.fetch.chamadas[0].corpo.reply_markup, undefined);
   });
 });
+
+// ---------- T37a: fixar, desafixar e botao de link (a rotina do dia, lib/rotina-tg.mjs) ----------
+
+describe('T37a: fixar, desafixar e botão de link', () => {
+  test('fixar: pinChatMessage no chat do dono com message_id e disable_notification (padrão silencioso; false notifica)', async () => {
+    const { tg, fetch } = novo([ok(true), ok(true)]);
+    assert.deepEqual(await tg.fixar(501), { ok: true });
+    assert.deepEqual(await tg.fixar('502', { silencioso: false }), { ok: true });
+    assert.deepEqual(fetch.chamadas.map((c) => [c.metodo, c.corpo]), [
+      ['pinChatMessage', { chat_id: CHAT_ID_DONO, message_id: 501, disable_notification: true }],
+      ['pinChatMessage', { chat_id: CHAT_ID_DONO, message_id: 502, disable_notification: false }],
+    ]);
+  });
+
+  test('fixar: falha volta no formato público (codigo, sem a chave, nunca lança); sem message_id não chama a API', async () => {
+    const { tg, fetch } = novo([erro(400, `Bad Request: not enough rights /bot${TOKEN}/pinChatMessage`), new Error(`caiu /bot${TOKEN}/x`)]);
+    const r = await tg.fixar(501);
+    assert.deepEqual(Object.keys(r).sort(), ['codigo', 'erro', 'ok']);
+    assert.equal(r.ok, false);
+    assert.equal(r.codigo, 400);
+    assert.match(r.erro, /^pinChatMessage: /);
+    assert.ok(!r.erro.includes(TOKEN), r.erro);
+    const rede = await tg.fixar(503);
+    assert.equal(rede.ok, false);
+    assert.ok(!rede.erro.includes(TOKEN), rede.erro);
+    for (const id of [0, -1, 'x', null, undefined]) assert.equal((await tg.fixar(id)).ok, false, String(id));
+    assert.equal(fetch.chamadas.length, 2);
+  });
+
+  test('desafixar: unpinChatMessage com chat do dono e message_id', async () => {
+    const { tg, fetch } = novo([ok(true)]);
+    assert.deepEqual(await tg.desafixar(601), { ok: true });
+    assert.deepEqual(fetch.chamadas.map((c) => [c.metodo, c.corpo]), [['unpinChatMessage', { chat_id: CHAT_ID_DONO, message_id: 601 }]]);
+    assert.equal((await tg.desafixar('abc')).ok, false);
+    assert.equal(fetch.chamadas.length, 1);
+  });
+
+  test('desafixar: "message to unpin not found" e 400 de mensagem que não está fixada = ok jaSolta; outro erro = público', async () => {
+    const { tg } = novo([
+      erro(400, 'Bad Request: message to unpin not found'),
+      erro(400, 'Bad Request: message is not pinned'),
+      erro(403, 'Forbidden: bot was blocked by the user'),
+    ]);
+    assert.deepEqual(await tg.desafixar(601), { ok: true, jaSolta: true });
+    assert.deepEqual(await tg.desafixar(602), { ok: true, jaSolta: true });
+    const r = await tg.desafixar(603);
+    assert.equal(r.ok, false);
+    assert.equal(r.codigo, 403);
+    assert.match(r.erro, /^unpinChatMessage: /);
+  });
+
+  test('fixar e desafixar entram na mesma fila do adaptador (1100 ms entre os inícios)', async () => {
+    let t = 0;
+    const inicios = [];
+    const fetch = async (url) => {
+      inicios.push([String(url).split('/').pop(), t]);
+      return ok(true);
+    };
+    const tg = criarTelegram({ token: TOKEN, fetch, agora: () => t, dormir: async (ms) => { t += ms; } });
+    await Promise.all([tg.enviarTexto({ texto: 'resumo' }), tg.fixar(1), tg.desafixar(2), tg.apagar(3)]);
+    assert.deepEqual(inicios, [['sendMessage', 0], ['pinChatMessage', 1100], ['unpinChatMessage', 2200], ['deleteMessage', 3300]]);
+  });
+
+  test('botão de link {texto, url} vira {text, url} no corpo, junto com botão de retorno', async () => {
+    const { tg, fetch } = novo([ok({ message_id: 9 }), ok(true)]);
+    const botoes = [[{ texto: 'Responder', url: 'https://exemplo.com/c/1' }, { texto: 'Adiar', dados: 'l:20261105m:1:adiar' }]];
+    assert.deepEqual(await tg.enviarTexto({ texto: 'cartão', botoes }), { ok: true, messageId: 9 });
+    const esperado = { inline_keyboard: [[{ text: 'Responder', url: 'https://exemplo.com/c/1' }, { text: 'Adiar', callback_data: 'l:20261105m:1:adiar' }]] };
+    assert.deepEqual(fetch.chamadas[0].corpo.reply_markup, esperado);
+    assert.deepEqual(await tg.editarBotoes(9, botoes), { ok: true });
+    assert.deepEqual(fetch.chamadas[1].corpo.reply_markup, esperado);
+  });
+
+  test('url que não é https:// (http://, vazia, com espaço, acima de 300) = erro sem chamar a API; 300 exatos passa', async () => {
+    const { tg, fetch } = novo([ok({ message_id: 1 })]);
+    const ruins = ['http://exemplo.com', 'https://', '', 'https://exemplo.com/a b', `https://x.com/${'a'.repeat(287)}`, 'tg://resolve?domain=x', 'javascript:alert(1)'];
+    for (const url of ruins) {
+      const botoes = [[{ texto: 'A', url }]];
+      const rs = [
+        await tg.enviarTexto({ texto: 'x', botoes }),
+        await tg.enviar({ classico: 'x', botoes }),
+        await tg.editar(1, { classico: 'x', formato: 'classico', botoes }),
+        await tg.editarTexto(1, { texto: 'x', botoes }),
+        await tg.editarBotoes(1, botoes),
+      ];
+      for (const r of rs) {
+        assert.equal(r.ok, false, url);
+        assert.match(r.erro, /url/, url);
+      }
+    }
+    assert.equal(fetch.chamadas.length, 0);
+    const u300 = `https://x.com/${'a'.repeat(286)}`;
+    assert.equal(u300.length, 300);
+    assert.equal((await tg.enviarTexto({ texto: 'x', botoes: [[{ texto: 'A', url: u300 }]] })).ok, true);
+    assert.equal(fetch.chamadas.length, 1);
+  });
+
+  test('botão com dados e url ao mesmo tempo = erro sem chamar a API', async () => {
+    const { tg, fetch } = novo();
+    const botoes = [[{ texto: 'A', dados: 'l:20261105m:1:adiar', url: 'https://exemplo.com' }]];
+    const r = await tg.enviarTexto({ texto: 'x', botoes });
+    assert.equal(r.ok, false);
+    assert.match(r.erro, /dados e url/);
+    assert.equal((await tg.editarBotoes(1, botoes)).ok, false);
+    assert.equal(fetch.chamadas.length, 0);
+  });
+});

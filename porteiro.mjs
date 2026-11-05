@@ -140,6 +140,13 @@ import { tgNovo, completarTg, criarCanalTelegram } from './canal-telegram.mjs';
 import { valorDoReg, lerRegistroReal, chaveTelegram } from './lib/registro.mjs';
 import { lerConfigOk, lerOkNaAba, lerDadosOk, conferirToque, montarOkTg, montarOkTgFechado, montarBlocoOk, montarBlocoOkFechado, conferirToqueDeNovo, lerDadosDeNovo, botoesDeNovo } from './lib/ok-tg.mjs';
 import {
+  validarLote, tecladoDoCartao, tecladoDoResumo, lerToqueRotina, textoDepoisDoToque, avisoDoToque, textoResumoComProgresso,
+  linhaDeAcao, ROTULOS,
+} from './lib/rotina-tg.mjs';
+import {
+  lerConfigRotina, pastaRotina, listarLotesRotina, lerLoteRotina, marcarLoteRotina, anotarAcaoRotina,
+} from './lib/rotina-pasta.mjs';
+import {
   lerConfig, identidadeTelegram, botIdDaChave, identidadeWhatsapp, RE_NUMERO_WPP, WPP_DESLIGADO_NO_CONFIG,
   sessoesDoConfig, identidadeCentral, claudeDoConfig, appsDoConfig, orcaDoConfig, bancoVsCodeDoConfig, donoDoConfig,
   transcricaoDoConfig, modoRuaDoConfig, mensageiroDoConfig, vozDoConfig, saudeDoConfig, maquinaDoConfig, nomeDoDonoValido,
@@ -321,6 +328,12 @@ const TG_FAXINA_MS = 60 * MIN; // faxina no maximo 1 vez nesse intervalo
 const TG_NOME_MAX = 80; // nome do arquivo que vai no recado
 // T7b2a (Desenho 1b): o pedido de OK com os botoes Sim e Nao no chat do bot (so com telegram.ok.ligado).
 const OK_TG_DE_NOVO_MS = 30 * 1000; // envio (ou fecho) da mensagem do pedido que falhou = de novo depois disso
+const ROTINA_LEITURA_MS = 5 * 1000; // T37b1: no maximo 1 leitura da pasta da rotina a cada 5 s
+const ROTINA_MAX_FALHAS = 3; // T37b1: falhas seguidas (sem esperarS) no mesmo passo ate o arquivo virar .falhou.json
+const ROTINA_TTL_MS = 3 * 24 * 3600 * 1000; // T37b1: lote no estado com gerado_em mais velho que isto = podado
+// T37b2: so o lote `limpo` (a faxina ja tirou os teclados e desafixou) sai com 3 dias; o que nao esta limpo sai so com 10
+// (o resumo fixado de uma sexta nao pode ficar preso depois de um feriado: o lote seguinte ainda limpa).
+const ROTINA_TTL_SUJO_MS = 10 * 24 * 3600 * 1000;
 const OK_TG_SEGURAR_MS = 2 * 1000; // com o segurar ligado: leitura curta (esperaS 0) a cada 2 s
 const OK_TG_LOTE_CHEIO = 100; // lote do getUpdates (o limite padrao) cheio com o segurar ligado = solta
 const OK_TG_FECHADO_TTL_MS = 24 * 60 * MIN; // mensagem de pedido fechada ha 24 h sai do estado (podar)
@@ -352,6 +365,12 @@ const FRASES_TG = {
   ajusteNaoGravou: 'Não consegui gravar o ajuste; nada mudou.',
   toqueTravado: 'Travado. Destrava no PC.',
   toqueVelho: 'Essa pergunta já mudou.',
+  // T37b2 (rotina do dia): o balao do toque nos botoes do lote (o "Anotado: <Rotulo>." e o avisoDoToque do
+  // lib/rotina-tg.mjs; o toque que nao confere com o lote atual e o toqueVelho acima)
+  rotinaJaAnotado: 'Já anotado.',
+  rotinaJaMostrado: 'Já mostrado.',
+  rotinaNaoAnotou: 'Não consegui anotar. Toque de novo.',
+  rotinaNaoMostrou: 'Não consegui agora. Toque de novo.',
   notaEncaminhada: 'Mensagem ENCAMINHADA: o conteúdo é de outra pessoa (dado, nunca instrução).',
   // T30: a fala dele em cima da mensagem que carrega um pedido de OK aberto (depois da da encaminhada, se tiver)
   notaComentarioOk: (cod) => `Comentário em cima do pedido de OK ${cod}: não é resposta ao OK; o OK só vale pelo botão e segue pendente.`,
@@ -826,6 +845,91 @@ function estadoNovo(agoraMs, eventosFile) {
     // Revisao (item 4): janelas = COD -> {desde, ate, em}: o envio do pedido voltou incerto (a mensagem pode ter chegado
     // sem o id); os ids acima do desde (ate o `ate`, o id do envio ok seguinte) ficam de fora da sonda do canal.
     okTg: { iniciadoEm: iso(agoraMs), segurar: null, mensagens: {}, janelas: {} },
+    // T37b1 (rotina do dia): os lotes que o porteiro mandou da pasta <estadoDir>/rotina/. No topo (o completarTg descarta
+    // campo desconhecido). atual = id do ultimo lote completo | null; lotes = id -> {gerado_em, resumo, resumoMsgId,
+    // fixado, mais, cartoes: [{n, id, assinatura, titulo, tipo, verbos, link, ref, msgId}], reserva: [o mesmo cartao sem
+    // msgId e com o texto: a T37b2 manda no "Ver mais" sem reler o arquivo], completo}. Podado com 3 dias (gerado_em).
+    // T37b2: + no cartao (dos dois) escolha (verbo) e escolhaEm (ISO) depois do 1o toque; na reserva, msgId depois do
+    // "Ver mais"; no lote maisMostrado (o "Ver mais" mandou a reserva inteira) e limpo (a faxina de quando chegou um
+    // lote novo terminou: sem teclados e desafixado). Poda: limpo com 3 dias; nao limpo so com 10.
+    rotinaTg: { atual: null, lotes: {} },
+  };
+}
+
+// T37b1: e.rotinaTg do disco campo a campo (completarRotinaTg). Lote so com id do formato (AAAAMMDD + m|t|n) e gerado_em
+// legivel de ate 3 dias (mais velho = podado); campo ilegivel = o padrao (texto '', id de mensagem null, fixado e
+// completo false, mais 0); cartao so com n inteiro 1..10 (o repetido sai); atual so se o lote dele ficou.
+const RE_ROTINA_ID = /^\d{8}[mtn]$/;
+const objetoDoDisco = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+const idTgOk = (id) => Number.isSafeInteger(id) && id > 0;
+
+// O cartao como vai pro estado (sem o texto e sem o msgId): do validarLote ou do disco.
+function cartaoRotinaBase(c) {
+  return {
+    n: c.n,
+    id: typeof c.id === 'string' ? c.id : '',
+    assinatura: typeof c.assinatura === 'string' ? c.assinatura : '',
+    titulo: typeof c.titulo === 'string' ? c.titulo : '',
+    tipo: typeof c.tipo === 'string' ? c.tipo : '',
+    verbos: Array.isArray(c.verbos) ? c.verbos.filter((v) => typeof v === 'string') : [],
+    link: typeof c.link === 'string' ? c.link : null,
+    ref: objetoDoDisco(c.ref) && typeof c.ref.sessao === 'string' ? { sessao: c.ref.sessao } : null,
+  };
+}
+
+// T37b2: os campos de depois do toque e do "Ver mais" so ficam quando legiveis (ausente = nao tocado / nao mostrado):
+// escolha so verbo do ROTULOS, escolhaEm so data ISO, msgId da reserva so id de mensagem.
+function cartoesRotinaDoDisco(lista, reserva) {
+  const vistos = new Set();
+  const saida = [];
+  for (const c of Array.isArray(lista) ? lista : []) {
+    if (!objetoDoDisco(c) || !Number.isInteger(c.n) || c.n < 1 || c.n > 10 || vistos.has(c.n)) continue;
+    vistos.add(c.n);
+    const x = cartaoRotinaBase(c);
+    if (reserva) {
+      x.texto = typeof c.texto === 'string' ? c.texto : '';
+      if (idTgOk(c.msgId)) x.msgId = c.msgId;
+    } else x.msgId = idTgOk(c.msgId) ? c.msgId : null;
+    if (typeof c.escolha === 'string' && Object.hasOwn(ROTULOS, c.escolha)) x.escolha = c.escolha;
+    if (typeof c.escolhaEm === 'string' && Number.isFinite(Date.parse(c.escolhaEm))) x.escolhaEm = c.escolhaEm;
+    saida.push(x);
+  }
+  return saida;
+}
+
+function completarRotinaTg(v, agoraMs) {
+  const r = { atual: null, lotes: {} };
+  if (!objetoDoDisco(v)) return r;
+  for (const [id, l] of Object.entries(objetoDoDisco(v.lotes) ? v.lotes : {})) {
+    if (!RE_ROTINA_ID.test(id) || !objetoDoDisco(l)) continue;
+    const gerado = typeof l.gerado_em === 'string' ? Date.parse(l.gerado_em) : NaN;
+    if (!Number.isFinite(gerado) || agoraMs - gerado > (l.limpo === true ? ROTINA_TTL_MS : ROTINA_TTL_SUJO_MS)) continue;
+    r.lotes[id] = {
+      gerado_em: l.gerado_em,
+      resumo: typeof l.resumo === 'string' ? l.resumo : '',
+      resumoMsgId: idTgOk(l.resumoMsgId) ? l.resumoMsgId : null,
+      fixado: l.fixado === true,
+      mais: Number.isSafeInteger(l.mais) && l.mais >= 0 ? l.mais : 0,
+      cartoes: cartoesRotinaDoDisco(l.cartoes, false),
+      reserva: cartoesRotinaDoDisco(l.reserva, true),
+      completo: l.completo === true,
+      maisMostrado: l.maisMostrado === true, // T37b2
+      limpo: l.limpo === true, // T37b2
+    };
+  }
+  if (typeof v.atual === 'string' && Object.hasOwn(r.lotes, v.atual)) r.atual = v.atual;
+  return r;
+}
+
+// T37b1: a entrada do estado de um lote que o validarLote aprovou, antes de qualquer mensagem sair.
+function entradaRotina(lote) {
+  return {
+    gerado_em: lote.gerado_em, resumo: lote.resumo, resumoMsgId: null, fixado: false, mais: lote.mais,
+    cartoes: lote.cartoes.map((c) => ({ ...cartaoRotinaBase(c), msgId: null })),
+    reserva: lote.reserva.map((c) => ({ ...cartaoRotinaBase(c), texto: c.texto })),
+    completo: false,
+    maisMostrado: false,
+    limpo: false,
   };
 }
 
@@ -872,6 +976,7 @@ function completarEstado(bruto, agoraMs, eventosFile) {
   e.saude.quebrado = e.saude.quebrado === true;
   e.tg = completarTg(bruto.tg); // T3a: campo a campo pelo canal (estado antigo sem `tg` = tgNovo)
   e.okTg = completarOkTg(bruto.okTg, base.okTg); // T7b2a: estado antigo sem `okTg` = o novo (iniciadoEm = agora)
+  e.rotinaTg = completarRotinaTg(bruto.rotinaTg, agoraMs); // T37b1: estado antigo sem `rotinaTg` = vazio
   return e;
 }
 
@@ -1402,6 +1507,12 @@ export function criarPorteiro({
   // enviarTexto proprio. Chave telegram.ok.naAba ausente = ligada; so `false` volta ao caminho de hoje. Lida 1 vez, como o
   // okLigado; a entrada ja aberta segue pelo caminho em que nasceu ate fechar (o `naAba` dela).
   const okNaAba = okLigado && lerOkNaAba(C.estadoDir);
+  // T37b1 (rotina do dia): o lote da pasta <estadoDir>/rotina/ sai pelo `tg` do porteiro SO com o canal, fora do ensaio e
+  // com telegram.rotina.ligado no config.json (lido 1 vez, como o okLigado). Desligada = nada muda e o arquivo fica la.
+  const rotinaLigada = canal !== null && !emEnsaio && lerConfigRotina(C.estadoDir).ligado === true;
+  let rotinaLidaEm = -Infinity; // T37b1 (so em memoria): a ultima leitura da pasta (no maximo 1 a cada ROTINA_LEITURA_MS)
+  let rotinaDeNovoEm = -Infinity; // T37b1 (so em memoria): 429 com esperarS = nada antes disso (molde do okDeNovoEm)
+  let rotinaFalha = null; // T37b1 (so em memoria): {chave (arquivo|gerado_em|passo), n} das falhas seguidas sem esperarS
   const okDeNovoEm = new Map(); // T7b2a (so em memoria): COD (envio) ou f:COD (fecho) -> ms antes do qual nao tenta de novo
   const okIlegiveis = new Set(); // T7b2a (so em memoria): pedidos que o montarOkTg recusou (1 linha de log so)
   const okPedidosLidos = new Map(); // T7b2a (so em memoria): COD -> ultimo pedido lido (fecha a mensagem se o arquivo sumir)
@@ -5810,10 +5921,11 @@ export function criarPorteiro({
   // no meio nao reenvia o que ja saiu (o salvar de depois do drenar continua)
   // T7b2a: as mensagens de pedido de OK (principal e outras) vao como `idsDeFora`: a sonda nunca sonda nem apaga elas.
   // Revisao (item 4): e as janelas do envio incerto de pedido de OK como `janelasDeFora` (a mensagem sem id fica de fora).
+  // T37b1: as mensagens da rotina (resumo e cartoes dos lotes no estado) tambem vao no `idsDeFora`.
   async function drenarTg(e) {
     try {
       await canal.drenar(e, {
-        travado: e.trava === true, modoRua: modoEfetivo(e, agora()), aoMudar: () => salvar(e), idsDeFora: idsDoOk(e),
+        travado: e.trava === true, modoRua: modoEfetivo(e, agora()), aoMudar: () => salvar(e), idsDeFora: [...idsDoOk(e), ...idsDaRotina(e)],
         janelasDeFora: janelasDoOk(e),
       });
     } catch (err) {
@@ -6364,6 +6476,12 @@ export function criarPorteiro({
       await responderToqueTg(u.toqueId, FRASES_TG.toqueTravado);
       return;
     }
+    // T37b2: com a rotina ligada, toque com dados `l:` (botao de um lote da rotina) = o ramo da rotina, que sempre responde
+    // o balao e nunca cai no fluxo das abas (antes do lerToque). Desligada = o `l:` segue como qualquer dado desconhecido.
+    if (rotinaLigada && typeof u.dados === 'string' && u.dados.startsWith('l:')) {
+      await tratarToqueRotina(e, u);
+      return;
+    }
     if (okLigado && typeof u.dados === 'string' && u.dados.startsWith('k:')) {
       await tratarToqueOk(e, u, bruto, lote);
       return;
@@ -6439,6 +6557,22 @@ export function criarPorteiro({
       if (!m || typeof m !== 'object') continue;
       for (const id of [m.messageId, ...(Array.isArray(m.outras) ? m.outras : [])]) {
         if (Number.isSafeInteger(id) && id > 0) ids.push(id);
+      }
+    }
+    return ids;
+  }
+
+  // T37b1: os message_id da rotina (resumo e cartoes de todos os lotes no estado): o canal nunca sonda nem apaga elas.
+  // T37b2: e os cartoes da reserva que o "Ver mais" mandou.
+  function idsDaRotina(e) {
+    const ids = [];
+    const ls = e?.rotinaTg?.lotes;
+    if (!ls || typeof ls !== 'object') return ids;
+    const msgIds = (lista) => (Array.isArray(lista) ? lista.map((c) => c?.msgId) : []);
+    for (const l of Object.values(ls)) {
+      if (!l || typeof l !== 'object') continue;
+      for (const id of [l.resumoMsgId, ...msgIds(l.cartoes), ...msgIds(l.reserva)]) {
+        if (idTgOk(id)) ids.push(id);
       }
     }
     return ids;
@@ -6992,6 +7126,245 @@ export function criarPorteiro({
     if (mudou) await drenarTg(e);
   }
 
+  // ---------- T37b1: rotina do dia (o resumo fixado + os cartoes, da pasta <estadoDir>/rotina/) ----------
+  // So com rotinaLigada, a cada volta do esperarTelegram (depois do passoOkTg), sem trava (como o mandarOkTg) e com no
+  // maximo 1 leitura da pasta a cada ROTINA_LEITURA_MS. Cada `lote-<id>.json`, em ordem: validarLote (invalido, velho ou
+  // ilegivel = .recusado.json + 1 linha de log com o motivo, nunca o texto: e dado de terceiro); o mesmo id e gerado_em
+  // de um lote completo = .enviado.json, nada sai; lote novo (id novo, ou o mesmo id com outro gerado_em) = o atual
+  // anterior (e o do mesmo id que este substitui; T37b2: todo lote do estado ainda nao `limpo`, em melhor esforco)
+  // perde os teclados e o resumo dele e desafixado; o resumo sai com som e
+  // e fixado (fixar silencioso); os cartoes saem em ordem sem som; tudo enviado = completo, atual = id e .enviado.json.
+  // O estado vai pro disco depois de cada mudanca (cada mensagem que saiu): o porteiro que cai no meio continua da
+  // proxima, sem repetir nenhuma. Texto do lote sai puro (o enviarTexto nao usa parse_mode); o adaptador pelo chamarTg.
+  // Nunca lanca.
+  async function passoRotinaTg(e, agoraMs) {
+    if (e.trava === true || agoraMs < rotinaDeNovoEm || agoraMs - rotinaLidaEm < ROTINA_LEITURA_MS) return;
+    rotinaLidaEm = agoraMs;
+    try {
+      const pasta = pastaRotina(C.estadoDir);
+      for (const nome of listarLotesRotina(pasta)) {
+        if ((await arquivoRotinaTg(e, pasta, nome, agoraMs)) === 'para') return;
+      }
+    } catch (err) {
+      log(`Telegram: passo da rotina falhou (${String(err?.name || 'erro').slice(0, 40)})`);
+    }
+  }
+
+  // 1 arquivo da pasta -> 'segue' (o proximo arquivo pode ir nesta volta) | 'para' (nada mais nesta volta).
+  async function arquivoRotinaTg(e, pasta, nome, agoraMs) {
+    const lido = lerLoteRotina(pasta, nome);
+    if (!lido.ok && lido.motivo === 'sumiu') return 'segue';
+    const v = lido.ok ? validarLote(lido.obj, { agoraMs }) : lido;
+    if (!v.ok) {
+      marcarRotina(pasta, nome, 'recusado');
+      log(`Telegram: rotina ${nome} recusada (${v.motivo})`);
+      return 'segue';
+    }
+    const lote = v.lote;
+    const ja = Object.hasOwn(e.rotinaTg.lotes, lote.id) ? e.rotinaTg.lotes[lote.id] : null;
+    const mesmo = ja !== null && ja.gerado_em === lote.gerado_em;
+    if (mesmo && ja.completo === true) {
+      marcarRotina(pasta, nome, 'enviado');
+      log(`Telegram: rotina ${lote.id} ja estava no chat; nada sai`);
+      return 'segue';
+    }
+    return mandarRotinaTg(e, pasta, nome, lote, mesmo ? ja : null);
+  }
+
+  // O lote novo (continuar = null) ou o que parou no meio (continuar = a entrada dele no estado).
+  async function mandarRotinaTg(e, pasta, nome, lote, continuar) {
+    const rt = e.rotinaTg;
+    let ent = continuar;
+    if (!ent) {
+      // a. (T37b2: melhor esforco) TODO lote do estado que ainda nao esta limpo (o atual anterior, o do mesmo id que este
+      // substitui, o que falhou no meio com o resumo fixado): sem teclado (resumo, cartoes e a reserva mostrada) e
+      // desafixado; terminado = limpo (nao volta a ser limpo no lote seguinte).
+      for (const id of Object.keys(rt.lotes).sort()) {
+        if (rt.lotes[id].limpo === true) continue;
+        if ((await limparRotinaTg(e, pasta, nome, lote, id)) === 'para') return 'para';
+      }
+      ent = entradaRotina(lote);
+      rt.lotes[lote.id] = ent;
+      salvar(e);
+    }
+    if (!idTgOk(ent.resumoMsgId)) { // b. o resumo com som, fixado sem som
+      const r = await chamarTg('enviarTexto', () => tg.enviarTexto({ texto: lote.resumo, botoes: tecladoDoResumo(lote), silencioso: false }));
+      if (!(r.ok === true && idTgOk(r.messageId))) return falhaRotina(pasta, nome, lote, 'resumo', r);
+      ent.resumoMsgId = r.messageId;
+      salvar(e); // d. depois de cada mensagem que saiu
+    }
+    if (ent.fixado !== true) {
+      const r = await chamarTg('fixar', () => tg.fixar(ent.resumoMsgId, { silencioso: true }));
+      if (r.ok !== true) return falhaRotina(pasta, nome, lote, 'fixar', r);
+      ent.fixado = true;
+      salvar(e);
+    }
+    const nomeBot = typeof tg?.usuarioBot === 'string' && tg.usuarioBot ? tg.usuarioBot : null; // o mesmo do painel (T10)
+    for (const c of lote.cartoes) { // c. os cartoes em ordem, sem som
+      let sc = ent.cartoes.find((x) => x.n === c.n);
+      if (!sc) {
+        sc = { ...cartaoRotinaBase(c), msgId: null };
+        ent.cartoes.push(sc);
+      }
+      if (idTgOk(sc.msgId)) continue;
+      const r = await chamarTg('enviarTexto', () => tg.enviarTexto({ texto: c.texto, botoes: tecladoDoCartao(c, lote.id, { nomeBot }), silencioso: true }));
+      if (!(r.ok === true && idTgOk(r.messageId))) return falhaRotina(pasta, nome, lote, `cartao ${c.n}`, r);
+      sc.msgId = r.messageId;
+      salvar(e); // d. depois de cada mensagem que saiu: quem cai no meio continua da proxima
+    }
+    ent.completo = true; // e. tudo enviado (o estado antes do renomear: quem cai no meio acha o lote completo)
+    rt.atual = lote.id;
+    rotinaFalha = null;
+    salvar(e);
+    marcarRotina(pasta, nome, 'enviado');
+    log(`Telegram: rotina ${lote.id} no chat (resumo ${ent.resumoMsgId} fixado e ${lote.cartoes.length} cartao(oes))`);
+    return 'segue';
+  }
+
+  // Erro do adaptador num passo do lote: com esperarS (429) = nada ate o prazo; sem = de novo na volta seguinte, e a
+  // ROTINA_MAX_FALHAS-esima seguida no mesmo passo = .falhou.json (o lote fica como esta no estado). Sempre 'para'.
+  function falhaRotina(pasta, nome, lote, passo, r) {
+    const erro = erroTg(r?.erro ?? 'sem message_id');
+    const s = Number(r?.esperarS);
+    if (Number.isFinite(s) && s > 0) {
+      rotinaDeNovoEm = agora() + s * 1000;
+      log(`Telegram: rotina ${lote.id}: ${passo} falhou (${erro}); de novo em ${s} s`);
+      return 'para';
+    }
+    const chave = `${nome}|${lote.gerado_em}|${passo}`;
+    const n = rotinaFalha?.chave === chave ? rotinaFalha.n + 1 : 1;
+    if (n >= ROTINA_MAX_FALHAS) {
+      rotinaFalha = null;
+      marcarRotina(pasta, nome, 'falhou');
+      log(`Telegram: rotina ${lote.id}: ${passo} falhou ${n} vezes (${erro}); arquivo .falhou.json, o lote fica como esta`);
+      return 'para';
+    }
+    rotinaFalha = { chave, n };
+    log(`Telegram: rotina ${lote.id}: ${passo} falhou (${erro}); de novo na volta seguinte (${n} de ${ROTINA_MAX_FALHAS})`);
+    return 'para';
+  }
+
+  function marcarRotina(pasta, nome, fim) {
+    const r = marcarLoteRotina(pasta, nome, fim);
+    if (!r.ok) log(`Telegram: rotina ${nome}: nao renomeei pra .${fim}.json (${r.erro})`);
+  }
+
+  // T37b2 (item I): a faxina de 1 lote ANTERIOR no passo "a" do mandarRotinaTg -> 'segue' | 'para'. Erro sem esperarS
+  // numa mensagem dele (ex.: o dono apagou o cartao = "message to edit not found") = 1 linha de log e segue: nunca conta
+  // pras falhas do lote novo. 429 com esperarS = para a volta como antes (o falhaRotina so marca o prazo; o lote fica sem
+  // o limpo e a faxina dele e refeita na volta seguinte). Terminado = limpo + salvar.
+  async function limparRotinaTg(e, pasta, nome, lote, id) {
+    const ant = e.rotinaTg.lotes[id];
+    const comEspera = (r) => Number.isFinite(Number(r?.esperarS)) && Number(r.esperarS) > 0;
+    for (const msgId of [ant.resumoMsgId, ...ant.cartoes.map((c) => c.msgId), ...ant.reserva.map((c) => c.msgId)]) {
+      if (!idTgOk(msgId)) continue;
+      const r = await chamarTg('editarBotoes', () => tg.editarBotoes(msgId, null));
+      if (r.ok === true) continue;
+      if (comEspera(r)) return falhaRotina(pasta, nome, lote, `teclado ${msgId} do lote ${id}`, r);
+      log(`Telegram: rotina ${id}: teclado ${msgId} nao saiu (${erroTg(r.erro)}); segue (lote anterior)`);
+    }
+    if (ant.fixado === true && idTgOk(ant.resumoMsgId)) {
+      const r = await chamarTg('desafixar', () => tg.desafixar(ant.resumoMsgId)); // jaSolta vem com ok: true
+      if (r.ok === true) ant.fixado = false;
+      else if (comEspera(r)) return falhaRotina(pasta, nome, lote, `desafixar do lote ${id}`, r);
+      else log(`Telegram: rotina ${id}: desafixar falhou (${erroTg(r.erro)}); segue (lote anterior)`);
+    }
+    ant.limpo = true;
+    salvar(e);
+    return 'segue';
+  }
+
+  // ---------- T37b2: o toque nos botoes do lote da rotina (l:<lote>:<n>:<verbo>; o "Ver mais" e l:<lote>:0:mais) ----------
+  // So com rotinaLigada: o tratarToqueTg desvia pra ca depois da trava e antes do lerToque. SEMPRE responde o balao e
+  // nunca cai no fluxo das abas. O toque so grava a escolha (1 linha do linhaDeAcao no <estadoDir>/rotina/acoes.jsonl,
+  // que o montador da rotina le no lote seguinte, e a escolha no cartao do estado) e edita as mensagens do proprio lote:
+  // nunca executa nada fora do porteiro (nada vai pra aba, CRM ou WhatsApp). Conferencias (qualquer uma falha = o
+  // toqueVelho, nada gravado, nada editado): o lote do toque e o atual e existe no estado; o cartao (n 1..10, de
+  // `cartoes` ou da `reserva`) tem o msgId da mensagem tocada (mensagem velha de um lote reenviado com o mesmo id cai
+  // aqui); o verbo e do cartao; o "Ver mais" so vale na mensagem do resumo. Log sem texto do lote (e dado de terceiro).
+  async function tratarToqueRotina(e, u) {
+    const t = lerToqueRotina(u.dados);
+    const rt = e.rotinaTg;
+    const ent = t && rt.atual === t.loteId && Object.hasOwn(rt.lotes, t.loteId) ? rt.lotes[t.loteId] : null;
+    if (ent && t.verbo === 'mais' && idTgOk(ent.resumoMsgId) && u.messageId === ent.resumoMsgId) {
+      await verMaisRotinaTg(e, u, t.loteId, ent);
+      return;
+    }
+    const c = ent && t.verbo !== 'mais'
+      ? [...ent.cartoes, ...ent.reserva].find((x) => x.n === t.n && idTgOk(x.msgId) && x.msgId === u.messageId)
+      : null;
+    if (!c || !c.verbos.includes(t.verbo)) {
+      await responderToqueTg(u.toqueId, FRASES_TG.toqueVelho);
+      return;
+    }
+    if (typeof c.escolha === 'string') { // D. toque repetido (corrida, ou a edicao de antes falhou): nada gravado
+      await responderToqueTg(u.toqueId, FRASES_TG.rotinaJaAnotado);
+      await editarCartaoRotinaTg(t.loteId, c); // a edicao do cartao de novo, com a escolha que ja estava
+      return;
+    }
+    const ts = iso(agora()); // C.1: o registro primeiro; falhou = nada mais muda (o cartao fica com os botoes)
+    const anotado = anotarAcaoRotina(pastaRotina(C.estadoDir), linhaDeAcao({ ts, loteId: t.loteId, cartao: c, verbo: t.verbo }));
+    if (!anotado.ok) {
+      log(`Telegram: rotina ${t.loteId}: o toque no cartao ${c.n} nao foi anotado (${anotado.erro})`);
+      await responderToqueTg(u.toqueId, FRASES_TG.rotinaNaoAnotou);
+      return;
+    }
+    c.escolha = t.verbo; // C.2
+    c.escolhaEm = ts;
+    salvar(e);
+    await responderToqueTg(u.toqueId, avisoDoToque(t.verbo)); // C.3
+    await editarCartaoRotinaTg(t.loteId, c); // C.4
+    await editarResumoRotinaTg(t.loteId, ent); // C.5
+    log(`Telegram: rotina ${t.loteId}: cartao ${c.n} anotado (${t.verbo})`);
+  }
+
+  // C.4: o cartao vira 1 linha sem botoes (textoDepoisDoToque com a escolha gravada). Falhou = so o log.
+  async function editarCartaoRotinaTg(loteId, c) {
+    const r = await chamarTg('editarTexto', () => tg.editarTexto(c.msgId, { texto: textoDepoisDoToque(c, c.escolha), botoes: null }));
+    if (r.ok !== true) log(`Telegram: rotina ${loteId}: o cartao ${c.n} nao foi editado (${erroTg(r.erro)})`);
+  }
+
+  // C.5: o resumo com o contador (resolvidos = cartoes com escolha; total = os cartoes + a reserva, se o "Ver mais" ja
+  // mandou) e o botao "Ver mais" so enquanto a reserva nao saiu. Falhou = so o log (a escolha ja esta gravada).
+  async function editarResumoRotinaTg(loteId, ent) {
+    if (!idTgOk(ent.resumoMsgId)) return;
+    const mostrou = ent.maisMostrado === true;
+    const contam = mostrou ? [...ent.cartoes, ...ent.reserva] : ent.cartoes;
+    const texto = textoResumoComProgresso(ent.resumo, contam.filter((c) => typeof c.escolha === 'string').length, contam.length);
+    const botoes = tecladoDoResumo({ id: loteId, reserva: ent.reserva }, { jaMostrouMais: mostrou });
+    const r = await chamarTg('editarTexto', () => tg.editarTexto(ent.resumoMsgId, { texto, botoes }));
+    if (r.ok !== true) log(`Telegram: rotina ${loteId}: o resumo nao foi editado (${erroTg(r.erro)})`);
+  }
+
+  // E. "Ver mais": os cartoes da reserva em ordem, sem som, com o teclado do cartao (o mesmo nomeBot da T37b1); o msgId
+  // de cada um vai pro estado a cada mensagem (o porteiro que cai no meio nao repete nenhuma). Tudo enviado =
+  // maisMostrado e o resumo sem o botao. Falhou no meio = "Não consegui agora" e o botao fica: o toque seguinte manda so
+  // o que faltou. Ja mostrado = "Já mostrado.".
+  async function verMaisRotinaTg(e, u, loteId, ent) {
+    if (ent.maisMostrado === true) {
+      await responderToqueTg(u.toqueId, FRASES_TG.rotinaJaMostrado);
+      return;
+    }
+    const nomeBot = typeof tg?.usuarioBot === 'string' && tg.usuarioBot ? tg.usuarioBot : null;
+    for (const c of ent.reserva) {
+      if (idTgOk(c.msgId)) continue;
+      // o teclado dentro do chamarTg: cartao torto no estado (TypeError da lib) = falha do envio, nunca excecao
+      const r = await chamarTg('enviarTexto', () => tg.enviarTexto({ texto: c.texto, botoes: tecladoDoCartao(c, loteId, { nomeBot }), silencioso: true }));
+      if (!(r.ok === true && idTgOk(r.messageId))) {
+        log(`Telegram: rotina ${loteId}: ver mais parou no cartao ${c.n} (${erroTg(r.erro ?? 'sem message_id')}); o botao fica`);
+        await responderToqueTg(u.toqueId, FRASES_TG.rotinaNaoMostrou);
+        return;
+      }
+      c.msgId = r.messageId;
+      salvar(e);
+    }
+    ent.maisMostrado = true;
+    salvar(e);
+    await responderToqueTg(u.toqueId);
+    await editarResumoRotinaTg(loteId, ent);
+    log(`Telegram: rotina ${loteId}: ver mais no chat (${ent.reserva.length} cartao(oes))`);
+  }
+
   // A entrada do pedido pro toque valido: a que existe (toque numa mensagem que o porteiro nao conhecia, envio incerto =
   // entra em `outras`) ou uma nova com a mensagem tocada (envio incerto sem nenhuma conhecida: assim nao sai outra).
   // T26c1: primeiro a tela da aba mostrando aquele OK (canal.okNaMensagem) = a entrada daquele cod, sem ir pra `outras`
@@ -7374,6 +7747,7 @@ export function criarPorteiro({
           await passoOkTg(e, agora());
           salvar(e);
         }
+        if (rotinaLigada) await passoRotinaTg(e, agora()); // T37b1: o lote da rotina (salva a cada mensagem que sai)
         const inicial = e.tg.offset === null;
         // T7b2a: com o segurar ligado a leitura e curta (esperaS 0, a cada 2 s): o offset fica preso no toque
         const segurando = okLigado && !inicial && Number.isSafeInteger(e.okTg.segurar);

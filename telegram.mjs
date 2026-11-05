@@ -3,8 +3,9 @@
 // sessao do Claude. Sem dependencia: fetch do Node, POST JSON em https://api.telegram.org/bot<chave>/<metodo>.
 // Destino FIXO: nenhum metodo recebe chat; tudo que envia, edita ou apaga vai pro `chatId` da criacao (A1: o chat do
 // config.json). A chave nunca aparece em retorno, erro lancado ou texto de erro (nem a URL com ela): tudo passa pelo
-// limpar. Envio, edicao, apagar e resposta de toque saem numa fila propria, 1 por vez, com pelo menos intervaloMs
-// entre o inicio de uma e o da seguinte (limite do Telegram por chat); leitura, getMe, download e comandos ficam fora.
+// limpar. Envio, edicao, apagar, fixar/desafixar (T37a) e resposta de toque saem numa fila propria, 1 por vez, com
+// pelo menos intervaloMs entre o inicio de uma e o da seguinte (limite do Telegram por chat); leitura, getMe, download
+// e comandos ficam fora.
 // Contrato: PLANO-TELEGRAM.md ("Contratos", T1). Formato do texto: lib/formato-tg.mjs.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, extname } from 'node:path';
@@ -16,6 +17,8 @@ const PRAZO_VOZ_MS = 60000; // T17a: o sendVoice sobe o arquivo inteiro
 const MAX_LEGENDA = 1024; // caption do sendVoice: ate 1024
 const MAX_ARQUIVO = 20 * 1024 * 1024; // getFile so serve ate 20 MB
 const MAX_DADOS = 64; // callback_data: 1 a 64 bytes
+const MAX_URL = 300; // T37a: botao de link, so https:// e ate 300
+const RE_URL_BOTAO = /^https:\/\/\S+$/;
 const MAX_TOQUE = 200; // answerCallbackQuery: texto ate 200
 const MAX_ERRO = 200;
 // T7e2: erro de rede em que o pedido certamente NAO chegou no Telegram (nome nao resolveu, conexao recusada ou que nem
@@ -67,6 +70,8 @@ function idMensagem(v) {
 /**
  * Botoes do porteiro ([[{texto, dados, estilo, desativado}]]) -> {markup: {inline_keyboard}} | {erro}.
  * Campo ausente nao vai; disabled:{} so com desativado === true; dados com mais de 64 bytes UTF-8 = erro (sem API).
+ * T37a: botao de LINK {texto, url} (o toque abre o endereco, sem retorno): so https:// sem espaco, ate 300; fora disso
+ * = erro (sem API), como os dados acima de 64 bytes. dados e url no mesmo botao = erro.
  */
 function teclado(botoes) {
   if (!Array.isArray(botoes) || !botoes.every(Array.isArray)) return { erro: 'botoes: formato invalido' };
@@ -77,10 +82,16 @@ function teclado(botoes) {
       if (!b || typeof b !== 'object') return { erro: 'botoes: formato invalido' };
       const k = {};
       if (b.texto != null) k.text = String(b.texto);
+      if (b.dados != null && b.url != null) return { erro: 'botoes: botao com dados e url ao mesmo tempo' };
       if (b.dados != null) {
         const dados = String(b.dados);
         if (Buffer.byteLength(dados, 'utf8') > MAX_DADOS) return { erro: `botoes: dados com mais de ${MAX_DADOS} bytes` };
         k.callback_data = dados;
+      }
+      if (b.url != null) {
+        const url = String(b.url);
+        if (url.length > MAX_URL || !RE_URL_BOTAO.test(url)) return { erro: `botoes: url invalida (so https://, ate ${MAX_URL})` };
+        k.url = url;
       }
       if (b.estilo != null) k.style = String(b.estilo);
       if (b.desativado === true) k.disabled = {};
@@ -330,6 +341,38 @@ export function criarTelegram({ token, chatId, fetch = globalThis.fetch, dormir 
     });
   }
 
+  /**
+   * T37a: fixa uma mensagem no chat do dono (pinChatMessage). `silencioso` (padrao true) = disable_notification: so
+   * `false` avisa. Na fila. Nunca lanca: {ok:true} | {ok:false, erro, codigo, incerto?, esperarS?} (a chave nunca no erro).
+   */
+  async function fixar(messageId, { silencioso = true } = {}) {
+    const id = idMensagem(messageId);
+    if (!id) return { ok: false, erro: 'fixar: sem message_id' };
+    const corpo = { chat_id: chatId, message_id: id, disable_notification: silencioso !== false };
+    return naFila('fixar', async () => {
+      const r = await chamar('pinChatMessage', corpo);
+      return r.ok ? { ok: true } : publico(r);
+    });
+  }
+
+  /**
+   * T37a: desfixa uma mensagem do chat do dono (unpinChatMessage). "message to unpin not found" ou 400 de mensagem que
+   * nao esta fixada = {ok:true, jaSolta:true}. Na fila. Nunca lanca: {ok:true} | {ok:true, jaSolta:true} |
+   * {ok:false, erro, codigo, incerto?, esperarS?}.
+   */
+  async function desafixar(messageId) {
+    const id = idMensagem(messageId);
+    if (!id) return { ok: false, erro: 'desafixar: sem message_id' };
+    return naFila('desafixar', async () => {
+      const r = await chamar('unpinChatMessage', { chat_id: chatId, message_id: id });
+      if (r.ok) return { ok: true };
+      if (/message to unpin not found/i.test(r.descricao) || (r.codigo === 400 && /not pinned/i.test(r.descricao))) {
+        return { ok: true, jaSolta: true };
+      }
+      return publico(r);
+    });
+  }
+
   /** Resposta ao toque de botao (texto curto no topo da tela, ate 200). Nunca lanca: {ok:true} | {ok:false, erro, esperarS?}. */
   async function responderToque(callbackQueryId, texto) {
     const qid = callbackQueryId == null ? '' : String(callbackQueryId);
@@ -429,7 +472,7 @@ export function criarTelegram({ token, chatId, fetch = globalThis.fetch, dormir 
   }
 
   return {
-    enviar, enviarTexto, enviarVoz, editar, editarTexto, editarBotoes, apagar, responderToque, lerAtualizacoes, espiar, baixar,
-    definirComandos, quemSou, limpar,
+    enviar, enviarTexto, enviarVoz, editar, editarTexto, editarBotoes, apagar, fixar, desafixar, responderToque, lerAtualizacoes,
+    espiar, baixar, definirComandos, quemSou, limpar,
   };
 }
