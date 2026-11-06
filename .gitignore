@@ -2,3 +2,5 @@ node_modules/
 __pycache__/
 *.log
 .claude/worktrees/
+.claude/state/
+.claude/backup-*/

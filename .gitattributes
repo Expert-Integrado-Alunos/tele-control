@@ -12,3 +12,8 @@
 /docs        export-ignore
 # o ensaio do Mac (M6) roda o tools/mac/ensaio-mac.mjs: sem o tools/ ele quebraria na copia
 /.github     export-ignore
+
+# Contexto de agente e harness da Expert: internos, não vão para a cópia aberta (citam a org, que a guarda proíbe)
+AGENTS.md    export-ignore
+CLAUDE.md    export-ignore
+/.claude     export-ignore

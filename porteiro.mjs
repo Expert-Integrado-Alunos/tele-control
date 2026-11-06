@@ -395,6 +395,10 @@ const FRASES_TG = {
   okPeloWhatsapp: (hora) => `Respondido pelo WhatsApp às ${hora}.`,
   okExpirouSem: (hora) => `Expirou às ${hora} sem resposta.`,
   okNaoVale: 'Esse pedido não vale mais.',
+  // Permissao do app (06/11/2026): o hook que pediu cancelou. na-tela = respondido no computador (a mensagem some);
+  // sem-resposta = ninguem tocou no prazo e a aba seguiu sem a acao (sem "Tentar novamente": a aba ja seguiu)
+  okNaTela: (hora) => `Respondido na tela do computador às ${hora}.`,
+  okPermissaoSemResposta: (hora) => `Ninguém respondeu até ${hora}: a aba seguiu sem essa ação.`,
   // T7i (PLANO-T7.md "T7i"): "sim"/"não" digitado (ou texto em cima da mensagem do pedido) depois do toque: os botoes ja
   // sairam, entao a linha diz o toque e, no Sim, como desistir antes de a aba conferir
   okJaTocou: (quem, hora) => (quem === 'Sim'
@@ -6776,11 +6780,18 @@ export function criarPorteiro({
       const quando = t?.acao === 'nao' ? t.em : (v.conferidoEm ?? p.decididoEm);
       return { linha: FRASES_TG.okCancelado(horaBRT(quando)), fim: 'cancelado', some: true };
     }
+    // Permissao do app: o hook cancelou (na-tela some do chat; sem-resposta fica, sem "Tentar novamente")
+    if (p.status === 'cancelado' && p.tipo === 'permissao') {
+      if (p.motivoCancelamento === 'na-tela') return { linha: FRASES_TG.okNaTela(horaBRT(p.canceladoEm)), fim: 'na-tela', some: true };
+      if (p.motivoCancelamento === 'sem-resposta') return { linha: FRASES_TG.okPermissaoSemResposta(horaBRT(p.canceladoEm)), fim: 'sem-resposta', some: false };
+    }
     if (p.status === 'pendente') { // vencido (o aberto nem chega aqui)
-      // T28: os 2 vencidos que ficam (sem resposta e Sim nao conferido) = a linha em negrito e o "Tentar novamente"
-      if (t?.acao === 'sim') return { linha: FRASES_TG.okNaoConferiu(horaBRT(t.em), horaBRT(p.expiraEm)), fim: 'expirou', some: false, deNovo: true };
+      // T28: os 2 vencidos que ficam (sem resposta e Sim nao conferido) = a linha em negrito e o "Tentar novamente".
+      // Permissao do app: sem o botao (o hook que pediu ja desistiu; pedir de novo e a aba tentar a ferramenta de novo)
+      const deNovo = p.tipo !== 'permissao';
+      if (t?.acao === 'sim') return { linha: FRASES_TG.okNaoConferiu(horaBRT(t.em), horaBRT(p.expiraEm)), fim: 'expirou', some: false, deNovo };
       if (t?.acao === 'nao') return { linha: FRASES_TG.okCancelado(horaBRT(t.em)), fim: 'expirou', some: true };
-      return { linha: FRASES_TG.okExpirouSem(horaBRT(p.expiraEm)), fim: 'expirou', some: false, deNovo: true };
+      return { linha: FRASES_TG.okExpirouSem(horaBRT(p.expiraEm)), fim: 'expirou', some: false, deNovo };
     }
     return { linha: FRASES_TG.okNaoVale, fim: 'nao-vale', some: false };
   }
@@ -7409,6 +7420,28 @@ export function criarPorteiro({
   // confere o texto que o dono tocou); nada vai pro grupo nem pro chamado da aba.
   // T7i: o Sim ou o Nao anotado tira TODOS os botoes da mensagem (botoesDoOk, na hora; o passoOkTg tenta de novo se
   // falhar) e "Mais informações" tocado depois do toque (tela velha) = "Já anotei", sem reabrir os botoes.
+  // O recado do toque Sim/Nao pra aba do pedido (sessionId EXATA, sem a acao): o verificar dela confere.
+  function enfileirarRecadoOk(e, p, cod, r, u, agoraMs, lote) {
+    const viva = lote.vivas().find((s) => s.sessionId === p.sessionId);
+    const reg = viva?.registro || lib.acharRegistro(p.sessionId, C.sessionsDir);
+    enfileirar(e, {
+      sessionId: p.sessionId,
+      nome: reg?.name ?? null,
+      titulo: viva?.titulo ?? resolverTitulo(p.sessionId, reg) ?? (typeof p.titulo === 'string' ? p.titulo : null),
+      texto: QUEM_OK[r.acao],
+      audio: false,
+      hora: horaBRT(iso(agoraMs)),
+      providerMsgId: `tgok-u${u.updateId}`, // nunca tg-u: e o id que o porteiro procura no transcript da aba
+      messageId: null,
+      anexos: [],
+      canal: 'telegram',
+      nota: FRASES.notaPedidoOk(cod),
+      ok: cod,
+    });
+    lote.pedidos += 1;
+    log(`Telegram: toque ${r.acao} no pedido de OK ${cod} (update ${u.updateId}): recado pra aba ${p.sessionId}`);
+  }
+
   async function tratarToqueOk(e, u, bruto, lote) {
     const agoraMs = agora();
     if (e.trava) {
@@ -7428,7 +7461,7 @@ export function criarPorteiro({
       return;
     }
     const cod = p.codigo;
-    if (p.status === 'usado' || p.status === 'recusado') {
+    if (p.status === 'usado' || p.status === 'recusado' || p.status === 'cancelado') {
       await responderToqueTg(u.toqueId, FRASES_TG.okJaRespondido);
       return;
     }
@@ -7477,24 +7510,10 @@ export function criarPorteiro({
     m.toque = { acao: r.acao, em: iso(agoraMs), updateId: u.updateId }; // 1o toque, ou o Nao que troca o Sim
     recalcularSegurar(e, agoraMs);
     await responderToqueTg(u.toqueId, FRASES_TG.okAnotei(QUEM_OK[r.acao]));
-    const viva = lote.vivas().find((s) => s.sessionId === p.sessionId);
-    const reg = viva?.registro || lib.acharRegistro(p.sessionId, C.sessionsDir);
-    enfileirar(e, {
-      sessionId: p.sessionId,
-      nome: reg?.name ?? null,
-      titulo: viva?.titulo ?? resolverTitulo(p.sessionId, reg) ?? (typeof p.titulo === 'string' ? p.titulo : null),
-      texto: QUEM_OK[r.acao],
-      audio: false,
-      hora: horaBRT(iso(agoraMs)),
-      providerMsgId: `tgok-u${u.updateId}`, // nunca tg-u: e o id que o porteiro procura no transcript da aba
-      messageId: null,
-      anexos: [],
-      canal: 'telegram',
-      nota: FRASES.notaPedidoOk(cod),
-      ok: cod,
-    });
-    lote.pedidos += 1;
-    log(`Telegram: toque ${r.acao} no pedido de OK ${cod} (update ${u.updateId}): recado pra aba ${p.sessionId}`);
+    // Permissao do app: sem recado pra aba (ela esta parada no "Permitir" e o hook que pediu le o toque anotado e confere
+    // pelo verificar); so os botoes saem
+    if (p.tipo !== 'permissao') enfileirarRecadoOk(e, p, cod, r, u, agoraMs, lote);
+    else log(`Telegram: toque ${r.acao} no pedido de permissao ${cod} (update ${u.updateId}): o hook da aba ${p.sessionId} confere`);
     if (m.naAba === true) {
       // T26c1: o canal anota o toque e a tela da aba perde so o teclado (no lugar do botoesDoOk da tela); o botoesDoOk de
       // hoje so pras `outras` (o messageId e null), se houver

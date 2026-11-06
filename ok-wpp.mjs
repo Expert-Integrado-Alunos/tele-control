@@ -33,10 +33,16 @@
 // Estado: <estadoDir>/oks/<CODIGO>.json (tmp+rename). Log sem o texto da acao.
 // Seguranca: os arquivos <pid>.<sha>.key da pasta de registro sao SEGREDO; so `^\d+\.json$` e aberto (lib.acharRegistro).
 //
-// CLI: node ok-wpp.mjs pedir [--tipo <crm|mensagem|publicacao|disparo|pagamento|apagar|outro>] --acao "<texto>" [--destinatarios "A; B"]
+// Permissao do app (06/11/2026, caso real: a aba ficou 6 h parada num "Permitir uma vez" sem nada no Telegram): o tipo
+// `permissao` e o pedido que o hook do PermissionRequest (hooks/lib/permissao-telegram.js) faz quando uma ferramenta da aba
+// espera o "Permitir". So pelo Telegram (nunca no grupo do WhatsApp), validade curta (--validade-min, 1 a 30) e, quando o
+// dono responde na tela do computador antes, o hook cancela o pedido (cancelar, motivo na-tela) e a mensagem some do chat.
+//
+// CLI: node ok-wpp.mjs pedir [--tipo <crm|mensagem|publicacao|disparo|pagamento|apagar|permissao|outro>] --acao "<texto>" [--destinatarios "A; B"] [--validade-min N]
 //      node ok-wpp.mjs verificar <CODIGO>
+//      node ok-wpp.mjs cancelar <CODIGO> [--motivo <na-tela|sem-resposta>]
 //      node ok-wpp.mjs listar
-// Saida: 1 linha JSON. Exit: 0 ok/pedido, 2 pendente, 3 recusado, 1 invalido/erro.
+// Saida: 1 linha JSON. Exit: 0 ok/pedido/cancelado, 2 pendente, 3 recusado, 1 invalido/erro.
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -122,11 +128,17 @@ export const NAO_EMOJI = Object.freeze(['\u{1F44E}', '\u{274C}', '\u{270B}', '\u
 // Escopo (caso real): "quero poder fazer qualquer coisa ... todas as permissoes inteiras". Nao ha
 // mais lista "so no PC": o tipo so rotula a mensagem e escolhe a trava automatica que recebe o OK (publicacao ->
 // a trava de publicacao; disparo -> a trava de disparo). Cada acao continua precisando do SEU pedido e do SEU sim.
-const TIPOS = new Set(['crm', 'mensagem', 'publicacao', 'disparo', 'pagamento', 'apagar', 'outro']);
+const TIPOS = new Set(['crm', 'mensagem', 'publicacao', 'disparo', 'pagamento', 'apagar', 'permissao', 'outro']);
 // O ROTULO de cada tipo mora em lib/ok-tg.mjs desde a T7b1a (o mesmo rotulo no grupo e no Telegram); reexportado aqui,
 // o MESMO objeto (o porteiro importa daqui).
 export { ROTULO };
 const VALIDADE_MS = 30 * 60 * 1000;
+// Permissao do app: a validade vem de quem pede (o hook espera no maximo o timeout dele, 660 s), de 1 a 30 min
+const VALIDADE_MIN_MIN = 1;
+const VALIDADE_MIN_MAX = 30;
+// Os motivos do cancelar (so pedido de permissao): o dono respondeu na tela do computador, ou ninguem respondeu no prazo
+export const MOTIVOS_CANCELAR = Object.freeze(['na-tela', 'sem-resposta']);
+export const SO_TELEGRAM = 'pedido de permissao do app so pelo Telegram (OK pelo Telegram desligado)';
 const PODA_MARKER_MS = 24 * 60 * 60 * 1000;
 const LEITURA = 50;
 const MAX_ACAO = 1500;
@@ -292,7 +304,7 @@ export function montarMensagemPedido({ titulo, tipo, destinatarios, acao, hora }
 }
 
 export function codigoDeSaida(status) {
-  if (status === 'ok' || status === 'pedido') return 0;
+  if (status === 'ok' || status === 'pedido' || status === 'cancelado') return 0;
   if (status === 'pendente') return 2;
   if (status === 'recusado') return 3;
   return 1;
@@ -529,16 +541,18 @@ export function criarOkWpp({
 
   // ---------- pedir ----------
 
-  async function pedir({ tipo, acao, destinatarios } = {}) {
+  async function pedir({ tipo, acao, destinatarios, validadeMin } = {}) {
     const sessionId = env.CLAUDE_CODE_SESSION_ID;
-    const r = await pedirSemLog({ sessionId, tipo, acao, destinatarios });
+    const r = await pedirSemLog({ sessionId, tipo, acao, destinatarios, validadeMin });
     log(`pedir ${r.status}${r.codigo ? ` ${r.codigo}` : ''} sessao=${curto(sessionId)}${r.status === 'invalido' ? ` (${r.motivo})` : ''}`);
     return r;
   }
 
-  async function pedirSemLog({ sessionId, tipo, acao, destinatarios }) {
+  async function pedirSemLog({ sessionId, tipo, acao, destinatarios, validadeMin }) {
+    const ehPermissao = tipo === 'permissao'; // so pelo Telegram: nada le nem escreve no grupo
+    if (ehPermissao && !tgOk) return invalido(SO_TELEGRAM);
     if (!wpp && !tgOk) return invalido(SEM_CANAL); // A2b: antes de tudo
-    if (wpp && !numerosOk) return invalido(SEM_NUMEROS); // A2a: antes de ler ou escrever no grupo
+    if (wpp && !numerosOk && !ehPermissao) return invalido(SEM_NUMEROS); // A2a: antes de ler ou escrever no grupo
     if (!sessionId || typeof sessionId !== 'string') return invalido('sem sessao');
     const registro = lib.acharRegistro(sessionId, c.sessionsDir);
     if (!lib.ehInterativa(registro)) return invalido('so sessao interativa (aba do VS Code, terminal ou Claude Desktop com canal de recado)'); // F3.9, F4i
@@ -549,11 +563,20 @@ export function criarOkWpp({
     const texto = typeof acao === 'string' ? acao.trim() : '';
     const tam = Array.from(texto).length;
     if (tam < 1 || tam > MAX_ACAO) return invalido(`acao tem que ter de 1 a ${MAX_ACAO} caracteres`);
+    let validadeMs = VALIDADE_MS;
+    if (validadeMin != null && validadeMin !== '') {
+      const n = Number(validadeMin);
+      if (!ehPermissao) return invalido('--validade-min so no pedido de permissao');
+      if (!Number.isInteger(n) || n < VALIDADE_MIN_MIN || n > VALIDADE_MIN_MAX) {
+        return invalido(`--validade-min tem que ser inteiro de ${VALIDADE_MIN_MIN} a ${VALIDADE_MIN_MAX}`);
+      }
+      validadeMs = n * 60 * 1000;
+    }
 
     const codigo = sortearCodigo();
     if (!codigo) return invalido('nao consegui sortear um codigo livre');
     const criado = agora();
-    const expira = criado + VALIDADE_MS;
+    const expira = criado + validadeMs;
     const expiraEm = iso(expira);
     const hora = horaBRT(expiraEm);
     const titulo = tituloDaAba(sessionId, registro);
@@ -565,7 +588,7 @@ export function criarOkWpp({
 
     // A2b: sem WhatsApp nada vai pro grupo e o pedido nasce sem os ids dele (a mensagem sai pelo porteiro, no Telegram)
     let env_ = { providerMsgId: null, messageId: null };
-    if (wpp) {
+    if (wpp && !ehPermissao) {
       env_ = await wpp.enviarGrupo(msg);
       if (!env_ || env_.ok !== true) {
         const porque = env_?.bloqueio ? `envio barrado: ${env_.bloqueio}` : `envio falhou: ${env_?.erro || 'sem resposta'}`;
@@ -634,6 +657,7 @@ export function criarOkWpp({
     const p = lerJson(arq);
     if (!p || typeof p !== 'object') return invalido('pedido ilegivel');
     if (!sessionId || p.sessionId !== sessionId) return invalido('pedido de outra sessao');
+    if (p.status === 'cancelado') return invalido('ja cancelado'); // permissao do app: o hook que pediu desistiu
     if (p.status === 'usado') return invalido('ja usado');
     if (p.status === 'recusado') return invalido('ja recusado');
     if (p.status !== 'pendente') return invalido('pedido ilegivel');
@@ -1015,6 +1039,54 @@ export function criarOkWpp({
     return out;
   }
 
+  // ---------- cancelar (so o pedido de permissao do app) ----------
+
+  // O hook que pediu desiste: o dono respondeu na tela do computador antes (na-tela) ou ninguem respondeu no prazo
+  // (sem-resposta). So a MESMA sessao, so pedido de permissao e so pendente; sob a trava do arquivo do pedido (F3.4), como o
+  // consumir. Cancelado nunca libera nada: o porteiro fecha a mensagem (na-tela = some do chat).
+  async function cancelar(codigo, motivo) {
+    const cod = typeof codigo === 'string' ? codigo.trim().toUpperCase() : '';
+    const sessionId = env.CLAUDE_CODE_SESSION_ID;
+    let r;
+    try {
+      r = cancelarSemLog(cod, sessionId, motivo);
+    } catch (e) {
+      r = invalido(`erro: ${String(e?.message || e).slice(0, 120)}`);
+    }
+    log(`cancelar ${r.status} ${RE_CODIGO.test(cod) ? cod : '?'} sessao=${curto(sessionId)}${r.status === 'invalido' ? ` (${r.motivo})` : ` (${r.motivoCancelamento})`}`);
+    return r;
+  }
+
+  function cancelarSemLog(cod, sessionId, motivo) {
+    const porque = motivo == null || motivo === '' ? 'sem-resposta' : String(motivo);
+    if (!MOTIVOS_CANCELAR.includes(porque)) return invalido(`motivo desconhecido: use ${MOTIVOS_CANCELAR.join(', ')}`);
+    if (!RE_CODIGO.test(cod)) return invalido('codigo invalido');
+    const arq = arquivoDe(cod);
+    if (!fs.existsSync(arq)) return invalido('pedido nao encontrado');
+    const p = lerJson(arq);
+    if (!p || typeof p !== 'object') return invalido('pedido ilegivel');
+    if (!sessionId || p.sessionId !== sessionId) return invalido('pedido de outra sessao');
+    if (p.tipo !== 'permissao') return invalido('so pedido de permissao do app se cancela');
+    const agoraMs = agora();
+    let barrado = null;
+    try {
+      barrado = comTrava(arq, () => {
+        const atual = lerJson(arq);
+        if (atual?.status !== 'pendente') {
+          return atual?.status === 'usado' ? 'ja usado' : atual?.status === 'recusado' ? 'ja recusado'
+            : atual?.status === 'cancelado' ? 'ja cancelado' : 'pedido ilegivel';
+        }
+        gravarAtomico(arq, JSON.stringify({ ...atual, status: 'cancelado', canceladoEm: iso(agoraMs), motivoCancelamento: porque }, null, 2));
+        return null;
+      }, { esperaMs: esperaTravaMs });
+    } catch (e) {
+      if (e?.code !== 'TRAVA_OCUPADA') throw e;
+      return invalido('pedido ocupado por outra conferencia (rodar o cancelar de novo)');
+    }
+    if (barrado) return invalido(barrado);
+    return { status: 'cancelado', codigo: cod, motivoCancelamento: porque, hora: horaBRT(iso(agoraMs)) };
+  }
+
   // ---------- listar ----------
 
   function listar() {
@@ -1035,7 +1107,7 @@ export function criarOkWpp({
     return out;
   }
 
-  return { pedir, verificar, listar };
+  return { pedir, verificar, cancelar, listar };
 }
 
 // ---------- CLI ----------
@@ -1105,9 +1177,13 @@ async function main(args) {
   const ok = criarOkWpp(opts);
   let r;
   if (cmd === 'pedir') {
-    r = await ok.pedir({ tipo: opcao(args, 'tipo'), acao: opcao(args, 'acao'), destinatarios: opcao(args, 'destinatarios') });
+    r = await ok.pedir({
+      tipo: opcao(args, 'tipo'), acao: opcao(args, 'acao'), destinatarios: opcao(args, 'destinatarios'), validadeMin: opcao(args, 'validade-min'),
+    });
   } else if (cmd === 'verificar') {
     r = await ok.verificar(args[1]);
+  } else if (cmd === 'cancelar') {
+    r = await ok.cancelar(args[1], opcao(args, 'motivo'));
   } else if (cmd === 'listar') {
     console.log(JSON.stringify(ok.listar()));
     return 0;
@@ -1119,7 +1195,7 @@ async function main(args) {
 }
 
 function invalidoUso() {
-  return { status: 'invalido', motivo: 'uso: ok-wpp.mjs pedir [--tipo <crm|mensagem|publicacao|disparo|pagamento|apagar|outro>] --acao "<texto>" [--destinatarios "A; B"] | verificar <CODIGO> | listar' };
+  return { status: 'invalido', motivo: 'uso: ok-wpp.mjs pedir [--tipo <crm|mensagem|publicacao|disparo|pagamento|apagar|permissao|outro>] --acao "<texto>" [--destinatarios "A; B"] [--validade-min N] | verificar <CODIGO> | cancelar <CODIGO> [--motivo <na-tela|sem-resposta>] | listar' };
 }
 
 function ehPrincipal() {
