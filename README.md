@@ -1,4 +1,4 @@
-> **Publicado pela Expert Integrado — versão 2026-11-06-737d4b7.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
+> **Publicado pela Expert Integrado — versão 2026-11-09-af73856.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
 
 # Tele Control — as abas do Claude Code do seu PC, controladas pelo celular
 
@@ -16,10 +16,11 @@ escondida do Claude Code que descobre de qual conversa é o assunto e entrega l�
 - **O porteiro**: um processo sem IA que fica ligado no PC. Ele lê o seu bot do Telegram, manda os avisos e entrega
   cada resposta na conversa certa, uma por vez. Se ele cair, volta sozinho quando uma conversa do Claude Code abrir.
 - **Modo rua**: com ele ligado, os avisos vão para o celular. Liga sozinho quando o PC fica parado por 30 minutos (dá
-  pra mudar) ou quando você manda `/rua`; desliga quando você volta a mexer no PC ou manda `/voltei`. Se preferir, ele
-  liga só pelo comando.
+  pra mudar), pelo botão do `/rua` ou escrevendo "to na rua"; desliga quando você volta a mexer no PC, pelo mesmo botão
+  ou escrevendo "voltei". Se preferir, ele liga só pelo comando.
 - **Menu e botões no Telegram**: `/painel` mostra as conversas abertas (trabalhando e paradas), `/pendencias` lista o
-  que espera por você e `/central` reabre a central. Quando uma ação tem efeito fora do PC (mandar mensagem para
+  que espera por você, `/central` reabre a central e `/rua`, `/modo` e `/voz` mostram cada ajuste com o botão de
+  trocar. Quando uma ação tem efeito fora do PC (mandar mensagem para
   alguém, publicar, pagar, apagar), a central pede o seu OK numa mensagem com os botões **Sim** e **Não** e só age
   depois do Sim.
 - **A central**: recebe o que chega sem citar, acha a conversa dona do assunto e repassa. Também reabre uma conversa
@@ -87,7 +88,7 @@ com o que ficou ligado e como desligar. Rodar `/instalar` de novo é seguro: cad
   | campo | o que faz | valores |
   | --- | --- | --- |
   | `modoRua.automatico`, `modoRua.ociosoMin` | modo rua sozinho; depois de quantos minutos parado | `true` ou `false`; 5 a 240 (padrão 30) |
-  | `sessoes.raizes` | pastas onde o celular abre e reabre conversa | lista de pastas |
+  | `sessoes.raizes` | pastas onde o celular abre e reabre conversa; a ordem é a das janelas no painel (modo VS Code) | lista de pastas |
   | `central.modoPermissao` | central Cuidadosa ou Livre | `pedir` ou `sozinha` |
   | `transcricao.ligada` | transcrição dos áudios | `true` ou `false` |
   | `telegram.voz` | resposta em voz | `false` desliga |

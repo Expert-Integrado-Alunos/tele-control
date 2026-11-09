@@ -3,7 +3,8 @@
 // pros outros modos»): o menu do bot ganha "voz" e "modo" (depois do "voltei"); cada toque (ou o comando digitado)
 // alterna, vale na hora (sem religar), grava so a chave no config.json da pasta de estado (escrita atomica) e responde na
 // linha do sistema em cima do comando. Gravacao que falha = nada muda. Por que existe: antes o modo so mudava gravando o
-// config e religando, e a voz (T17) nao tinha como desligar.
+// config e religando, e a voz (T17) nao tinha como desligar. T39 (D3): o /voz e o /modo so abrem a mensagem de ajustes;
+// a troca e o toque no botao do estado ALVO (a:v1/a:v0, a:mm/a:ml) e a frase sai no balao do toque (ajudante `ajustar`).
 // Isolamento: pastas temporarias (prefixo "t29a-") via SESSOES_WPP_DIR, CLAUDE_SESSIONS_DIR, CLAUDE_PROJECTS_DIR e
 // SESSOES_WPP_LOG; nunca o ~/.claude real nem o config.json real. Nenhuma rede: o `tg`, o transcrever e a voz sao dubles.
 // Relogio e `dormir` falsos. Harness copiado do tests/porteiro-t23.test.mjs (sem importar de outro teste).
@@ -40,13 +41,12 @@ const VOZ_LIGADA = 'Resposta por voz ligada.';
 const MODO_LIMPO = 'Modo limpo: o que já foi resolvido sai do chat.';
 const MODO_MANTER = 'Modo manter tudo: nada sai do chat; o resolvido só perde os botões.';
 const FALHA = 'Não consegui gravar o ajuste; nada mudou.';
-const MENU_6 = [
+const MENU_5 = [ // T39: a ordem do dono (o voltei saiu do menu)
   { command: 'painel', description: 'Painel das abas' },
-  { command: 'rua', description: 'Tô na rua' },
-  { command: 'voltei', description: 'Voltei pro PC' },
-  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
-  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' },
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' },
+  { command: 'rua', description: 'Modo rua: ligar ou desligar' },
+  { command: 'modo', description: 'Modo do painel e das mensagens' },
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
 ];
 // config.json como o instalador grava (2 espacos e a quebra de linha no fim)
 const FORMATO = (cfg) => `${JSON.stringify(cfg, null, 2)}\n`;
@@ -336,9 +336,30 @@ async function comando(h, texto) {
   await h.p.esperarTelegram(15000);
   return u;
 }
-// A linha do sistema com `frase`, em cima do comando `u`
-const linha = (h, frase, u) => h.tg.de('enviar').some((c) => String(c.args[0].html).includes(frase) && c.args[0].responderA === mid(u));
 const linhas = (h) => JSON.stringify(h.tg.de('enviar').map((c) => [c.args[0].responderA, c.args[0].html]));
+
+// T39 (D3): o /voz e o /modo (tocados no menu ou digitados) abrem a mensagem de ajustes em cima do comando, com o estado
+// e o botao do estado ALVO; a troca e o toque nesse botao e a frase sai no balao do toque (responderToque).
+// O comando `/<qual>` ate a mensagem de ajustes (1 so, com botoes "a:") em cima dele: {u, id, pedido}
+async function abrirAjustes(h, qual) {
+  const u = await comando(h, `/${qual}`);
+  const env = h.tg.de('enviar').filter((c) => c.args[0].responderA === mid(u) && JSON.stringify(c.args[0].botoes ?? null).includes('"a:'));
+  assert.equal(env.length, 1, `/${qual}: 1 mensagem de ajustes em cima do comando: ${linhas(h)}`);
+  return { u, id: env[0].id, pedido: env[0].args[0] };
+}
+// O toque `dados` (a:v1/a:v0, a:mm/a:ml) na mensagem de ajustes `id` (zera as chamadas antes)
+async function tocarAjuste(h, dados, id) {
+  h.tg.zerar();
+  await lerTg(h, [toqueTg(h, dados, id)]);
+}
+// O /<qual> e o toque `dados` na mensagem de ajustes que ele abriu: {u, id, pedido}
+async function ajustar(h, qual, dados) {
+  const a = await abrirAjustes(h, qual);
+  await tocarAjuste(h, dados, a.id);
+  return a;
+}
+const baloes = (h) => h.tg.de('responderToque').map((c) => c.args[1]);
+const balao = (h, frase) => baloes(h).includes(frase);
 
 // Pedido de OK como o ok-wpp grava (oks/<COD>.json).
 const arqOk = (h, cod) => path.join(h.env.SESSOES_WPP_DIR, 'oks', `${cod}.json`);
@@ -385,31 +406,34 @@ const conferida = (u, id, t) => ({ status: 'usado', usadoEm: iso(t), verificadoP
 
 // ---------------------------------------------------------------------------------------------------------------
 
-test('T29a 1. /voz desliga: a fala em audio depois nao gera voz (o texto sai); /voz (digitado com o @ do bot) liga e gera de novo; a linha do sistema em cima do comando; o config.json ganha voz.ligada; nada vai pra aba', async () => {
+test('T29a 1. o toque em Desligar voz: a fala em audio depois nao gera voz (o texto sai); o /voz (digitado com o @ do bot) e o toque em Ligar voz ligam e geram de novo; a mensagem de ajustes em cima do comando e a frase no balao do toque; o config.json ganha voz.ligada; nada vai pra aba', async () => {
   const tr = dubleTranscrever();
   const fv = dubleFalar();
   const h = montar({ canalPrincipal: 'telegram', transcrever: tr.fn, falar: fv.fn });
   const r1 = await respostaDeAudio(h, tr);
   assert.equal(r1.vozes, 1, 'ligada (o padrao): a voz sai');
   const entregas = h.entregas.length;
-  const u1 = await comando(h, '/voz');
-  assert.ok(linha(h, VOZ_DESLIGADA, u1), linhas(h));
+  await ajustar(h, 'voz', 'a:v0');
+  assert.ok(balao(h, VOZ_DESLIGADA), JSON.stringify(baloes(h)));
   assert.deepEqual(cfg(h), { telegram: { ligado: true }, voz: { ligada: false } });
   const sinteses = fv.textos.length;
   const r2 = await respostaDeAudio(h, tr, 'S2', 'Ana', { primeira: false });
   assert.equal(r2.vozes, 0, 'desligada: nenhuma voz (o texto saiu)');
   assert.equal(fv.textos.length, sinteses, 'nem a sintese comeca');
-  const u2 = await comando(h, '/voz@Teste_ControleBot');
-  assert.ok(linha(h, VOZ_LIGADA, u2), linhas(h));
+  await ajustar(h, 'voz@Teste_ControleBot', 'a:v1');
+  assert.ok(balao(h, VOZ_LIGADA), JSON.stringify(baloes(h)));
   assert.deepEqual(cfg(h), { telegram: { ligado: true }, voz: { ligada: true } });
   const r3 = await respostaDeAudio(h, tr, 'S3', 'Bia', { primeira: false });
   assert.equal(r3.vozes, 1, 'ligada de novo: a voz sai');
-  assert.equal(h.entregas.length, entregas + 2, 'so as 2 falas em audio foram pras abas (os comandos nao)');
-  assert.ok(logs(h).some((l) => l.endsWith('Telegram: /voz: resposta por voz desligada (config.json gravado)')), logs(h).join('\n'));
-  assert.ok(logs(h).some((l) => l.endsWith('Telegram: /voz: resposta por voz ligada (config.json gravado)')), logs(h).join('\n'));
+  assert.equal(h.entregas.length, entregas + 2, 'so as 2 falas em audio foram pras abas (os comandos e os toques nao)');
+  assert.ok(logs(h).some((l) => l.endsWith('Telegram: voz pelo botão: desligada (config.json gravado)')), logs(h).join('\n'));
+  assert.ok(logs(h).some((l) => l.endsWith('Telegram: voz pelo botão: ligada (config.json gravado)')), logs(h).join('\n'));
 });
 
-test('T29a 2. a voz que ja estava na fila sai mesmo com o /voz desligando depois dela', async () => {
+// T39 (D3): a mensagem de ajustes ja na tela antes da resposta da aba, e o toque em Desligar voz com a voz ja na fila (o
+// /voz digitado depois da voz na fila drenaria a voz antes do toque). Como no /voz da T29a, a voz sai na mesma volta do
+// esperarTelegram que le o toque (o drenar vem antes da leitura).
+test('T29a 2. a voz que ja estava na fila sai mesmo com o toque em Desligar voz depois dela', async () => {
   const tr = dubleTranscrever();
   const fv = dubleFalar();
   const h = montar({ canalPrincipal: 'telegram', transcrever: tr.fn, falar: fv.fn });
@@ -421,26 +445,27 @@ test('T29a 2. a voz que ja estava na fila sai mesmo com o /voz desligando depois
   await audioTranscrito(h, tr, a, { ok: true, texto: 'Pode publicar.' });
   await h.p.esperarTelegram(15000);
   await bombear(h.cru);
-  abaResponde(h, 'S1', [h.entregas.at(-1)], { final: FINAL_T23, marcas: DECISAO });
+  const fala = h.entregas.at(-1);
+  const aj = await abrirAjustes(h, 'voz');
+  assert.equal(fv.textos.length, 0, 'a aba ainda nao respondeu');
+  abaResponde(h, 'S1', [fala], { final: FINAL_T23, marcas: DECISAO });
   await h.p.passoEventos();
   assert.equal(fv.textos.length, 1, 'a voz ja esta na fila');
-  h.tg.zerar();
-  const u = msgTg(h, '/voz');
-  await lerTg(h, [u]);
+  await tocarAjuste(h, 'a:v0', aj.id);
   for (let i = 0; i < 3; i++) await h.p.esperarTelegram(15000);
-  assert.ok(linha(h, VOZ_DESLIGADA, u), linhas(h));
+  assert.ok(balao(h, VOZ_DESLIGADA), JSON.stringify(baloes(h)));
   assert.equal(h.tg.de('enviarVoz').length, 1, 'a voz da fila saiu');
   assert.equal(h.tg.de('enviarVoz')[0].args[0].responderA, mid(a));
 });
 
-test('T29a 3. /modo vai pro manter: o toque numa opcao so tira os botoes (a tela, a voz e o audio dele ficam); /modo volta pro limpo: o toque seguinte apaga a tela, a voz e o audio; o config.json ganha telegram.resolvidas', async () => {
+test('T29a 3. o toque em Mensagens: usar manter tudo: o toque numa opcao so tira os botoes (a tela, a voz e o audio dele ficam); o toque em Mensagens: usar modo limpo volta: o toque seguinte apaga a tela, a voz e o audio; o config.json ganha telegram.resolvidas', async () => {
   const tr = dubleTranscrever();
   const fv = dubleFalar();
   const h = montar({ canalPrincipal: 'telegram', transcrever: tr.fn, falar: fv.fn });
   const r1 = await respostaDeAudio(h, tr);
   assert.ok(r1.voz);
-  const u1 = await comando(h, '/modo');
-  assert.ok(linha(h, MODO_MANTER, u1), linhas(h));
+  await ajustar(h, 'modo', 'a:mm');
+  assert.ok(balao(h, MODO_MANTER), JSON.stringify(baloes(h)));
   assert.deepEqual(cfg(h), { telegram: { ligado: true, resolvidas: 'manter' } });
   h.tg.zerar();
   await lerTg(h, [toqueTg(h, `o:${r1.chamadoId}:0`, r1.tela)]);
@@ -449,8 +474,8 @@ test('T29a 3. /modo vai pro manter: o toque numa opcao so tira os botoes (a tela
   assert.equal(h.entregas.at(-1).texto, 'A) Sim (recomendado)', 'o toque foi pra aba');
   assert.deepEqual(apagadas(h), [], 'no manter nada sai do chat');
   assert.ok(h.tg.de('editarBotoes').some((c) => c.args[0] === r1.tela && c.args[1] === null), 'a tela tocada so perde os botoes');
-  const u2 = await comando(h, '/modo');
-  assert.ok(linha(h, MODO_LIMPO, u2), linhas(h));
+  await ajustar(h, 'modo', 'a:ml');
+  assert.ok(balao(h, MODO_LIMPO), JSON.stringify(baloes(h)));
   assert.deepEqual(cfg(h), { telegram: { ligado: true, resolvidas: 'apagar' } });
   const r2 = await respostaDeAudio(h, tr, 'S2', 'Ana', { primeira: false });
   assert.ok(r2.voz);
@@ -463,7 +488,7 @@ test('T29a 3. /modo vai pro manter: o toque numa opcao so tira os botoes (a tela
   for (const id of [r1.tela, r1.voz, r1.x]) assert.ok(!apagadas(h).includes(id), `o que ficou no manter continua (${id})`);
 });
 
-test('T29a 4. /modo no manter: o pedido de OK conferido fecha editado (nenhum apagar); de volta no limpo, o seguinte sai do chat', async () => {
+test('T29a 4. o toque em Mensagens: usar manter tudo: o pedido de OK conferido fecha editado (nenhum apagar); de volta no limpo (o toque em Mensagens: usar modo limpo), o seguinte sai do chat', async () => {
   const h = montar({ config: CFG_OK });
   aba(h, 'S1', 'Faro');
   ligarTg(h);
@@ -471,8 +496,8 @@ test('T29a 4. /modo no manter: o pedido de OK conferido fecha editado (nenhum ap
   await h.p.esperarTelegram(15000);
   const id = okDe(h, p.codigo).messageId;
   assert.ok(Number.isSafeInteger(id), 'a mensagem do pedido saiu');
-  const u1 = await comando(h, '/modo');
-  assert.ok(linha(h, MODO_MANTER, u1), linhas(h));
+  await ajustar(h, 'modo', 'a:mm');
+  assert.ok(balao(h, MODO_MANTER), JSON.stringify(baloes(h)));
   const t1 = await tocar(h, p, 'sim', id);
   h.tg.zerar();
   mudarPedido(h, p.codigo, conferida(t1, id, h.t));
@@ -481,8 +506,8 @@ test('T29a 4. /modo no manter: o pedido de OK conferido fecha editado (nenhum ap
   assert.deepEqual(h.tg.de('editarTexto').map((c) => c.args[0]), [id], 'manter: o fecho editado');
   assert.equal(okDe(h, p.codigo).fim, 'conferido');
   assert.equal(okDe(h, p.codigo).apagada, undefined);
-  const u2 = await comando(h, '/modo');
-  assert.ok(linha(h, MODO_LIMPO, u2), linhas(h));
+  await ajustar(h, 'modo', 'a:ml');
+  assert.ok(balao(h, MODO_LIMPO), JSON.stringify(baloes(h)));
   const p2 = pedidoOk(h, { codigo: 'DEF567' });
   await h.p.esperarTelegram(15000);
   const id2 = okDe(h, 'DEF567').messageId;
@@ -495,64 +520,70 @@ test('T29a 4. /modo no manter: o pedido de OK conferido fecha editado (nenhum ap
   assert.equal(okDe(h, 'DEF567').apagada, true);
 });
 
-test('T29a 5. config.json cheio: cada toque le o arquivo, muda so a chave e grava (o resto igual, no formato do instalador); nenhum temporario sobra na pasta', async () => {
+test('T29a 5. config.json cheio: cada toque (Desligar voz, manter tudo, Ligar voz, modo limpo) le o arquivo, muda so a chave e grava (o resto igual, no formato do instalador); nenhum temporario sobra na pasta', async () => {
   const h = montar({ config: CHEIO });
   ligarTg(h);
   const esperado = structuredClone(CHEIO);
   const passos = [
-    ['/voz', VOZ_DESLIGADA, (c) => { c.voz.ligada = false; }],
-    ['/modo', MODO_MANTER, (c) => { c.telegram.resolvidas = 'manter'; }],
-    ['/voz', VOZ_LIGADA, (c) => { c.voz.ligada = true; }],
-    ['/modo', MODO_LIMPO, (c) => { c.telegram.resolvidas = 'apagar'; }],
+    ['voz', 'a:v0', VOZ_DESLIGADA, (c) => { c.voz.ligada = false; }],
+    ['modo', 'a:mm', MODO_MANTER, (c) => { c.telegram.resolvidas = 'manter'; }],
+    ['voz', 'a:v1', VOZ_LIGADA, (c) => { c.voz.ligada = true; }],
+    ['modo', 'a:ml', MODO_LIMPO, (c) => { c.telegram.resolvidas = 'apagar'; }],
   ];
-  for (const [cmd, frase, mudar] of passos) {
-    const u = await comando(h, cmd);
-    assert.ok(linha(h, frase, u), `${cmd}: ${linhas(h)}`);
+  for (const [qual, dados, frase, mudar] of passos) {
+    await ajustar(h, qual, dados);
+    assert.ok(balao(h, frase), `${dados}: ${JSON.stringify(baloes(h))}`);
     mudar(esperado);
-    assert.equal(cfgTexto(h), FORMATO(esperado), cmd);
-    assert.deepEqual(fs.readdirSync(h.env.SESSOES_WPP_DIR).filter((n) => n.startsWith('config.json')), ['config.json'], `${cmd}: nenhum temporario`);
+    assert.equal(cfgTexto(h), FORMATO(esperado), dados);
+    assert.deepEqual(fs.readdirSync(h.env.SESSOES_WPP_DIR).filter((n) => n.startsWith('config.json')), ['config.json'], `${dados}: nenhum temporario`);
   }
 });
 
-test('T29a 6. gravacao que falha (config.json ausente, ilegivel, nao objeto, bloco torto ou o temporario impedido) = a linha de falha, o arquivo igual e nada muda em memoria (consertado, o mesmo comando faz a 1a troca)', async () => {
+test('T29a 6. gravacao que falha (config.json ausente, ilegivel, nao objeto, bloco torto ou o temporario impedido) = o balao de falha no toque, o arquivo igual e nada muda em memoria (o /voz e o /modo seguintes mostram o estado de antes; consertado, o mesmo toque faz a 1a troca)', async () => {
   const BOM = FORMATO({ telegram: { ligado: true } });
   const tmpDe = (h) => `${h.arqCfg}.${process.pid}.tmp`;
+  // [qual, o toque, o nome no log, a linha do estado de antes na mensagem de ajustes, a frase da 1a troca]
+  const VOZ = ['voz', 'a:v0', 'voz', 'Resposta por voz: ligada.', VOZ_DESLIGADA];
+  const MODO = ['modo', 'a:mm', 'mensagens', 'Mensagens: modo limpo.', MODO_MANTER];
   const casos = [
-    ['ausente', null, null, ['/voz', '/modo']],
-    ['ilegivel', '{"telegram": {"ligado": true', null, ['/voz', '/modo']],
-    ['nao objeto', '[1, 2]\n', null, ['/voz', '/modo']],
-    ['voz torta', FORMATO({ telegram: { ligado: true }, voz: 'desligada' }), null, ['/voz']],
-    ['telegram torto', FORMATO({ telegram: ['ligado'] }), null, ['/modo']],
-    ['temporario impedido', BOM, (h) => fs.mkdirSync(tmpDe(h)), ['/voz', '/modo']],
+    ['ausente', null, null, [VOZ, MODO]],
+    ['ilegivel', '{"telegram": {"ligado": true', null, [VOZ, MODO]],
+    ['nao objeto', '[1, 2]\n', null, [VOZ, MODO]],
+    ['voz torta', FORMATO({ telegram: { ligado: true }, voz: 'desligada' }), null, [VOZ]],
+    ['telegram torto', FORMATO({ telegram: ['ligado'] }), null, [MODO]],
+    ['temporario impedido', BOM, (h) => fs.mkdirSync(tmpDe(h)), [VOZ, MODO]],
   ];
-  for (const [rotulo, conteudo, preparar, cmds] of casos) {
+  for (const [rotulo, conteudo, preparar, ajustes] of casos) {
     const h = montar({ config: conteudo });
     ligarTg(h);
     if (preparar) preparar(h);
     const antes = conteudo === null ? null : cfgTexto(h);
-    for (const cmd of cmds) {
-      const u = await comando(h, cmd);
-      assert.ok(linha(h, FALHA, u), `${rotulo} ${cmd}: ${linhas(h)}`);
-      assert.equal(fs.existsSync(h.arqCfg) ? cfgTexto(h) : null, antes, `${rotulo} ${cmd}: o arquivo igual`);
-      assert.ok(logs(h).some((l) => l.includes(`Telegram: ${cmd}: o config.json nao foi gravado (`)), `${rotulo}: ${logs(h).join('\n')}`);
+    for (const [qual, dados, nomeLog] of ajustes) {
+      await ajustar(h, qual, dados);
+      assert.deepEqual(baloes(h), [FALHA], `${rotulo} ${dados}`);
+      assert.equal(fs.existsSync(h.arqCfg) ? cfgTexto(h) : null, antes, `${rotulo} ${dados}: o arquivo igual`);
+      assert.ok(logs(h).some((l) => l.includes(`Telegram: ${nomeLog}: o config.json nao foi gravado (`)), `${rotulo}: ${logs(h).join('\n')}`);
     }
     if (fs.existsSync(tmpDe(h))) fs.rmdirSync(tmpDe(h));
     fs.writeFileSync(h.arqCfg, BOM);
-    for (const cmd of cmds) {
-      const u = await comando(h, cmd);
-      assert.ok(linha(h, cmd === '/voz' ? VOZ_DESLIGADA : MODO_MANTER, u), `${rotulo} ${cmd} consertado: ${linhas(h)}`);
+    for (const [qual, dados, , estadoAntes, frase] of ajustes) {
+      const a = await ajustar(h, qual, dados);
+      assert.ok(String(a.pedido.html).includes(estadoAntes), `${rotulo} /${qual}: a memoria igual: ${a.pedido.html}`);
+      assert.ok(balao(h, frase), `${rotulo} ${dados} consertado: ${JSON.stringify(baloes(h))}`);
     }
   }
 });
 
-test('T29a 7. subida com voz.ligada false (vozTg false) = desligada: a fala em audio nao gera voz e o /voz liga; rodar (fonte): o vozTg sai do vozLigadaDoConfig do mesmo config, junto do telegram.voz da T17b', async () => {
+test('T29a 7. subida com voz.ligada false (vozTg false) = desligada: a fala em audio nao gera voz, o /voz mostra desligada com o Ligar voz e o toque liga; rodar (fonte): o vozTg sai do vozLigadaDoConfig do mesmo config, junto do telegram.voz da T17b', async () => {
   const tr = dubleTranscrever();
   const fv = dubleFalar();
   const h = montar({ config: { telegram: { ligado: true }, voz: { ligada: false } }, vozTg: false, canalPrincipal: 'telegram', transcrever: tr.fn, falar: fv.fn });
   const r1 = await respostaDeAudio(h, tr);
   assert.equal(r1.vozes, 0, 'desligada desde a subida');
-  const u = await comando(h, '/voz');
-  assert.ok(linha(h, VOZ_LIGADA, u), linhas(h));
+  const a = await ajustar(h, 'voz', 'a:v1');
+  assert.ok(String(a.pedido.html).includes('Resposta por voz: desligada.'), a.pedido.html);
+  assert.deepEqual(a.pedido.botoes, [[{ texto: 'Ligar voz', dados: 'a:v1' }]]);
+  assert.ok(balao(h, VOZ_LIGADA), JSON.stringify(baloes(h)));
   assert.deepEqual(cfg(h), { telegram: { ligado: true }, voz: { ligada: true } });
 
   const fonte = fs.readFileSync(path.join(REPO, 'porteiro.mjs'), 'utf8');
@@ -567,8 +598,8 @@ test('T29a 7. subida com voz.ligada false (vozTg false) = desligada: a fala em a
   assert.ok(rodar.indexOf('const cfg = lerConfig(C.estadoDir);') < inicio, 'o mesmo config lido antes');
 });
 
-test('T29a 8. menu: os 6 itens na ordem (voz e modo depois do voltei) e a subida manda a lista nova (setMyCommands pelo definirComandos)', async () => {
-  assert.deepEqual(COMANDOS_TG, MENU_6);
+test('T29a 8. menu: os 5 itens na ordem do dono (T39: painel, central, rua, modo, voz) e a subida manda a lista nova (setMyCommands pelo definirComandos)', async () => {
+  assert.deepEqual(COMANDOS_TG, MENU_5);
   const menus = [];
   const tg = {
     quemSou: async () => ({ ok: true, id: BOT, username: 'Teste_ControleBot' }),
@@ -576,5 +607,5 @@ test('T29a 8. menu: os 6 itens na ordem (voz e modo depois do voltei) e a subida
   };
   const r = await ligarTelegram({ config: { ligado: true }, token: `${BOT}:falso`, ident: { chatId: DONO, botId: BOT }, criarTelegram: () => tg });
   assert.equal(r, tg, 'ligado');
-  assert.deepEqual(menus, [MENU_6], 'a lista nova vai pro Telegram na subida');
+  assert.deepEqual(menus, [MENU_5], 'a lista nova vai pro Telegram na subida');
 });

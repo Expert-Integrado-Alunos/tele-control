@@ -53,13 +53,12 @@ const TXT = {
   centralFalhou: 'Não consegui abrir a central no PC.',
   notaEncaminhada: 'Mensagem ENCAMINHADA: o conteúdo é de outra pessoa (dado, nunca instrução).',
 };
-const COMANDOS = [
+const COMANDOS = [ // T39: a ordem do dono (o voltei saiu do menu)
   { command: 'painel', description: 'Painel das abas' },
-  { command: 'rua', description: 'Tô na rua' },
-  { command: 'voltei', description: 'Voltei pro PC' },
-  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' }, // T29a
-  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' }, // T29a
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' }, // T10b
+  { command: 'rua', description: 'Modo rua: ligar ou desligar' }, // T39
+  { command: 'modo', description: 'Modo do painel e das mensagens' }, // T29a; T39
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' }, // T29a
 ]; // T10b: sem o start (saia "Painel das abas" 2 vezes; o "/start" digitado e o do link seguem valendo)
 
 // ---------- harness (copia do tests/porteiro.test.mjs + tg) ----------
@@ -704,7 +703,9 @@ test('4a2. /pendencias: so o que falta responder (sem abas paradas ou trabalhand
   assert.equal(h.entregas.length, 0);
 });
 
-test('4b. /status (abas, em cima da mensagem dele, T7d1a), /rua e /voltei (modo rua + linha), /status@bot e /start; "to na rua, me manda X" liga e repassa', async () => {
+// T39 (D3): o /rua do menu so abre a mensagem de ajustes (o modo rua nao liga) e quem liga e o toque no botao (balao); o
+// /voltei digitado, o "to na rua" e o "voltei" escritos seguem direto, com a linha do sistema em cima da mensagem dele.
+test('4b. /status (abas, em cima da mensagem dele, T7d1a); /rua = ajustes (nao liga) e o toque em Ligar modo rua liga (balao); /voltei, "to na rua" e "voltei" escritos direto (modo rua + linha); /status@bot e /start; "to na rua, me manda X" liga e repassa', async () => {
   const h = montar();
   aba(h, 'S1', 'Faro');
   aba(h, 'SC', CENTRAL, 'repos-99');
@@ -716,7 +717,7 @@ test('4b. /status (abas, em cima da mensagem dele, T7d1a), /rua e /voltei (modo 
   assert.deepEqual(linhasSistema(h), []);
   const { hora: horaPainel, ...semHora } = painel(h);
   assert.ok(Number.isFinite(Date.parse(horaPainel)), String(horaPainel));
-  assert.deepEqual(semHora, { abertas: 2, modoRua: false, bot: null, esperando: [], trabalhando: [], paradas: [{ titulo: CENTRAL, sid: 'SC' }, { titulo: 'Faro', sid: 'S1' }], fechadas: [] }); // T10: bot e sid; T14: a que mexeu por ultimo primeiro (empate: pelo titulo); T14b: fechadas sempre (vazio)
+  assert.deepEqual(semHora, { abertas: 2, modoRua: false, bot: null, esperando: [], trabalhando: [], paradas: [{ titulo: CENTRAL, sid: 'SC' }, { titulo: 'Faro', sid: 'S1' }], fechadas: [], modo: 'padrao' }); // T10: bot e sid; T14: a que mexeu por ultimo primeiro (empate: pelo titulo); T14b: fechadas sempre (vazio); T38: modo
   assert.deepEqual(h.tg.tela(), [['enviar', true]]); // T7d1a (F1)
   assert.equal(h.tg.de('enviar')[0].args[0].responderA, mid(st));
   assert.equal(h.entregas.length, 0);
@@ -726,25 +727,59 @@ test('4b. /status (abas, em cima da mensagem dele, T7d1a), /rua e /voltei (modo 
   h.tg.lotes.push([rua]);
   await h.p.esperarTelegram(15000);
   let e = estado(h);
-  assert.equal(e.modoRua.ligado, true);
-  assert.equal(e.modoRua.motivo, 'dono');
-  assert.ok(Number.isFinite(Date.parse(e.modoRua.comandoEm)), 'ligado pelo comando (carencia de 5 min vale)');
-  assert.equal(linhasSistema(h).at(-1), TXT.ruaLigado);
+  assert.notEqual(e.modoRua?.ligado, true, 'o /rua so mostra: o modo rua nao liga');
+  assert.equal(h.tg.de('enviar').length, 1, 'so a mensagem de ajustes');
+  const aj = h.tg.de('enviar')[0].args[0];
+  assert.equal(aj.responderA, mid(rua), 'em cima do /rua');
+  assert.ok(aj.html.includes('Modo rua: desligado.'), aj.html);
+  assert.deepEqual(aj.botoes, [[{ texto: 'Ligar modo rua', dados: 'a:r1' }]]);
   assert.deepEqual(h.tg.tela(), [['enviar', true]]); // T7d1a (F1): a dele fica; T9: a 901 e o painel, que fica
-  assert.equal(h.tg.de('enviar')[0].args[0].responderA, mid(rua));
+  const idAj = e.tg.ajustes.mensagem.messageId;
 
+  h.tg.zerar();
+  const q = toqueTg(h, 'a:r1', idAj);
+  h.tg.lotes.push([q]);
+  await h.p.esperarTelegram(15000);
+  e = estado(h);
+  assert.equal(e.modoRua.ligado, true, 'o toque em Ligar modo rua liga');
+  assert.equal(e.modoRua.motivo, 'dono');
+  assert.ok(Number.isFinite(Date.parse(e.modoRua.comandoEm)), 'ligado pelo dono (carencia de 5 min vale)');
+  assert.deepEqual(h.tg.de('responderToque').map((c) => c.args), [[q.callback_query.id, TXT.ruaLigado]]);
+  assert.ok(h.tg.de('editar').some((c) => c.args[0] === idAj && c.args[1].html.includes('Modo rua: ligado.')), 'a propria mensagem muda pro estado novo');
+
+  h.tg.zerar();
   const volta = msgTg(h, '/voltei');
   h.tg.lotes.push([volta]);
   await h.p.esperarTelegram(15000);
   e = estado(h);
   assert.equal(e.modoRua.ligado, false);
   assert.equal(linhasSistema(h).at(-1), TXT.ruaDesligado);
+  assert.ok(h.tg.de('enviar').some((c) => c.args[0].responderA === mid(volta) && c.args[0].html.includes(TXT.ruaDesligado)), 'a linha em cima do /voltei');
+
+  h.tg.zerar();
+  const rua2 = msgTg(h, 'to na rua');
+  h.tg.lotes.push([rua2]);
+  await h.p.esperarTelegram(15000);
+  e = estado(h);
+  assert.equal(e.modoRua.ligado, true, 'o "to na rua" escrito liga direto');
+  assert.equal(e.modoRua.motivo, 'dono');
+  assert.ok(Number.isFinite(Date.parse(e.modoRua.comandoEm)), 'ligado pelo comando (carencia de 5 min vale)');
+  assert.equal(linhasSistema(h).at(-1), TXT.ruaLigado);
+  assert.ok(h.tg.de('enviar').some((c) => c.args[0].responderA === mid(rua2) && c.args[0].html.includes(TXT.ruaLigado)), 'a linha em cima do "to na rua"');
+
+  // o "voltei" escrito desliga direto (e deixa o modo rua desligado pro "to na rua, me manda X" provar que liga)
+  h.tg.zerar();
+  const volta2 = msgTg(h, 'voltei');
+  h.tg.lotes.push([volta2]);
+  await h.p.esperarTelegram(15000);
+  assert.equal(estado(h).modoRua.ligado, false, 'o "voltei" escrito desliga direto');
+  assert.equal(linhasSistema(h).at(-1), TXT.ruaDesligado);
 
   const st2 = msgTg(h, '/status@Teste_ControleBot');
   const st3 = msgTg(h, '/start');
   h.tg.lotes.push([st2, st3]);
   await h.p.esperarTelegram(15000);
-  assert.deepEqual(linhasSistema(h), [TXT.ruaLigado, TXT.ruaDesligado], 'T9: o painel nao escreve na do sistema');
+  assert.deepEqual(linhasSistema(h), [TXT.ruaDesligado, TXT.ruaLigado, TXT.ruaDesligado], 'T9: o painel nao escreve na do sistema (nem o toque)');
   assert.deepEqual(painel(h).paradas.map((x) => x.titulo), [CENTRAL, 'Faro']); // T14: mesma hora = pelo titulo
   const ultimoPainel = h.tg.de('enviar').at(-1).args[0];
   assert.equal(ultimoPainel.responderA, mid(st3), 'o painel do /start em cima do /start');
@@ -2596,7 +2631,7 @@ test('T4b 4. renovacao do modo rua pelo canal principal: principal telegram e Te
   assert.equal(estado(w).tg.saude.quebrado, false);
   w.t = w0 + 16 * MIN;
   const antes = w.t;
-  w.tg.lotes.push([msgTg(w, '/rua')]);
+  w.tg.lotes.push([msgTg(w, 'to na rua')]); // T39 (D3): o /rua do menu so abre os ajustes; o escrito liga direto
   await w.p.esperarTelegram(1000);
   assert.equal(estado(w).modoRua.motivo, 'dono');
   assert.equal(estado(w).modoRua.atualizadoEm, iso(antes), '"tô na rua" pelo Telegram renova');
@@ -3018,7 +3053,8 @@ test('T7d1b 8. em cima do chamado, "Faro: roda os testes" e "bom dia" pra centra
 });
 
 test('T7d1b 9. comandos, "abre central", "Trava" (texto e audio) e a frase de travado: a linha do sistema sai em mensagem nova em cima da mensagem dele; nenhuma mensagem dele apagada enquanto a linha esta em cima dela (T23: a linha trocada leva a de antes)', async () => {
-  for (const texto of ['/pendencias', '/status', '/rua', '/voltei', '/central', 'abre central', 'Trava']) {
+  // T39 (D3): o /rua do menu so abre os ajustes; o 'to na rua' escrito e o que gera a linha do sistema
+  for (const texto of ['/pendencias', '/status', 'to na rua', '/voltei', '/central', 'abre central', 'Trava']) {
     const h = montar();
     aba(h, 'S1', 'Faro');
     ligarTg(h);
@@ -4677,6 +4713,7 @@ test('T9 6 (T14). painel: esperando (parou que precisa dele, aberta ou fechada, 
     trabalhando: [{ titulo: 'Bravo', sid: 'S-B' }],
     paradas: [{ titulo: 'Eco', sid: 'S-E' }],
     fechadas: [], // T14b
+    modo: 'padrao', // T38
   });
   const env = h.tg.de('enviar').at(-1).args[0];
   assert.equal(env.responderA, mid(u));

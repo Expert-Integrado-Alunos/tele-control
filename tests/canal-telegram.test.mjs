@@ -913,6 +913,7 @@ describe('8. ensaio, podar, completarTg e log', () => {
       sistema: { linhas: [], versaoId: 0, descer: false, notificar: false, citar: null, mensagem: null, apagar: [] }, // T7d1a: citar
       painel: { dados: null, versaoId: 0, descer: false, citar: null, mensagem: null, apagar: [] }, // T9
       situacao: { aba: null, dados: null, chamadoId: null, completo: false, versaoId: 0, descer: false, citar: null, mensagem: null, apagar: [] }, // T10; T10c: chamadoId e completo
+      ajustes: { dados: null, versaoId: 0, descer: false, citar: null, mensagem: null, apagar: [] }, // T39
       recebidas: {},
       audios: {},
       midiaPendente: [],

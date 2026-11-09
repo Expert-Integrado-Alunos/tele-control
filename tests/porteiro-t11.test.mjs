@@ -673,7 +673,7 @@ test('T14 2. Paradas = sem pergunta e mexeu nas ultimas 48 h: fechada pela hora 
   const fe = () => painel(h).fechadas.map((x) => x.sid).sort();
   assert.deepEqual(fe(), [U(34), U(35), U(37)].sort(), 'T14b: o que passou de 48 h (aberta ou fechada) vai pras Fechadas');
   assert.ok(painel(h).fechadas.every((x) => x.grupo === null), 'fora dos grupos do VS Code = Sem grupo');
-  assert.ok(enviado(h).html.includes('<summary>⚪ Fechadas (3)</summary><h4><b>Sem grupo</b></h4>'), enviado(h).html);
+  assert.ok(enviado(h).html.includes('<summary>⚪ Paradas há mais de 2 dias (3)</summary><h4><b>Sem grupo</b></h4>'), enviado(h).html);
   assert.equal(painel(h).abertas, 5);
   assert.ok(enviado(h).html.startsWith('<h3>Abas abertas: 5</h3>'));
   // 2 h depois: as de 47 h saem
@@ -752,7 +752,7 @@ test('T14b 1. Fechadas: as paradas ha mais de 48 h (fechadas da lista e abertas)
   ]);
   for (const x of d.fechadas) assert.equal(Object.hasOwn(x, 'fechada'), false, 'sem a marca');
   const html = enviado(h).html;
-  assert.ok(html.includes(`<details><summary>⚪ Fechadas (10)</summary><h4><b>Prioridade</b></h4><p><b><a href="https://t.me/${BOT_NOME}?start=a_${U(11)}">Site Novo</a></b></p>`), html);
+  assert.ok(html.includes(`<details><summary>⚪ Paradas há mais de 2 dias (10)</summary><h4><b>Prioridade</b></h4><p><b><a href="https://t.me/${BOT_NOME}?start=a_${U(11)}">Site Novo</a></b></p>`), html);
   assert.ok(html.includes(`<h4><b>Sem grupo</b></h4><p><b><a href="https://t.me/${BOT_NOME}?start=a_${U(5)}">Aniversário</a></b></p>`), html);
   assert.ok(!html.includes('(fechada)</p>') && !html.includes('🟢 Paradas'), html);
   assert.equal(h.entregas.length, 0);
@@ -771,7 +771,7 @@ test('T14b 2. o toque no nome de uma Fechada: a situacao sem o Concluir; ela sai
   assert.ok(semConcluir(sit), JSON.stringify(sit.botoes));
   const ed = editadas(h, idPainel);
   assert.equal(ed.length, 1);
-  assert.ok(!comLink(ed[0].html, U(3)) && ed[0].html.includes('⚪ Fechadas (9)'), ed[0].html);
+  assert.ok(!comLink(ed[0].html, U(3)) && ed[0].html.includes('⚪ Paradas há mais de 2 dias (9)'), ed[0].html);
   assert.equal(estado(h).painelTg.tocadas[U(3)], 'fechadas');
   // nada mudou: fica fora; o painel novo traz de volta
   h.tg.zerar();

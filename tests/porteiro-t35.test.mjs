@@ -296,7 +296,7 @@ test('T35 2. com o foco: a posta entra no grupo em que a regra a poe, a tirada s
   const pl = estado(h).painelLista;
   assert.ok(Number.isFinite(Date.parse(pl.em)));
   assert.deepEqual(pl.dentro.map((x) => [x.sid, x.titulo, x.lugar]), [
-    [U(5), 'Pede OK', 'Esperando você'], [U(3), 'Douglas', 'Paradas'], [U(2), 'Imersão', 'Paradas'], [U(4), 'Site', 'Fechadas'],
+    [U(5), 'Pede OK', 'Esperando você'], [U(3), 'Douglas', 'Paradas'], [U(2), 'Imersão', 'Paradas'], [U(4), 'Site', 'Paradas há mais de 2 dias'],
   ], 'o titulo do pedido de OK de aba fechada vem do transcript');
   assert.deepEqual(pl.fora, [
     { sid: U(1), titulo: 'Mac dia 1', aberta: true, ms: iso(tCena - 120 * MIN) },

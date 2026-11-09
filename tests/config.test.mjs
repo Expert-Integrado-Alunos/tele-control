@@ -103,3 +103,17 @@ test('T29a. vozLigadaDoConfig: so voz.ligada === false desliga; ausente, outro v
     assert.deepEqual(vozLigadaDoConfig(cfg), { ligada: true }, JSON.stringify(cfg) ?? String(cfg));
   }
 });
+
+test('T38. modoPainelDoConfig: so painel.modo === "vscode" liga o espelho; ausente, outro texto, bloco torto ou cfg torto = padrao', async () => {
+  const { modoPainelDoConfig } = await modulo();
+  assert.deepEqual(modoPainelDoConfig({ painel: { modo: 'vscode' } }), { modo: 'vscode' });
+  assert.deepEqual(modoPainelDoConfig({ painel: { foco: '🟢 Ativos', desde: '2026-11-07T22:00:00', modo: 'vscode' } }), { modo: 'vscode' });
+  for (const cfg of [
+    {}, null, undefined, [], 'x', 7, { painel: {} }, { painel: { modo: 'padrao' } }, { painel: { modo: 'VSCode' } },
+    { painel: { modo: ' vscode' } }, { painel: { modo: 'vscode ' } }, { painel: { modo: ['vscode'] } }, { painel: { modo: true } },
+    { painel: { modo: null } }, { painel: 'vscode' }, { painel: ['vscode'] }, { painel: null }, { modo: 'vscode' },
+    { telegram: { painel: { modo: 'vscode' } } },
+  ]) {
+    assert.deepEqual(modoPainelDoConfig(cfg), { modo: 'padrao' }, JSON.stringify(cfg) ?? String(cfg));
+  }
+});

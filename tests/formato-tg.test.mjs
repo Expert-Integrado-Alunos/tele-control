@@ -1182,7 +1182,7 @@ describe('T14b 1. montarPainel: o grupo Fechadas no fim, pelos grupos do VS Code
     const { html } = montarPainel(D);
     assert.ok(html.endsWith([
       '<details><summary>🟢 Paradas (1)</summary><p><b>Live 01/10</b></p></details>',
-      '<details><summary>⚪ Fechadas (4)</summary>',
+      '<details><summary>⚪ Paradas há mais de 2 dias (4)</summary>',
       '<h4><b>Prioridade</b></h4>',
       `<p>${ln(5, 'Relatório Mensal')}</p>`,
       `<p>${ln(6, 'Site Novo')}</p>`,
@@ -1200,7 +1200,7 @@ describe('T14b 1. montarPainel: o grupo Fechadas no fim, pelos grupos do VS Code
     assert.ok(classico.endsWith([
       '<blockquote expandable><b>🟢 Paradas (1)</b>',
       '<b>Live 01/10</b></blockquote>',
-      '<blockquote expandable><b>⚪ Fechadas (4)</b>',
+      '<blockquote expandable><b>⚪ Paradas há mais de 2 dias (4)</b>',
       '<b><u>Prioridade</u></b>',
       ln(5, 'Relatório Mensal'),
       ln(6, 'Site Novo'),
@@ -1215,17 +1215,17 @@ describe('T14b 1. montarPainel: o grupo Fechadas no fim, pelos grupos do VS Code
 
   test('nome do grupo de fora: escapado e cortado; vazio ou nao texto = "Sem grupo"; item torto sai; sem fechadas = sem o grupo; a linha da lista ilegivel depois dele', () => {
     const g = montarPainel({ ...PAINEL, fechadas: [{ titulo: 'X', sid: SID_T10(1), grupo: '<i>Z</i>' }, { titulo: 'Y', sid: SID_T10(2), grupo: '  ' }, { titulo: 'W', grupo: 7 }, null, 3, 'texto', { sid: SID_T10(3) }] }).html;
-    assert.ok(g.includes('<summary>⚪ Fechadas (3)</summary><h4><b>&lt;i&gt;Z&lt;/i&gt;</b></h4><p><b>X</b></p><h4><b>Sem grupo</b></h4><p><b>Y</b></p><p><b>W</b></p></details>'), g);
+    assert.ok(g.includes('<summary>⚪ Paradas há mais de 2 dias (3)</summary><h4><b>&lt;i&gt;Z&lt;/i&gt;</b></h4><p><b>X</b></p><h4><b>Sem grupo</b></h4><p><b>Y</b></p><p><b>W</b></p></details>'), g);
     for (const fl of [undefined, null, 'x', []]) {
       const r = montarPainel({ ...PAINEL, fechadas: fl });
       assert.ok(!r.html.includes('Fechadas') && !r.classico.includes('Fechadas'), String(fl));
     }
     const e = montarPainel({ ...D, listaErro: true });
     assert.ok(e.html.endsWith('</details><p>Não consegui ler a lista do VS Code agora.</p>'), e.html.slice(-120));
-    assert.ok(e.html.includes('⚪ Fechadas (4)'));
+    assert.ok(e.html.includes('⚪ Paradas há mais de 2 dias (4)'));
     // so fechadas (nada esperando, sem paradas): a frase e o grupo
     const so = montarPainel({ hora: AGORA, modoRua: false, abertas: 0, esperando: [], trabalhando: [], paradas: [], fechadas: FECHADAS_T14B.slice(2, 3) });
-    assert.ok(so.html.endsWith('<p>Nada esperando resposta sua.</p><details><summary>⚪ Fechadas (1)</summary><h4><b>Ativos</b></h4><p><b>Loja Online</b></p></details>'), so.html);
+    assert.ok(so.html.endsWith('<p>Nada esperando resposta sua.</p><details><summary>⚪ Paradas há mais de 2 dias (1)</summary><h4><b>Ativos</b></h4><p><b>Loja Online</b></p></details>'), so.html);
   });
 });
 
@@ -1236,7 +1236,7 @@ describe('T14b 2. montarPainel: muitas fechadas', () => {
     const esperando = Array.from({ length: 6 }, (_, i) => ({ titulo: `Aba ${i}`, hora: AGORA, texto: longo(i) }));
     const paradas = Array.from({ length: 40 }, (_, i) => ({ titulo: `Parada ${i}`, sid: SID_T10(i) }));
     const { html, classico } = montarPainel({ ...PAINEL, esperando, paradas, fechadas });
-    assert.ok(html.includes('⚪ Fechadas (200)'), 'N = todas');
+    assert.ok(html.includes('⚪ Paradas há mais de 2 dias (200)'), 'N = todas');
     assert.ok(html.includes('<b>Conversa fechada numero 149</b>') && !html.includes('<b>Conversa fechada numero 150</b>'), 'rich: 150');
     assert.ok(html.endsWith('<p>(e mais 50)</p></details>'), html.slice(-120));
     assert.ok(visivel(classico).length <= 4096, String(visivel(classico).length));
@@ -1247,7 +1247,7 @@ describe('T14b 2. montarPainel: muitas fechadas', () => {
     const c2 = montarPainel({ ...PAINEL, esperando, paradas: muitasParadas, fechadas }).classico;
     assert.ok(visivel(c2).length <= 4096, String(visivel(c2).length));
     assert.ok(!c2.includes('Conversa fechada numero 0'), 'nenhuma fechada antes de cortar as paradas');
-    assert.ok(c2.includes('<b>⚪ Fechadas (200)</b>\n(e mais 200)</blockquote>'), c2.slice(-200));
+    assert.ok(c2.includes('<b>⚪ Paradas há mais de 2 dias (200)</b>\n(e mais 200)</blockquote>'), c2.slice(-200));
     assert.ok(c2.includes('<b>Aba 5</b>'));
   });
 });
@@ -1333,7 +1333,7 @@ describe('T24 2. montarPainel: o classico longo corta as Fechadas, as Paradas, o
     const { html, classico } = montarPainel({ ...PAINEL, esperando, aguardando, paradas, fechadas });
     assert.equal(html.split('<p><b>Guardada ').length - 1, 30, 'rich leva todas');
     assert.ok(visivel(classico).length <= 4096, String(visivel(classico).length));
-    assert.ok(classico.includes('<b>⚪ Fechadas (40)</b>\n(e mais 40)</blockquote>'), 'as fechadas saem inteiras primeiro');
+    assert.ok(classico.includes('<b>⚪ Paradas há mais de 2 dias (40)</b>\n(e mais 40)</blockquote>'), 'as fechadas saem inteiras primeiro');
     assert.ok(classico.includes('<b>🟢 Paradas (40)</b>\n(e mais 40)</blockquote>'), 'depois as paradas');
     assert.ok(classico.includes('<b>Guardada 0</b>'), 'o Aguardando so perde o fim');
     assert.match(classico, /\n\(e mais \d+\)<\/blockquote>\n<blockquote expandable><b>🟡 Trabalhando/, 'o Aguardando cortado do fim, com "(e mais N)"');
@@ -1764,7 +1764,7 @@ describe('T29d. a busca no painel', () => {
     assert.ok(montarPainel(D, { busca: 'ASSINO' }).html.includes('🔵 Aguardando (1)'), 'o aguardando pela pergunta');
     // o grupo das Fechadas (e o "Sem grupo")
     const cl = montarPainel(D, { busca: 'clientes' });
-    assert.ok(cl.html.includes('Velha') && !cl.html.includes('Solta') && cl.html.includes('⚪ Fechadas (1)'), cl.html);
+    assert.ok(cl.html.includes('Velha') && !cl.html.includes('Solta') && cl.html.includes('⚪ Paradas há mais de 2 dias (1)'), cl.html);
     assert.ok(montarPainel(D, { busca: 'sem grupo' }).html.includes('Solta'));
     assert.ok(montarPainel(D, { busca: 'porteiro' }).html.includes('🟡 Trabalhando (1)'));
     assert.equal(filtrarPainel(D, 'site').n, 2);
@@ -1794,5 +1794,348 @@ describe('T29d. a busca no painel', () => {
     assert.equal(palavraDaBusca('x'.repeat(100)).length, 64);
     const muitas = { ...D, fechadas: Array.from({ length: 400 }, (_, i) => ({ titulo: `Site ${i} ${'x'.repeat(40)}`, sid: `s${i}`, grupo: 'G' })) };
     assert.ok(visivel(montarPainel(muitas, { busca: 'site' }).classico).length <= 4096);
+  });
+});
+
+// ---------- T38: o painel igual ao VS Code (PLANO-TELEGRAM.md, "T38") ----------
+// Pedido do dono (07/11/2026 21:38): um botao que troca entre o "modo VS Code" (espelho dos grupos da lista de sessoes do
+// VS Code, uma secao por janela) e o "modo padrao" (o de hoje), mais o "Sincronizar"; e "fechado nao bate com fechado de
+// verdade": no padrao, o "⚪ Fechadas" vira "⚪ Paradas há mais de 2 dias", que e o que ele e.
+
+describe('T38. o painel igual ao VS Code', () => {
+  const { montarPainel, montarPainelVsCode, filtrarPainel, botoesPainel } = formatoTg;
+  const AG = '2026-11-07T23:00:00.000Z';
+  const BOT = 'PainelTesteBot';
+  const L = (sid, t) => `<a href="https://t.me/${BOT}?start=a_${sid}">${t}</a>`;
+  const it = (titulo, sid, ...marcas) => ({ titulo, sid, marcas });
+  const D = {
+    modo: 'vscode', hora: AG, modoRua: false, bot: BOT, esperandoN: 2, trabalhandoN: 1,
+    janelas: [
+      {
+        nome: 'C:\\projetos', arquivadas: 12, centralFora: 0,
+        grupos: [
+          { nome: '❗Prioridade', total: 0, itens: [] },
+          { nome: '🟢 Ativos', total: 3, itens: [it('Site novo', 's1', 'esperando'), it('Loja <b>', 's2', 'fechada'), it('Porteiro', 's3', 'trabalhando')] },
+          { nome: '🟡 Aguardando', total: 5, itens: [it('Contrato', 's4', 'esperando', 'fechada')] },
+          { nome: 'Sem grupo', total: 1, semGrupo: true, itens: [it('Solta', 's5')] },
+        ],
+      },
+      {
+        nome: 'D:\\A&B', arquivadas: 3, centralFora: 2,
+        grupos: [
+          { nome: '<i>Aulas</i>', total: 1, itens: [it('Aula 1', 's6', 'esperando', 'esperando', 'xyz', 'fechada')] },
+          { nome: '✔️ Concluído', total: 2, itens: [it('Velha', 's7', 'fechada'), it('Outra', 's8')] },
+        ],
+      },
+    ],
+    fora: { total: 2, itens: [it('Pedido de OK', 'f1', 'esperando'), it('Orca', 'f2')] },
+  };
+  const rua = () => montarPainel({ hora: AG, modoRua: false }).classico.split('\n')[1];
+
+  test('botoes: linha 1 igual (Buscar / Limpar busca); padrao = [Modo VS Code | Sincronizar]; vscode = [Modo padrão | Sincronizar]; modo torto = so a linha 1', () => {
+    const mv = { texto: 'Modo VS Code', dados: 'p:mv' };
+    const mp = { texto: 'Modo padrão', dados: 'p:mp' };
+    const s = { texto: 'Sincronizar', dados: 'p:s' };
+    const buscar = [{ texto: 'Buscar', dados: 'p:b' }];
+    const limpar = [{ texto: 'Limpar busca', dados: 'p:l' }];
+    assert.deepEqual(botoesPainel(null, 'padrao'), [buscar, [mv, s]]);
+    assert.deepEqual(botoesPainel('faro', 'padrao'), [limpar, [mv, s]]);
+    assert.deepEqual(botoesPainel(null, 'vscode'), [buscar, [mp, s]]);
+    assert.deepEqual(botoesPainel('faro', 'vscode'), [limpar, [mp, s]]);
+    for (const m of [undefined, null, '', 'VSCODE', 'outro', 1, {}]) {
+      assert.deepEqual(botoesPainel(null, m), [buscar], String(m));
+      assert.deepEqual(botoesPainel('faro', m), [limpar], String(m));
+    }
+  });
+
+  test('p:mv, p:mp e p:s: ida e volta; leitura estrita', () => {
+    assert.equal(dadosBotao({ acao: 'modoVsCode' }), 'p:mv');
+    assert.equal(dadosBotao({ acao: 'modoPadrao' }), 'p:mp');
+    assert.equal(dadosBotao({ acao: 'sincronizar' }), 'p:s');
+    assert.deepEqual(lerDadosBotao('p:mv'), { acao: 'modoVsCode' });
+    assert.deepEqual(lerDadosBotao('p:mp'), { acao: 'modoPadrao' });
+    assert.deepEqual(lerDadosBotao('p:s'), { acao: 'sincronizar' });
+    for (const lixo of ['p:m', 'p:mvx', 'P:s', ' p:s', 'p:s ', 'p:s\n', 'p:M', 'p:MV', 'p:mpp', 'p:sm', `p:s:${ID}`]) {
+      assert.equal(lerDadosBotao(lixo), null, JSON.stringify(lixo));
+    }
+  });
+
+  test('espelho rich: topo, contagem, janelas na ordem, 1o grupo com itens aberto por janela, grupo 0, marcas na ordem, escape, (e mais K), arquivadas e central, Fora da lista', () => {
+    const r = montarPainelVsCode(D);
+    assert.deepEqual(montarPainel(D), r, 'montarPainel desvia com d.modo === vscode');
+    assert.equal(r.html, [
+      '<h3>Igual ao VS Code</h3>',
+      '<p>🔴 2 esperando · 🟡 1 trabalhando</p>',
+      `<p>${rua()}</p>`,
+      '<hr/><h1>Janela C:\\projetos</h1>',
+      '<p>❗Prioridade (0)</p>',
+      `<details open><summary>🟢 Ativos (3)</summary><p><b>${L('s1', 'Site novo')}</b> · esperando você</p><p><b>${L('s2', 'Loja &lt;b&gt;')}</b> (fechada)</p><p><b>${L('s3', 'Porteiro')}</b> · trabalhando</p></details>`,
+      `<details><summary>🟡 Aguardando (5)</summary><p><b>${L('s4', 'Contrato')}</b> (fechada) · esperando você</p><p>(e mais 4)</p></details>`,
+      `<details><summary>Sem grupo (1)</summary><p><b>${L('s5', 'Solta')}</b></p></details>`,
+      '<p>Arquivadas: 12</p>',
+      '<hr/><h1>Janela D:\\A&amp;B</h1>',
+      `<details open><summary>&lt;i&gt;Aulas&lt;/i&gt; (1)</summary><p><b>${L('s6', 'Aula 1')}</b> (fechada) · esperando você</p></details>`,
+      `<details><summary>✔️ Concluído (2)</summary><p><b>${L('s7', 'Velha')}</b> (fechada)</p><p><b>${L('s8', 'Outra')}</b></p></details>`,
+      '<p>Arquivadas: 3 · central fora: 2</p>',
+      '<hr/>',
+      `<details><summary>Fora da lista do VS Code (2)</summary><p><b>${L('f1', 'Pedido de OK')}</b> · esperando você</p><p><b>${L('f2', 'Orca')}</b></p></details>`,
+    ].join(''));
+  });
+
+  test('espelho classico: <b>/<u>/<blockquote> como o padrao; o 1o grupo com itens de cada janela sem expandable; grupo 0 em negrito', () => {
+    assert.equal(montarPainelVsCode(D).classico, [
+      '<b>Igual ao VS Code</b>',
+      '🔴 2 esperando · 🟡 1 trabalhando',
+      rua(),
+      '',
+      '',
+      '<b><u>Janela C:\\projetos</u></b>',
+      '<b>❗Prioridade (0)</b>',
+      `<blockquote><b>🟢 Ativos (3)</b>\n<b>${L('s1', 'Site novo')}</b> · esperando você\n<b>${L('s2', 'Loja &lt;b&gt;')}</b> (fechada)\n<b>${L('s3', 'Porteiro')}</b> · trabalhando</blockquote>`,
+      `<blockquote expandable><b>🟡 Aguardando (5)</b>\n<b>${L('s4', 'Contrato')}</b> (fechada) · esperando você\n(e mais 4)</blockquote>`,
+      `<blockquote expandable><b>Sem grupo (1)</b>\n<b>${L('s5', 'Solta')}</b></blockquote>`,
+      'Arquivadas: 12',
+      '',
+      '',
+      '<b><u>Janela D:\\A&amp;B</u></b>',
+      `<blockquote><b>&lt;i&gt;Aulas&lt;/i&gt; (1)</b>\n<b>${L('s6', 'Aula 1')}</b> (fechada) · esperando você</blockquote>`,
+      `<blockquote expandable><b>✔️ Concluído (2)</b>\n<b>${L('s7', 'Velha')}</b> (fechada)\n<b>${L('s8', 'Outra')}</b></blockquote>`,
+      'Arquivadas: 3 · central fora: 2',
+      '',
+      '',
+      `<blockquote expandable><b>Fora da lista do VS Code (2)</b>\n<b>${L('f1', 'Pedido de OK')}</b> · esperando você\n<b>${L('f2', 'Orca')}</b></blockquote>`,
+    ].join('\n'));
+  });
+
+  test('T40: janelas separadas (pedido do dono, 08/11/2026 13:13): cada janela abre com a linha divisoria e o nome em <h1> (maior que o topo <h3>); 2 linhas em branco antes de cada janela no classico; o Fora da lista tambem separado; a busca no mesmo formato', () => {
+    const { html, classico } = montarPainelVsCode(D);
+    assert.ok(!html.includes('<h3>Janela'), html);
+    assert.equal(html.split('<hr/><h1>Janela ').length - 1, 2, html);
+    assert.equal(html.split('<hr/>').length - 1, 3, 'as 2 janelas e o Fora');
+    assert.ok(html.indexOf('<hr/><h1>Janela C:\\projetos</h1>') < html.indexOf('<hr/><h1>Janela D:\\A&amp;B</h1>'), 'na ordem que veio');
+    assert.equal(classico.split('\n\n\n<b><u>Janela ').length - 1, 2, classico);
+    assert.ok(classico.includes('\n\n\n<blockquote expandable><b>Fora da lista do VS Code (2)</b>'), classico);
+    assert.ok(!/\n\n\n\n/.test(classico), 'nunca 3 linhas em branco');
+    const b = montarPainelVsCode(D, { busca: 'aula' });
+    assert.ok(b.html.includes('<hr/><h1>Janela D:\\A&amp;B</h1>'), b.html);
+    assert.ok(b.classico.includes('\n\n\n<b><u>Janela D:\\A&amp;B</u></b>'), b.classico);
+    const semFora = montarPainelVsCode({ ...D, fora: { total: 0, itens: [] } });
+    assert.equal(semFora.html.split('<hr/>').length - 1, 2, 'sem o Fora = so as janelas');
+  });
+
+  test('espelho: sem bot = sem link; Fora com total 0 nao aparece; listaErro no fim; entrada torta nao lanca', () => {
+    const r = montarPainelVsCode({ ...D, bot: null, fora: { total: 0, itens: [] }, listaErro: true });
+    assert.ok(!r.html.includes('<a ') && !r.classico.includes('<a '), r.html);
+    assert.ok(!r.html.includes('Fora da lista') && !r.classico.includes('Fora da lista'), r.html);
+    assert.ok(r.html.endsWith('<p>Arquivadas: 3 · central fora: 2</p><p>Não consegui ler a lista do VS Code agora.</p>'), r.html);
+    assert.ok(r.classico.endsWith('\n\nNão consegui ler a lista do VS Code agora.'), r.classico);
+    const tortos = [
+      null, undefined, 'x', [], { modo: 'vscode' }, { modo: 'vscode', janelas: 'x', fora: 'y', esperandoN: -1, trabalhandoN: 1.5 },
+      { modo: 'vscode', janelas: [null, 'x', { grupos: [null, 7, { nome: 3, total: 'x', itens: [null, 'x', { marcas: 'fechada' }] }] }], fora: { itens: 'x' } },
+    ];
+    for (const t of tortos) {
+      const m = montarPainelVsCode(t);
+      assert.ok(m.html.startsWith('<h3>Igual ao VS Code</h3><p>🔴 0 esperando · 🟡 0 trabalhando</p>') || t?.esperandoN !== undefined, JSON.stringify(t));
+      assert.equal(typeof m.classico, 'string');
+    }
+    const torto = montarPainelVsCode(tortos.at(-1));
+    assert.ok(torto.html.includes('<details open><summary>Sem grupo (1)</summary><p><b>sem nome</b></p></details>'), torto.html);
+    assert.ok(torto.html.includes('<p>Arquivadas: 0</p>'), torto.html);
+  });
+
+  test('teto do rich: no maximo 300 itens, na ordem janela -> grupo -> item; o que passa vai pro (e mais K) do grupo dele (Fora inclusive)', () => {
+    const muitos = (pre, n) => Array.from({ length: n }, (_, i) => it(`${pre} ${i}`, `${pre}${i}`));
+    const d = {
+      modo: 'vscode', hora: AG, bot: BOT,
+      janelas: [
+        { nome: 'A', arquivadas: 0, grupos: [{ nome: 'G1', total: 250, itens: muitos('a', 250) }] },
+        { nome: 'B', arquivadas: 0, grupos: [{ nome: 'G2', total: 120, itens: muitos('b', 100) }, { nome: 'G3', total: 1, itens: muitos('c', 1) }] },
+      ],
+      fora: { total: 5, itens: muitos('f', 5) },
+    };
+    const { html } = montarPainelVsCode(d);
+    assert.equal(html.match(/<p><b>/g).length, 300);
+    assert.ok(html.includes(`${L('b49', 'b 49')}</b></p><p>(e mais 70)</p></details>`), 'G2: 50 mostrados de 120');
+    assert.ok(html.includes('<details><summary>G3 (1)</summary><p>(e mais 1)</p></details>'), html.slice(-400));
+    assert.ok(html.includes('<details><summary>Fora da lista do VS Code (5)</summary><p>(e mais 5)</p></details>'), html.slice(-400));
+    assert.ok(!html.includes('<details><summary>G1') && html.includes('<details open><summary>G1 (250)</summary>'));
+  });
+
+  test('classico com 400 itens: cabe no limite; sai primeiro o sem marca do fim; o item com marca sobrevive; o (e mais K) e total - mostrados', () => {
+    const titulo = (p, i) => `${p} ${i} ${'x'.repeat(30)}`;
+    const d = {
+      modo: 'vscode', hora: AG, bot: BOT, esperandoN: 1,
+      janelas: [
+        { nome: 'A', arquivadas: 4, grupos: [{ nome: 'GA', total: 200, itens: Array.from({ length: 200 }, (_, i) => it(titulo('a', i), `a${i}`)) }] },
+        // o b99 (com marca) e o ultimo dentro do teto de 300 do rich
+        { nome: 'B', arquivadas: 5, grupos: [{ nome: 'GB', total: 200, itens: Array.from({ length: 200 }, (_, i) => it(titulo('b', i), `b${i}`, ...(i === 99 ? ['esperando'] : []))) }] },
+      ],
+    };
+    const { html, classico } = montarPainelVsCode(d);
+    assert.ok(html.includes(L('b99', titulo('b', 99))), 'o rich mostra o b99');
+    assert.ok(visivel(classico).length <= 4096, String(visivel(classico).length));
+    assert.ok(classico.includes(`<b>${L('b99', titulo('b', 99))}</b> · esperando você`), 'o com marca sobrevive');
+    assert.ok(!classico.includes(`start=a_b98"`) && !classico.includes(`start=a_b0"`), 'os sem marca do fim saem antes');
+    const kA = (classico.match(/start=a_a\d+"/g) ?? []).length;
+    assert.ok(kA > 10 && kA < 200, String(kA));
+    assert.ok(classico.includes(`start=a_a${kA - 1}"`) && !classico.includes(`start=a_a${kA}"`), 'A cortada do fim');
+    assert.ok(classico.includes(`(e mais ${200 - kA})</blockquote>`), 'A: total - mostrados');
+    assert.ok(classico.includes(` · esperando você\n(e mais 199)</blockquote>`), 'B: so o b99 ficou');
+    assert.ok(classico.includes('\nArquivadas: 4\n') && classico.includes('\nArquivadas: 5'), 'as linhas das janelas ficam');
+    // so sobram itens com marca: saem os com marca, do fim
+    const marcados = { ...d, janelas: d.janelas.map((j) => ({ ...j, grupos: j.grupos.map((g) => ({ ...g, itens: g.itens.map((x) => ({ ...x, marcas: ['fechada'] })) })) })) };
+    const c2 = montarPainelVsCode(marcados).classico;
+    assert.ok(visivel(c2).length <= 4096, String(visivel(c2).length));
+    assert.ok(c2.includes('start=a_a0"') && !c2.includes('start=a_b99"'), 'os com marca saem do fim');
+  });
+
+  test('busca no espelho: topo do padrao; so os itens com o titulo ou o nome do grupo (sem icone, sem acento) que batem; grupo e janela vazios somem; total = os que bateram', () => {
+    const r = montarPainel(D, { busca: 'SITE' });
+    assert.ok(r.html.startsWith('<h3>Busca: «SITE» (1 aba)</h3><p>🔴 2 esperando · 🟡 1 trabalhando</p>'), r.html);
+    assert.ok(r.classico.startsWith('<b>Busca: «SITE» (1 aba)</b>'), r.classico);
+    for (const s of [r.html, r.classico]) {
+      assert.ok(s.includes('Site novo') && s.includes('🟢 Ativos (1)'), s);
+      for (const fora of ['Prioridade', 'Loja', 'Contrato', 'Janela D', 'Aulas', 'Fora da lista', 'Igual ao VS Code']) assert.ok(!s.includes(fora), `${fora}: ${s}`);
+    }
+    const ag = montarPainel(D, { busca: 'aguardando' });
+    assert.ok(ag.html.includes('<details open><summary>🟡 Aguardando (1)</summary>') && !ag.html.includes('(e mais'), ag.html);
+    const co = montarPainel(D, { busca: 'concluido' });
+    assert.ok(co.html.includes('(2 abas)') && co.html.includes('Velha') && co.html.includes('Outra') && !co.html.includes('Janela C:'), co.html);
+    const sg = montarPainel(D, { busca: 'sem grupo' });
+    assert.ok(sg.html.includes('Solta') && sg.html.includes('(1 aba)'), sg.html);
+    const orca = montarPainel(D, { busca: 'orca' });
+    assert.ok(orca.html.includes('<details><summary>Fora da lista do VS Code (1)</summary>') && !orca.html.includes('Janela'), orca.html);
+    const nada = montarPainel(D, { busca: 'prioridade' });
+    assert.ok(nada.html.startsWith('<h3>Nenhuma aba com «prioridade».</h3>') && !nada.html.includes('Janela'), nada.html);
+    assert.ok(montarPainelVsCode(D, { busca: '<x>' }).html.startsWith('<h3>Nenhuma aba com «&lt;x&gt;».</h3>'));
+    assert.equal(filtrarPainel(D, 'site').n, 1);
+    assert.equal(filtrarPainel(D, 'aula').n, 1);
+    assert.equal(filtrarPainel(D, '').n, null);
+    assert.equal(filtrarPainel(D, '').dados, D);
+  });
+
+  test('modo padrao: o grupo "⚪ Fechadas" virou "⚪ Paradas há mais de 2 dias" (rich e classico); o resto igual', () => {
+    const p = montarPainel({ hora: AG, fechadas: [{ titulo: 'Velha', sid: 'v1', grupo: 'G' }] });
+    assert.ok(p.html.includes('<details><summary>⚪ Paradas há mais de 2 dias (1)</summary>'), p.html);
+    assert.ok(p.classico.includes('<blockquote expandable><b>⚪ Paradas há mais de 2 dias (1)</b>'), p.classico);
+    assert.ok(!p.html.includes('Fechadas') && !p.classico.includes('Fechadas'));
+    assert.ok(p.html.startsWith('<h3>Abas abertas: 0</h3>'), 'sem modo = o padrao');
+    assert.deepEqual(montarPainel({ hora: AG, modo: 'padrao' }), montarPainel({ hora: AG }));
+  });
+});
+
+// ---------- T39 (PLANO-TELEGRAM.md, "T39"): a mensagem "Ajustes" com o estado e o botao de troca ----------
+import { montarAjustes, botoesAjustes, dadosAjuste, lerDadosAjuste, TITULO_AJUSTES } from '../lib/formato-tg.mjs';
+
+describe('T39: montarAjustes / botoesAjustes / dadosAjuste / lerDadosAjuste', () => {
+  const H = `<h3>${ICONE_SISTEMA} Ajustes</h3>`;
+  const C = `<b>${ICONE_SISTEMA} Ajustes</b>`;
+  const BASE = { rua: false, voz: false, painel: 'padrao', mensagens: 'apagar' };
+
+  test('o titulo e "Ajustes"', () => {
+    assert.equal(TITULO_AJUSTES, 'Ajustes');
+  });
+
+  test('rua: ligado / desligado (html e classico exatos)', () => {
+    assert.deepEqual(montarAjustes({ ...BASE, qual: 'rua', rua: true }), {
+      html: `${H}<p>Modo rua: ligado.</p>`,
+      classico: `${C}\nModo rua: ligado.`,
+    });
+    assert.deepEqual(montarAjustes({ ...BASE, qual: 'rua', rua: false }), {
+      html: `${H}<p>Modo rua: desligado.</p>`,
+      classico: `${C}\nModo rua: desligado.`,
+    });
+    assert.equal(montarAjustes({ qual: 'rua', rua: 'sim' }).classico, `${C}\nModo rua: desligado.`, 'so true liga');
+  });
+
+  test('voz: ligada / desligada', () => {
+    assert.deepEqual(montarAjustes({ ...BASE, qual: 'voz', voz: true }), {
+      html: `${H}<p>Resposta por voz: ligada.</p>`,
+      classico: `${C}\nResposta por voz: ligada.`,
+    });
+    assert.deepEqual(montarAjustes({ ...BASE, qual: 'voz', voz: false }), {
+      html: `${H}<p>Resposta por voz: desligada.</p>`,
+      classico: `${C}\nResposta por voz: desligada.`,
+    });
+  });
+
+  test('modo: 2 linhas (Painel, Mensagens) nos 4 estados', () => {
+    const m = (painel, mensagens) => montarAjustes({ ...BASE, qual: 'modo', painel, mensagens });
+    assert.deepEqual(m('vscode', 'manter'), {
+      html: `${H}<p>Painel: modo VS Code.</p><p>Mensagens: manter tudo.</p>`,
+      classico: `${C}\nPainel: modo VS Code.\nMensagens: manter tudo.`,
+    });
+    assert.deepEqual(m('padrao', 'apagar'), {
+      html: `${H}<p>Painel: modo padrão.</p><p>Mensagens: modo limpo.</p>`,
+      classico: `${C}\nPainel: modo padrão.\nMensagens: modo limpo.`,
+    });
+    assert.equal(m('vscode', 'apagar').classico, `${C}\nPainel: modo VS Code.\nMensagens: modo limpo.`);
+    assert.equal(m('padrao', 'manter').classico, `${C}\nPainel: modo padrão.\nMensagens: manter tudo.`);
+    assert.equal(m(undefined, undefined).classico, `${C}\nPainel: modo padrão.\nMensagens: modo limpo.`);
+  });
+
+  test('entrada torta = so o titulo, sem linha, sem lancar', () => {
+    for (const d of [null, undefined, 'rua', 7, ['rua'], {}, { qual: 'x' }, { ...BASE, qual: 'painel' }]) {
+      assert.deepEqual(montarAjustes(d), { html: H, classico: C }, JSON.stringify(d));
+    }
+  });
+
+  test('botoesAjustes: rua e voz = 1 botao; modo = 2 linhas; torto = null', () => {
+    assert.deepEqual(botoesAjustes({ ...BASE, qual: 'rua', rua: true }), [[{ texto: 'Desligar modo rua', dados: 'a:r0' }]]);
+    assert.deepEqual(botoesAjustes({ ...BASE, qual: 'rua', rua: false }), [[{ texto: 'Ligar modo rua', dados: 'a:r1' }]]);
+    assert.deepEqual(botoesAjustes({ ...BASE, qual: 'voz', voz: true }), [[{ texto: 'Desligar voz', dados: 'a:v0' }]]);
+    assert.deepEqual(botoesAjustes({ ...BASE, qual: 'voz', voz: false }), [[{ texto: 'Ligar voz', dados: 'a:v1' }]]);
+    assert.deepEqual(botoesAjustes({ ...BASE, qual: 'modo', painel: 'vscode', mensagens: 'manter' }), [
+      [{ texto: 'Painel: usar modo padrão', dados: 'a:pp' }],
+      [{ texto: 'Mensagens: usar modo limpo', dados: 'a:ml' }],
+    ]);
+    assert.deepEqual(botoesAjustes({ ...BASE, qual: 'modo', painel: 'padrao', mensagens: 'apagar' }), [
+      [{ texto: 'Painel: usar modo VS Code', dados: 'a:pv' }],
+      [{ texto: 'Mensagens: usar manter tudo', dados: 'a:mm' }],
+    ]);
+    for (const d of [null, undefined, 'modo', ['voz'], {}, { qual: 'x' }]) assert.equal(botoesAjustes(d), null, JSON.stringify(d));
+  });
+
+  test('dadosAjuste / lerDadosAjuste: ida e volta das 8 strings exatas (o estado ALVO)', () => {
+    const MAPA = [
+      ['rua', true, 'a:r1'], ['rua', false, 'a:r0'],
+      ['voz', true, 'a:v1'], ['voz', false, 'a:v0'],
+      ['painel', 'vscode', 'a:pv'], ['painel', 'padrao', 'a:pp'],
+      ['mensagens', 'apagar', 'a:ml'], ['mensagens', 'manter', 'a:mm'],
+    ];
+    for (const [alvo, valor, s] of MAPA) {
+      assert.equal(dadosAjuste({ alvo, valor }), s);
+      assert.deepEqual(lerDadosAjuste(s), { alvo, valor });
+      assert.ok(Buffer.byteLength(s) <= 64, 'callback_data do Telegram: ate 64 bytes');
+    }
+    // os botoes levam exatamente estas strings
+    const todos = [true, false].flatMap((x) => [
+      ...botoesAjustes({ qual: 'rua', rua: x }), ...botoesAjustes({ qual: 'voz', voz: x }),
+    ]).concat(['vscode', 'padrao'].flatMap((p) => ['manter', 'apagar'].flatMap((m) => botoesAjustes({ qual: 'modo', painel: p, mensagens: m }))));
+    for (const linha of todos) for (const b of linha) assert.ok(lerDadosAjuste(b.dados), b.dados);
+  });
+
+  test('dadosAjuste: qualquer outra entrada = TypeError', () => {
+    for (const e of [undefined, {}, { alvo: 'rua' }, { alvo: 'rua', valor: 1 }, { alvo: 'rua', valor: 'true' },
+      { alvo: 'voz', valor: null }, { alvo: 'painel', valor: 'VSCODE' }, { alvo: 'painel', valor: true },
+      { alvo: 'mensagens', valor: 'limpo' }, { alvo: 'modo', valor: 'manter' }, { alvo: 'toString', valor: true }]) {
+      assert.throws(() => dadosAjuste(e), TypeError, JSON.stringify(e));
+    }
+    assert.throws(() => dadosAjuste(null), TypeError);
+  });
+
+  test('lerDadosAjuste: estrita (todo o resto = null, nunca startsWith)', () => {
+    for (const s of [undefined, null, 1, {}, ['a:r1'], '', 'a:r', 'a:r2', ' a:r1', 'a:r1 ', 'A:r1', 'a:pvx', 'a:',
+      'a:mv', 'p:mv', 'a:r1\n', 'toString', 'constructor', '__proto__']) {
+      assert.equal(lerDadosAjuste(s), null, JSON.stringify(s));
+    }
+    const a = lerDadosAjuste('a:r1');
+    a.valor = false;
+    assert.deepEqual(lerDadosAjuste('a:r1'), { alvo: 'rua', valor: true }, 'devolve copia, o mapa nao muda');
+  });
+
+  test('lerDadosBotao NAO muda: o a: nao e dele', () => {
+    for (const s of ['a:r1', 'a:r0', 'a:v1', 'a:v0', 'a:pv', 'a:pp', 'a:ml', 'a:mm']) assert.equal(lerDadosBotao(s), null, s);
+    assert.deepEqual(lerDadosBotao('p:mv'), { acao: 'modoVsCode' });
   });
 });

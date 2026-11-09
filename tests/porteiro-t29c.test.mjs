@@ -41,13 +41,12 @@ const VOZ_LIGADA = 'Resposta por voz ligada.';
 const MODO_LIMPO = 'Modo limpo: o que já foi resolvido sai do chat.';
 const MODO_MANTER = 'Modo manter tudo: nada sai do chat; o resolvido só perde os botões.';
 const FALHA = 'Não consegui gravar o ajuste; nada mudou.';
-const MENU_6 = [
+const MENU_5 = [ // T39: a ordem do dono (o voltei saiu do menu)
   { command: 'painel', description: 'Painel das abas' },
-  { command: 'rua', description: 'Tô na rua' },
-  { command: 'voltei', description: 'Voltei pro PC' },
-  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
-  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' },
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' },
+  { command: 'rua', description: 'Modo rua: ligar ou desligar' },
+  { command: 'modo', description: 'Modo do painel e das mensagens' },
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
 ];
 // config.json como o instalador grava (2 espacos e a quebra de linha no fim)
 const FORMATO = (cfg) => `${JSON.stringify(cfg, null, 2)}\n`;

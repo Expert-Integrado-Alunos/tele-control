@@ -42,13 +42,12 @@ const VOZ_LIGADA = 'Resposta por voz ligada.';
 const MODO_LIMPO = 'Modo limpo: o que já foi resolvido sai do chat.';
 const MODO_MANTER = 'Modo manter tudo: nada sai do chat; o resolvido só perde os botões.';
 const FALHA = 'Não consegui gravar o ajuste; nada mudou.';
-const MENU_6 = [
+const MENU_5 = [ // T39: a ordem do dono (o voltei saiu do menu)
   { command: 'painel', description: 'Painel das abas' },
-  { command: 'rua', description: 'Tô na rua' },
-  { command: 'voltei', description: 'Voltei pro PC' },
-  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
-  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' },
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' },
+  { command: 'rua', description: 'Modo rua: ligar ou desligar' },
+  { command: 'modo', description: 'Modo do painel e das mensagens' },
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
 ];
 // config.json como o instalador grava (2 espacos e a quebra de linha no fim)
 const FORMATO = (cfg) => `${JSON.stringify(cfg, null, 2)}\n`;
@@ -344,20 +343,37 @@ const linhas = (h) => JSON.stringify(h.tg.de('enviar').map((c) => [c.args[0].res
 
 // ---------- T29d ----------
 
-const BUSCAR = [[{ texto: 'Buscar', dados: 'p:b' }]];
-const LIMPAR = [[{ texto: 'Limpar busca', dados: 'p:l' }]];
+// T38: o painel do porteiro leva a linha 2 (o modo e o Sincronizar); o harness e o modo padrao
+const LINHA2 = [{ texto: 'Modo VS Code', dados: 'p:mv' }, { texto: 'Sincronizar', dados: 'p:s' }];
+const BUSCAR = [[{ texto: 'Buscar', dados: 'p:b' }], LINHA2];
+const LIMPAR = [[{ texto: 'Limpar busca', dados: 'p:l' }], LINHA2];
 const PERGUNTA = { classico: 'Qual palavra?', respostaForcada: 'nome da aba ou palavra', silencioso: true };
 const TRAVADO = 'Travado. Destrava no PC.';
 const edicoes = (h, id) => h.tg.de('editar').filter((c) => c.args[0] === id).map((c) => c.args[1]);
 const toques = (h) => h.tg.de('responderToque').map((c) => c.args[1]);
 const temLog = (h, x) => logs(h).some((l) => l.endsWith(x));
 
-// 2 abas (uma com a palavra no nome) e o /painel na tela. Devolve o id do painel.
+// T39 (D3): o /modo (tocado no menu ou digitado) abre a mensagem de ajustes em cima do comando; a troca e o toque no
+// botao do estado ALVO (a:mm/a:ml) e a frase sai no balao do toque. Devolve {u, id}.
+async function ajustar(h, qual, dados) {
+  const u = await comando(h, `/${qual}`);
+  const env = h.tg.de('enviar').filter((c) => c.args[0].responderA === mid(u) && JSON.stringify(c.args[0].botoes ?? null).includes('"a:'));
+  assert.equal(env.length, 1, `/${qual}: 1 mensagem de ajustes em cima do comando: ${linhas(h)}`);
+  h.tg.zerar();
+  await lerTg(h, [toqueTg(h, dados, env[0].id)]);
+  return { u, id: env[0].id };
+}
+
+// 2 abas (uma com a palavra no nome) e o /painel na tela. Devolve o id do painel. `manter` = o toque em "Mensagens: usar
+// manter tudo" antes (T39 D3; era o /modo).
 async function comPainel(h, { manter = false } = {}) {
   aba(h, 'S1', 'Zimbabue projeto');
   aba(h, 'S2', 'Planilha');
   ligarTg(h);
-  if (manter) await comando(h, '/modo');
+  if (manter) {
+    await ajustar(h, 'modo', 'a:mm');
+    assert.deepEqual(toques(h), ['Modo manter tudo: nada sai do chat; o resolvido só perde os botões.']);
+  }
   h.tg.zerar();
   await lerTg(h, [msgTg(h, '/painel')]);
   const p = h.tg.de('enviar').find((c) => String(c.args[0].html).includes('Abas abertas'));

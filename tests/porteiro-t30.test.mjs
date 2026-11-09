@@ -509,10 +509,11 @@ async function chamadoNaTela(h, sessionId, titulo) {
   return e.tg.chamados[sessionId].mensagem.messageId;
 }
 
-// A linha do sistema troca: o "/rua" (linha nova em cima dele) e mais 2 voltas pro apagar da antiga.
+// A linha do sistema troca: o "to na rua" escrito (linha nova em cima dele) e mais 2 voltas pro apagar da antiga. T39
+// (D3): o /rua do menu so abre a mensagem de ajustes; quem liga direto, com a linha do sistema, e o texto escrito.
 async function trocarLinha(h) {
   h.t += 1000;
-  await lerTg(h, [msgTg(h, '/rua')]);
+  await lerTg(h, [msgTg(h, 'to na rua')]);
   await h.p.esperarTelegram(15000);
   await h.p.esperarTelegram(15000);
 }

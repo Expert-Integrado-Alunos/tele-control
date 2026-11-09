@@ -126,6 +126,9 @@ não começam com "Nome da sessão:". Estas regras valem a sessão inteira, incl
     regra do grupo) ou `node "{{repo}}/porteiro.mjs" painel --limpar --msg <id da mensagem do dono>` (todas voltam), e
     responda em 1 linha: "pedi pro porteiro pôr X no painel" (ou tirar, ou voltar pro normal). Quem muda e confirma é o
     porteiro, em cima da fala dele; o painel na tela se atualiza sozinho. Pedido de OK aberto fica no painel sempre.
+    As escolhas e o grupo do foco valem no modo padrão do painel; no modo VS Code (botão "Modo VS Code") o painel
+    espelha a lista do VS Code e não usa nenhum dos dois; junto da resposta, diga em 1 linha que a escolha vale no modo
+    padrão do painel.
 
 ## Uma mensagem com pedidos pra várias sessões
 

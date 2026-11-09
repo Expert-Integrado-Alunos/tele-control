@@ -16,7 +16,8 @@
 // html/classico. O unico texto que o dono le sai do montarChamado/montarSistema (lib/formato-tg.mjs).
 import {
   montarChamado, montarChamadoComOk, montarSistema, montarPainel, montarSituacao, lerFinal, lerDadosBotao, novoIdChamado, ICONE_SISTEMA,
-  TITULO_SISTEMA, botoesPainel, filtrarPainel, palavraDaBusca, PERGUNTA_BUSCA, EXEMPLO_BUSCA,
+  TITULO_SISTEMA, botoesPainel, filtrarPainel, palavraDaBusca, PERGUNTA_BUSCA, EXEMPLO_BUSCA, montarAjustes, botoesAjustes,
+  TITULO_AJUSTES,
 } from './lib/formato-tg.mjs';
 import { partesCurtas } from './lib/formato.mjs'; // T29b: a pergunta em negrito (a mesma regra do aviso)
 
@@ -26,7 +27,8 @@ const BUSCA_TTL_MS = 15 * 60 * 1000; // T29d: a busca sem uso (e a pergunta sem 
 const TITULO_PAINEL = 'Painel das abas';
 const SITUACAO = 'situacao'; // T10: "sessionId" da situacao de uma aba (o toque no nome dela no painel)
 const TITULO_SITUACAO = 'Situação da aba';
-const NAO_E_ABA = new Set([SISTEMA, PAINEL, SITUACAO]);
+const AJUSTES = 'ajustes'; // T39: "sessionId" da mensagem Ajustes (o /rua, /modo e /voz do menu: o estado e o botao de troca)
+const NAO_E_ABA = new Set([SISTEMA, PAINEL, SITUACAO, AJUSTES]);
 const MIN_MS = 60 * 1000;
 const H_MS = 60 * MIN_MS;
 const FILA_TTL_MS = 2 * H_MS; // item na fila ha 2 h = perdida (igual ao SAIDA_TTL_MS do porteiro)
@@ -133,6 +135,8 @@ const painelNovo = () => ({ dados: null, versaoId: 0, descer: false, citar: null
 // T10: a situacao de 1 aba (o toque no nome dela no painel): o mesmo jeito do painel + aba = o sessionId dela | null.
 // T10c: chamadoId = o id dos botoes dela (novo a cada situacao) | null; completo = aberta pelo "Mais informações";
 // apagarJa (so quando tem) = a mensagem tocada, que sai sem substituta.
+// T39: a mensagem Ajustes: o mesmo jeito do painel (dados = o que o porteiro mandou montar | null), sem busca nem pergunta
+const ajustesNovo = () => ({ dados: null, versaoId: 0, descer: false, citar: null, mensagem: null, apagar: [] });
 const situacaoNova = () => ({
   aba: null, dados: null, chamadoId: null, completo: false, versaoId: 0, descer: false, citar: null, mensagem: null, apagar: [],
 });
@@ -152,6 +156,7 @@ export function tgNovo() {
     sistema: sistemaNovo(),
     painel: painelNovo(),
     situacao: situacaoNova(),
+    ajustes: ajustesNovo(), // T39
     recebidas: {},
     audios: {},
     midiaPendente: [],
@@ -224,6 +229,21 @@ function completarPainel(v) {
   return p;
 }
 
+// T39: os ajustes campo a campo, como o painel (campo torto = o padrao), sem busca e sem pergunta.
+function completarAjustes(v) {
+  const a = ajustesNovo();
+  if (!ehObjeto(v)) return a;
+  if (ehObjeto(v.dados)) a.dados = v.dados;
+  if (Number.isSafeInteger(v.versaoId) && v.versaoId >= 0) a.versaoId = v.versaoId;
+  a.descer = v.descer === true;
+  a.citar = idMensagem(v.citar);
+  if (ehObjeto(v.mensagem)) a.mensagem = v.mensagem;
+  if (Array.isArray(v.apagar)) a.apagar = v.apagar;
+  const limpar = completarLimpar(v.limpar); // T23a: so existe com item
+  if (limpar.length) a.limpar = limpar;
+  return a;
+}
+
 // T10: a situacao campo a campo (campo torto = o padrao; aba que nao e sessionId de aba = null).
 function completarSituacao(v) {
   const s = situacaoNova();
@@ -282,6 +302,8 @@ function maiorId(t) {
   verTela(t.painel.mensagem);
   ver(t.situacao.versaoId);
   verTela(t.situacao.mensagem);
+  ver(t.ajustes.versaoId); // T39
+  verTela(t.ajustes.mensagem);
   for (const k of Object.keys(t.mensagens)) if (Number(k) < 0) ver(Number(k));
   return maior;
 }
@@ -326,6 +348,7 @@ export function completarTg(bruto) {
   t.sistema = completarSistema(bruto.sistema);
   t.painel = completarPainel(bruto.painel);
   t.situacao = completarSituacao(bruto.situacao);
+  t.ajustes = completarAjustes(bruto.ajustes); // T39
   t.saude = completarSaude(bruto.saude);
   t.idsDoDono = completarIdsDoDono(bruto.idsDoDono);
   for (const c of Object.values(t.chamados)) {
@@ -427,6 +450,10 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     // T10: idem a situacao
     if (!ehObjeto(t.situacao) || !Array.isArray(t.situacao.apagar) || !Number.isSafeInteger(t.situacao.versaoId)) {
       t.situacao = completarSituacao(t.situacao);
+    }
+    // T39: idem os ajustes (o estado de antes da T39 segue valendo)
+    if (!ehObjeto(t.ajustes) || !Array.isArray(t.ajustes.apagar) || !Number.isSafeInteger(t.ajustes.versaoId)) {
+      t.ajustes = completarAjustes(t.ajustes);
     }
     return t;
   }
@@ -743,7 +770,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
 
   // O id ja esta no apagar de algum dono (vai sair por outro caminho)
   function naAlgumApagar(t, id) {
-    const donos = [...Object.values(t.chamados), t.sistema, t.painel, t.situacao];
+    const donos = [...Object.values(t.chamados), t.sistema, t.painel, t.situacao, t.ajustes];
     return donos.some((d) => ehObjeto(d) && Array.isArray(d.apagar) && d.apagar.some((a) => ehObjeto(a) && idMensagem(a.messageId) === id));
   }
 
@@ -753,7 +780,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
    * do OK vencido; a linha do sistema; a situacao sem pergunta, inclusive a que ficou como mensagem da aba) com 60 s ou
    * mais na tela e menos de 48 h vai pro apagar (`vista`: 1 log quando sai). A do toque (`tocada`) fica nesse passo. O
    * painel nunca. O chamado sai com a tela (calado); a do sistema fica em dia sem tela ate a proxima linha; a situacao
-   * nao volta.
+   * nao volta. T39: a dos ajustes sai pela regra da linha do sistema e nao volta (so no menu).
    * -> quantas foram pro apagar. Nunca lanca (exceto e.tg ausente = TypeError).
    */
   function vistasSemNada(e, { tocada = null } = {}) {
@@ -785,6 +812,14 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       s.mensagem = null;
       s.semTela = s.versaoId; // em dia sem tela: so volta com linha nova (T15: a mensagem mostra so a ultima linha)
       enfileirar(t, SISTEMA);
+      n += 1;
+    }
+    const aj = t.ajustes; // T39: a regra da linha do sistema; sai do estado (dados = null): so volta pelo menu
+    if (ehObjeto(aj.mensagem) && aj.mensagem.versaoId === aj.versaoId && aj.descer !== true && podeSair(idMensagem(aj.mensagem.messageId))) {
+      aj.apagar.unshift({ messageId: aj.mensagem.messageId, doBot: true, formato: formatoDe(aj.mensagem.formato), vista: true });
+      aj.mensagem = null;
+      aj.dados = null;
+      enfileirar(t, AJUSTES);
       n += 1;
     }
     const si = t.situacao;
@@ -1785,6 +1820,47 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
   }
 
   /**
+   * T39: a mensagem Ajustes (o /rua, /modo e /voz do menu: o estado e o botao de troca), no molde do painel. Cada pedido =
+   * mensagem nova em silencio, em cima da mensagem do dono (citar); a anterior sai pelo caminho do descer (no limpo
+   * apagada; no manter fica e perde os botoes). `dados` (objeto simples; senao TypeError) vai copiado e o montarAjustes
+   * monta na hora do envio. 2 pedidos antes do drenar = 1 mensagem so (a versao nova, com o citar novo).
+   */
+  function ajustes(e, dados, { citar = null } = {}) {
+    const t = tgDe(e);
+    if (!ehObjeto(dados)) throw new TypeError('ajustes: dados invalidos');
+    const a = t.ajustes;
+    a.dados = JSON.parse(JSON.stringify(dados));
+    a.versaoId = ++t.seq;
+    a.citar = idMensagem(citar);
+    a.descer = true;
+    enfileirar(t, AJUSTES);
+  }
+
+  /** T39: os dados dos ajustes na tela (ou ja pedidos e ainda nao enviados), em copia | null (a regra do painelNaTela). */
+  function ajustesNaTela(e) {
+    const a = tgDe(e).ajustes;
+    const naTela = ehObjeto(a.mensagem) && idMensagem(a.mensagem.messageId) != null;
+    if (!ehObjeto(a.dados) || (!naTela && a.descer !== true)) return null;
+    return JSON.parse(JSON.stringify(a.dados));
+  }
+
+  /**
+   * T39: os ajustes na tela com os dados novos, por edicao da mesma mensagem (sem notificar; o citar e o descer ficam como
+   * estao: o pedido e ainda nao enviado so troca os dados). false = sem ajustes (nada na fila). Edicao recusada = os
+   * ajustes saem do estado (editarTela). `dados` (objeto simples; senao TypeError) vai copiado.
+   */
+  function atualizarAjustes(e, dados) {
+    const t = tgDe(e);
+    if (!ehObjeto(dados)) throw new TypeError('atualizarAjustes: dados invalidos');
+    if (ajustesNaTela(e) === null) return false;
+    const a = t.ajustes;
+    a.dados = JSON.parse(JSON.stringify(dados));
+    a.versaoId = ++t.seq;
+    enfileirar(t, AJUSTES);
+    return true;
+  }
+
+  /**
    * T12 (contrato 1): o "/start a_<aba>" que o toque no nome da aba no painel manda (mensagem do dono) sai do chat: vai
    * pra lista `apagarToque` da situacao (sem repetir) e e apagado no drenar antes de tudo. Recusado ou com mais de 48 h =
    * fica no chat (1 log); mensagem de pedido de OK nunca. false = id invalido (nada na fila).
@@ -1976,6 +2052,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     if (ehObjeto(t.painel.pergunta)) ver(t.painel.pergunta.messageId); // T29d: a pergunta da busca (do bot)
     if (Array.isArray(t.painel.apagarPergunta)) for (const id of t.painel.apagarPergunta) ver(id);
     verDono(t.situacao);
+    verDono(t.ajustes); // T39
     if (Array.isArray(t.idsDoDono)) for (const id of t.idsDoDono) ver(id);
     for (const id of idsDeForaAtual) ids.add(id); // T7b2a: as mensagens de pedido de OK (nunca vao pra sonda)
     return ids;
@@ -2094,11 +2171,38 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       estado: PAINEL,
       silencioso: true,
       citar: idMensagem(p.citar),
-      montar: () => ({ ...montarPainel(p.dados, { busca: p.busca?.palavra }), botoes: botoesPainel(p.busca?.palavra) }), // T29d
+      // T29d; T38: a linha 2 (modo e Sincronizar) pelo modo dos dados (o modoBotao do espelho que caiu pro padrao vence);
+      // painel sem modo (o de antes na tela) = so a linha 1
+      montar: () => ({
+        ...montarPainel(p.dados, { busca: p.busca?.palavra }),
+        botoes: botoesPainel(p.busca?.palavra, p.dados?.modoBotao ?? p.dados?.modo),
+      }),
       tituloMovido: TITULO_PAINEL,
       versaoAtual: () => p.versaoId,
       aoSair: () => {
         p.citar = null;
+      },
+    };
+  }
+
+  // T39: os ajustes no mesmo passo a passo do painel; sempre mensagem nova (descer), em silencio.
+  function alvoAjustes(t) {
+    const a = t.ajustes;
+    if (a.mensagem !== null && !(ehObjeto(a.mensagem) && idMensagem(a.mensagem.messageId) != null)) a.mensagem = null;
+    return {
+      sid: AJUSTES,
+      quem: AJUSTES,
+      dono: a,
+      versaoId: a.versaoId,
+      estado: AJUSTES,
+      silencioso: true,
+      citar: idMensagem(a.citar),
+      montar: () => ({ ...montarAjustes(a.dados), botoes: botoesAjustes(a.dados) }),
+      tituloMovido: TITULO_AJUSTES,
+      iconeMovido: ICONE_SISTEMA, // o movido com o titulo dela (o icone do sistema, como no montarAjustes)
+      versaoAtual: () => a.versaoId,
+      aoSair: () => {
+        a.citar = null;
       },
     };
   }
@@ -2326,6 +2430,15 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
       d.dados = null;
       tirar(t.saida, item);
       logar(`${alvo.quem}: edicao da mensagem ${tela.messageId} recusada (${erroCurto(r)}); o painel sai (volta no /painel)`);
+      return 'segue';
+    }
+    if (r.codigo === 400 && !ehPausa(r) && alvo.sid === AJUSTES) {
+      // T39: idem o painel: recusada (o dono apagou a mensagem) = os ajustes saem do estado e nao voltam como mensagem
+      // nova (so no menu)
+      d.mensagem = null;
+      d.dados = null;
+      tirar(t.saida, item);
+      logar(`${alvo.quem}: edicao da mensagem ${tela.messageId} recusada (${erroCurto(r)}); os ajustes saem (voltam no menu)`);
       return 'segue';
     }
     if (r.codigo === 400 && !ehPausa(r)) {
@@ -2805,6 +2918,23 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
         return apagarPrimeira(t, item, alvo, resumo);
       }
       alvo = alvoPainel(t);
+    } else if (sid === AJUSTES) {
+      // T39: os ajustes que sairam do estado (edicao recusada, vista no limpo) nunca voltam como mensagem nova: so o
+      // limpar/apagar pendente, se tiver (o ramo do painel sem a pergunta da busca)
+      const a = t.ajustes;
+      if (!ehObjeto(a.dados)) {
+        const limparA = Array.isArray(a.limpar) && a.limpar.length > 0; // T23a: a limpeza antes do apagar
+        if (!limparA && !(Array.isArray(a.apagar) && a.apagar.length)) {
+          tirar(t.saida, item);
+          logar(`${AJUSTES} saiu da fila (nenhum ajuste)`);
+          return 'segue';
+        }
+        alvo = alvoAjustes(t);
+        if (agoraMs < pausaAte || agoraMs < recuoAte) return 'para';
+        if (limparA) return limparPrimeira(t, item, alvo, resumo);
+        return apagarPrimeira(t, item, alvo, resumo);
+      }
+      alvo = alvoAjustes(t);
     } else if (sid === SITUACAO) {
       const s = t.situacao;
       if (!ehAba(s.aba) || !ehObjeto(s.dados)) { // T10: situacao torta (do disco) nao sai. T10c: a tocada so apaga, nunca volta
@@ -2968,7 +3098,7 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     limpaResolvidas = modo === 'apagar';
     mantemResolvidas = modo === 'manter';
     if (!mantemResolvidas) return;
-    for (const d of [...Object.values(t.chamados), t.sistema, t.painel, t.situacao]) {
+    for (const d of [...Object.values(t.chamados), t.sistema, t.painel, t.situacao, t.ajustes]) {
       if (!ehObjeto(d) || d.limpar === undefined) continue;
       if (drenando && Array.isArray(d.limpar)) d.limpar.length = 0;
       else delete d.limpar;
@@ -3002,6 +3132,9 @@ export function criarCanalTelegram({ tg, chatId, log, agora = Date.now, ensaio =
     painel,
     painelNaTela,
     atualizarPainel,
+    ajustes, // T39
+    ajustesNaTela,
+    atualizarAjustes,
     pedirBusca, // T29d
     perguntaDaBusca,
     buscar,

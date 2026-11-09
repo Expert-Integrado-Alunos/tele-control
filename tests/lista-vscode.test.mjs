@@ -10,7 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pastaTemp } from './lib/pasta-temp.cjs';
-import { lerListaVsCode, caminhoBancoVsCode, raizNormal, nomeDoGrupo, ehConcluido } from '../lib/lista-vscode.mjs';
+import { lerListaVsCode, caminhoBancoVsCode, raizNormal, nomeDoGrupo, ehConcluido, lerAbasVsCode, caminhoAbasVsCode } from '../lib/lista-vscode.mjs';
+import { trocarPlataformaParaTeste } from '../lib/plataforma.mjs';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
@@ -115,4 +116,155 @@ test('T11 L5. caminho do banco (SESSOES_WPP_VSCODE_DB, senao o do VS Code no APP
   }
   for (const n of ['✔️ CONCLUÍDO', 'Concluidas', 'concluído em set']) assert.equal(ehConcluido(n), true, n);
   for (const n of ['❗Prioridade', 'Conclave', '', null]) assert.equal(ehConcluido(n), false, String(n));
+});
+
+// T38 (PLANO-TELEGRAM.md, "T38"): as abas abertas de cada janela do VS Code. O banco de cada janela fica em
+// `workspaceStorage/<hash>/state.vscdb` (irmao do globalStorage); a janela se acha pelo `workspace.json` da subpasta
+// (`folder` = `file:///c%3A/projetos`) e as abas sao o `panelTabSessions[].sessionId` da chave da extensao (medido 07/11).
+// Pasta de teste feita aqui (nunca o workspaceStorage de verdade).
+const abas = (...ids) => ({ panelTabSessions: ids.map((id) => ({ sessionId: id, title: `t-${id}`, fullEditor: false })) });
+
+// Uma subpasta `<hash>` em `ws`: `workspace` = objeto (vira JSON) ou texto cru (undefined = sem workspace.json); `estado`
+// = o valor da chave (objeto vira JSON; undefined = banco sem a linha da chave; `false` = sem state.vscdb); `mtime` =
+// segundos do state.vscdb.
+function janela(ws, hash, workspace, estado, { mtime } = {}) {
+  const sub = path.join(ws, hash);
+  fs.mkdirSync(sub, { recursive: true });
+  if (workspace !== undefined) {
+    fs.writeFileSync(path.join(sub, 'workspace.json'), typeof workspace === 'string' ? workspace : JSON.stringify(workspace));
+  }
+  if (estado === false) return sub;
+  const arq = path.join(sub, 'state.vscdb');
+  const db = new DatabaseSync(arq);
+  db.exec('CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB)');
+  const ins = db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)');
+  for (const [k, v] of outras) ins.run(k, v);
+  if (estado !== undefined) ins.run('Anthropic.claude-code', typeof estado === 'string' ? estado : JSON.stringify(estado));
+  db.close();
+  if (mtime !== undefined) fs.utimesSync(arq, mtime, mtime);
+  return sub;
+}
+const comoObjeto = (m) => (m === null ? null : Object.fromEntries([...m].map(([k, s]) => [k, [...s].sort()])));
+
+test('T38 A1. caminhoAbasVsCode: o workspaceStorage irmao do globalStorage (Windows path.join); entrada que nao e texto nao vazio = null', { skip: SO_WINDOWS }, () => {
+  assert.equal(caminhoAbasVsCode('C:\\U\\AppData\\Roaming\\Code\\User\\globalStorage\\state.vscdb'), 'C:\\U\\AppData\\Roaming\\Code\\User\\workspaceStorage');
+  assert.equal(caminhoAbasVsCode('C:/U/Code/User/globalStorage/state.vscdb'), 'C:\\U\\Code\\User\\workspaceStorage');
+  for (const x of [null, undefined, '', 7, {}, ['C:\\a\\b\\c']]) assert.equal(caminhoAbasVsCode(x), null, String(x));
+});
+
+test('T38 A2. caminhoAbasVsCode no Mac: path.posix (o banco do Library/Application Support)', () => {
+  const desfazer = trocarPlataformaParaTeste('darwin');
+  try {
+    assert.equal(
+      caminhoAbasVsCode('/Users/x/Library/Application Support/Code/User/globalStorage/state.vscdb'),
+      '/Users/x/Library/Application Support/Code/User/workspaceStorage',
+    );
+    assert.equal(caminhoAbasVsCode(''), null);
+  } finally {
+    desfazer();
+  }
+});
+
+test('T38 A3. lerAbasVsCode: decodifica o folder (%3A, %20, barra antes do drive) e casa com a raiz normalizada; so os sessionId de texto', { skip: SO_WINDOWS }, () => {
+  const ws = pastaTemp('abas-vscode-');
+  janela(ws, 'h1', { folder: 'file:///c%3A/projetos' }, {
+    thinkingLevel: 'high',
+    panelSessionIds: ['nao-e-aba'],
+    panelTabSessions: [{ sessionId: 's1', title: 'a', fullEditor: false }, { sessionId: 's2' }, { sessionId: '' }, { sessionId: 7 }, null, 'x', { title: 'sem id' }],
+  });
+  janela(ws, 'h2', { folder: 'file:///d%3A/Meus%20Docs/Area/' }, abas('w1'));
+  janela(ws, 'h3', { folder: 'file:///c%3A/outra' }, abas('fora'));
+  fs.writeFileSync(path.join(ws, 'solto.txt'), 'nao e pasta');
+  const m = lerAbasVsCode(ws, ['C:\\Projetos', 'd:/Meus Docs/Area', 'c:\\sem-janela']);
+  assert.deepEqual(comoObjeto(m), { 'c:\\projetos': ['s1', 's2'], 'd:\\meus docs\\area': ['w1'] });
+  assert.ok(m.get(raizNormal('c:/projetos/')) instanceof Set);
+});
+
+test('T38 A4. lerAbasVsCode ignora a subpasta torta: JSON torto, sem folder, so workspace (multi-pasta), remoto, file com host, sem workspace.json', { skip: SO_WINDOWS }, () => {
+  const ws = pastaTemp('abas-vscode-ign-');
+  janela(ws, 'torto', '{nao json', abas('t1'));
+  janela(ws, 'lista', '["file:///c%3A/projetos"]', abas('t2'));
+  janela(ws, 'vazio', {}, abas('t3'));
+  janela(ws, 'multi', { workspace: 'file:///c%3A/projetos/tudo.code-workspace' }, abas('t4'));
+  janela(ws, 'remoto', { folder: 'vscode-remote://wsl%2Bubuntu/c%3A/projetos' }, abas('t5'));
+  janela(ws, 'host', { folder: 'file://servidor/c%3A/projetos' }, abas('t6'));
+  janela(ws, 'semjson', undefined, abas('t7'));
+  janela(ws, 'pct', { folder: 'file:///c%3A/projetos%ZZ' }, abas('t8'));
+  janela(ws, 'nao-texto', { folder: 7 }, abas('t9'));
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\projetos'])), {});
+  janela(ws, 'boa', { folder: 'file:///c%3A/projetos' }, abas('ok'));
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\projetos'])), { 'c:\\projetos': ['ok'] });
+});
+
+test('T38 A5. lerAbasVsCode: 2 hashes da mesma raiz (um velho) = vale o state.vscdb com mtime mais novo, em qualquer ordem de nome', { skip: SO_WINDOWS }, () => {
+  const ws = pastaTemp('abas-vscode-hash-');
+  janela(ws, 'aaa', { folder: 'file:///c%3A/projetos' }, abas('novo'), { mtime: 2_000_000_000 });
+  janela(ws, 'zzz', { folder: 'file:///C%3A/Projetos/' }, abas('velho'), { mtime: 1_000_000_000 });
+  janela(ws, 'bbb', { folder: 'file:///c%3A/work' }, abas('w-velho'), { mtime: 1_000_000_000 });
+  janela(ws, 'yyy', { folder: 'file:///c%3A/work' }, abas('w-novo'), { mtime: 2_000_000_000 });
+  janela(ws, 'ccc', { folder: 'file:///c%3A/work' }, false);
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\projetos', 'c:\\work'])), { 'c:\\projetos': ['novo'], 'c:\\work': ['w-novo'] });
+});
+
+test('T38 A6. lerAbasVsCode: sem a linha da chave, sem o campo panelTabSessions ou sem o state.vscdb = Set vazio', { skip: SO_WINDOWS }, () => {
+  const ws = pastaTemp('abas-vscode-vazio-');
+  janela(ws, 'h1', { folder: 'file:///c%3A/a' }, undefined);
+  janela(ws, 'h2', { folder: 'file:///c%3A/b' }, { panelSessionIds: ['nao-e-aba'] });
+  janela(ws, 'h3', { folder: 'file:///c%3A/c' }, false);
+  janela(ws, 'h4', { folder: 'file:///c%3A/d' }, { panelTabSessions: [] });
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\a', 'c:\\b', 'c:\\c', 'c:\\d'])), { 'c:\\a': [], 'c:\\b': [], 'c:\\c': [], 'c:\\d': [] });
+});
+
+test('T38 A7. lerAbasVsCode ilegivel = null, sem lancar: pastaWs que nao e texto, banco que nao abre, valor que nao e JSON de objeto, panelTabSessions que nao e lista', { skip: SO_WINDOWS }, () => {
+  for (const x of [null, undefined, '', 7, {}]) assert.equal(lerAbasVsCode(x, ['c:\\projetos']), null, String(x));
+  const casos = [
+    ['{nao json', 'nao e JSON'],
+    ['[1,2]', 'lista'],
+    ['null', 'null'],
+    [JSON.stringify({ panelTabSessions: 'x' }), 'panelTabSessions texto'],
+    [JSON.stringify({ panelTabSessions: { sessionId: 's1' } }), 'panelTabSessions objeto'],
+  ];
+  for (const [valor, quem] of casos) {
+    const ws = pastaTemp('abas-vscode-ruim-');
+    janela(ws, 'boa', { folder: 'file:///c%3A/outra' }, abas('o1'));
+    janela(ws, 'ruim', { folder: 'file:///c%3A/projetos' }, valor);
+    assert.equal(lerAbasVsCode(ws, ['c:\\projetos', 'c:\\outra']), null, quem);
+  }
+  const ws = pastaTemp('abas-vscode-naobanco-');
+  const sub = janela(ws, 'h1', { folder: 'file:///c%3A/projetos' }, false);
+  fs.writeFileSync(path.join(sub, 'state.vscdb'), 'isto nao e sqlite');
+  assert.equal(lerAbasVsCode(ws, ['c:\\projetos']), null, 'nao e banco');
+  // a raiz que nao foi pedida nao e lida: o banco torto dela nao derruba a leitura
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\outra'])), {});
+});
+
+test('T38 A8. lerAbasVsCode: pasta que nao existe = Map vazio (o VS Code nunca rodou); raizes que nao sao lista = nenhuma', () => {
+  const ws = path.join(pastaTemp('abas-vscode-nada-'), 'workspaceStorage');
+  const m = lerAbasVsCode(ws, ['c:\\projetos']);
+  assert.ok(m instanceof Map);
+  assert.equal(m.size, 0);
+  assert.equal(fs.existsSync(ws), false);
+  for (const r of [null, undefined, 'c:\\projetos', 7]) assert.equal(lerAbasVsCode(ws, r).size, 0, String(r));
+});
+
+test('T38 A9. lerAbasVsCode so le: nenhum arquivo criado ou alterado (mtime e tamanho iguais) e os bancos se apagam logo depois (fechou)', { skip: SO_WINDOWS }, () => {
+  const ws = pastaTemp('abas-vscode-leitura-');
+  janela(ws, 'h1', { folder: 'file:///c%3A/projetos' }, abas('s1'), { mtime: 2_000_000_000 });
+  janela(ws, 'h2', { folder: 'file:///c%3A/projetos' }, abas('s0'), { mtime: 1_000_000_000 });
+  janela(ws, 'h3', { folder: 'file:///c%3A/work' }, undefined);
+  const foto = () => {
+    const r = [];
+    for (const sub of fs.readdirSync(ws).sort()) {
+      for (const f of fs.readdirSync(path.join(ws, sub)).sort()) {
+        const st = fs.statSync(path.join(ws, sub, f));
+        r.push([sub, f, st.mtimeMs, st.size]);
+      }
+    }
+    return r;
+  };
+  const antes = foto();
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\projetos', 'c:\\work'])), { 'c:\\projetos': ['s1'], 'c:\\work': [] });
+  assert.deepEqual(comoObjeto(lerAbasVsCode(ws, ['c:\\projetos', 'c:\\work'])), { 'c:\\projetos': ['s1'], 'c:\\work': [] });
+  assert.deepEqual(foto(), antes);
+  for (const sub of ['h1', 'h2', 'h3']) fs.unlinkSync(path.join(ws, sub, 'state.vscdb'));
 });

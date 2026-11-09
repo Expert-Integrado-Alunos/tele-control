@@ -235,14 +235,15 @@ test('A5a 6. modo rua no passoMinuto: ociosoMin 10 = 9 min nao liga e 10 liga; s
   }
 });
 
-test('A5a 7. modo rua com automatico false: 60 min de PC parado nao liga; o /rua liga (pelo comando, com a carencia de antes) e o PC parado nao o desliga', async () => {
+// T39 (D3): o /rua do menu so abre a mensagem de ajustes; a acao direta do dono e o "to na rua" escrito.
+test('A5a 7. modo rua com automatico false: 60 min de PC parado nao liga; o "to na rua" escrito liga (pelo comando, com a carencia de antes) e o PC parado nao o desliga', async () => {
   const h = montar({ modoRua: { automatico: false, ociosoMin: 10 } });
   for (const n of [10, 30, 60, 240]) assert.equal((await minuto(h, n)).ligado, false, `${n} min: nao liga`);
   mexer(h, (e) => { e.tg.offset = 0; }); // o historico do Telegram ja foi pulado
-  h.tg.lotes.push([msgTg(h, '/rua')]);
+  h.tg.lotes.push([msgTg(h, 'to na rua')]);
   await h.p.esperarTelegram(15000);
   let m = estado(h).modoRua;
-  assert.equal(m.ligado, true, 'o /rua liga');
+  assert.equal(m.ligado, true, 'o "to na rua" escrito liga');
   assert.notEqual(m.motivo, 'ocioso');
   assert.ok(Number.isFinite(Date.parse(m.comandoEm)), 'pelo comando (a carencia vale)');
   m = await minuto(h, 60);

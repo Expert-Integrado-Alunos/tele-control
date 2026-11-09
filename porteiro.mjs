@@ -150,10 +150,12 @@ import {
   lerConfig, identidadeTelegram, botIdDaChave, identidadeWhatsapp, RE_NUMERO_WPP, WPP_DESLIGADO_NO_CONFIG,
   sessoesDoConfig, identidadeCentral, claudeDoConfig, appsDoConfig, orcaDoConfig, bancoVsCodeDoConfig, donoDoConfig,
   transcricaoDoConfig, modoRuaDoConfig, mensageiroDoConfig, vozDoConfig, saudeDoConfig, maquinaDoConfig, nomeDoDonoValido,
-  vozLigadaDoConfig, focoDoConfig,
+  vozLigadaDoConfig, focoDoConfig, modoPainelDoConfig,
 } from './lib/config.mjs';
-import { lerListaVsCode, listaVsCodeVazia, caminhoBancoVsCode, raizNormal, nomeDoGrupo, ehConcluido } from './lib/lista-vscode.mjs';
-import { semLinhaDoDono, lerDadosBotao } from './lib/formato-tg.mjs';
+import {
+  lerListaVsCode, listaVsCodeVazia, caminhoBancoVsCode, raizNormal, nomeDoGrupo, ehConcluido, lerAbasVsCode, caminhoAbasVsCode,
+} from './lib/lista-vscode.mjs';
+import { semLinhaDoDono, lerDadosBotao, lerDadosAjuste } from './lib/formato-tg.mjs';
 import { falar as falarVoz, textoParaFala } from './lib/voz.mjs';
 import { limparAmbienteDeSessao, nomesDoRegistroReal } from './lib/ambiente.mjs';
 import { gravarCentral as gravarCentralReal } from './lib/central.mjs';
@@ -244,6 +246,10 @@ const ENTRYPOINTS_DA_LISTA = new Set(['claude-vscode', 'cli']); // T11: aba do V
 // maximo 300 abas tocadas
 const PAINEL_VIVO_MS = 30 * 1000;
 const PAINEL_TOCADAS_MAX = 300;
+// T38 (PLANO-TELEGRAM.md, "T38"): as abas abertas no VS Code (os bancos de cada janela) se releem no maximo a cada
+// ABAS_TTL_MS (o Sincronizar limpa antes); no espelho, cada grupo mostra as MAX_POR_GRUPO mais recentes e as com marca
+const ABAS_TTL_MS = 60 * 1000;
+const MAX_POR_GRUPO = 40;
 // T14 (caso real): Paradas = sem pergunta e mexeu nas ultimas 48 h; a pergunta pra ele (o parou que precisa
 // dele) fica 30 dias no estado (o resto do ultimosParou segue com as 24 h do AVISO_TTL_MS): pergunta so sai do Esperando
 // respondida (T14c: o "Concluir" saiu)
@@ -299,21 +305,24 @@ const CENTRAL_MORTE_PASSO_MS = 200;
 const CABECALHO = cabecalho('Controle de sessões', ICONE_CONTROLE); // F4g + caso real: 🎛️ (voz do controle), nao ℹ️ (aba)
 // Fase 5a, T3a: o menu do bot (desde a A1, o chat e o bot vem do config.json: lib/config.mjs)
 // T9 (05/10/2026): "painel" no lugar de "status" e "pendencias" no menu (os 2 seguem valendo digitados)
+// T39 (PLANO-TELEGRAM.md, "T39"; pedido do dono 08/11/2026: «a ordem é painel > central > rua/pc > modo > voz»): o menu
+// na ordem do dono; o "voltei" sai do menu (vira o botao do /rua), mas o "/voltei" digitado segue desligando direto.
 export const COMANDOS_TG = [
   { command: 'painel', description: 'Painel das abas' },
-  { command: 'rua', description: 'Tô na rua' },
-  { command: 'voltei', description: 'Voltei pro PC' },
-  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' }, // T29a
-  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' }, // T29a
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' },
+  { command: 'rua', description: 'Modo rua: ligar ou desligar' }, // T39
+  { command: 'modo', description: 'Modo do painel e das mensagens' }, // T29a; T39
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' }, // T29a
 ]; // T10b: sem o start no menu (saia "Painel das abas" 2 vezes); o "/start" digitado e o do link seguem valendo
 // Comando do menu do bot -> o comando de texto do grupo ("trava" fica fora do menu: toque sem querer travaria tudo)
 // T29a: voz e modo sao so do Telegram (nao existem no grupo): o comando vai direto pro comandoTg (SO_TG), sem o roteamento
+// T39 (PLANO-TELEGRAM.md, "T39"): o /rua do menu tambem e so do Telegram (abre a mensagem de ajustes com o botao); o
+// "to na rua"/"voltei" escritos e o "/voltei" seguem pelo roteamento, com a acao direta.
 const MENU_TG = {
-  painel: 'status', status: 'status', pendencias: 'pendencias', start: 'status', rua: 'to na rua', voltei: 'voltei', central: 'abre central',
+  painel: 'status', status: 'status', pendencias: 'pendencias', start: 'status', rua: 'rua', voltei: 'voltei', central: 'abre central',
   voz: 'voz', modo: 'modo',
 };
-const SO_TG = new Set(['voz', 'modo']);
+const SO_TG = new Set(['rua', 'voz', 'modo']);
 const TG_LEITURA_MAX_S = 25; // getUpdates longo: no maximo isso por vez (toque tratado em ~1 s)
 const TG_LEITURA_VOZ_S = 2; // T17: com resposta em voz pendente a leitura e curta (a voz sai ate ~2 s depois de pronta, nao na volta seguinte)
 const TG_ERRO_ESPERA_MS = 5 * 1000; // leitura com erro (fora 429): espera isso
@@ -363,6 +372,7 @@ const FRASES_TG = {
   modoLimpo: 'Modo limpo: o que já foi resolvido sai do chat.',
   modoManter: 'Modo manter tudo: nada sai do chat; o resolvido só perde os botões.',
   ajusteNaoGravou: 'Não consegui gravar o ajuste; nada mudou.',
+  ajusteJaEsta: 'Já está assim.', // T39: o botao da mensagem de ajustes com o estado que ja vale (botao velho)
   toqueTravado: 'Travado. Destrava no PC.',
   toqueVelho: 'Essa pergunta já mudou.',
   // T37b2 (rotina do dia): o balao do toque nos botoes do lote (o "Anotado: <Rotulo>." e o avisoDoToque do
@@ -408,6 +418,16 @@ const FRASES_TG = {
   abaFechou: 'Essa aba fechou.',
   // T11 (PLANO-TELEGRAM.md, contrato 4): a situacao de aba fechada que a resposta em cima reabre (T8)
   fechadaReabre: 'Fechada. Responda aqui pra reabrir.',
+  // T38 (PLANO-TELEGRAM.md, "T38"): os baloes dos botoes do painel (modo e Sincronizar) e a situacao da aba sem processo
+  // com a aba aberta no VS Code (com e sem a reabertura pela resposta)
+  painelJaVsCode: 'O painel já está no modo VS Code.',
+  painelJaPadrao: 'O painel já está no modo padrão.',
+  painelNoVsCode: 'Painel no modo VS Code.',
+  painelNoPadrao: 'Painel no modo padrão.',
+  sincronizado: (hora) => `Sincronizado com o VS Code às ${hora}.`,
+  sincronizarErro: 'Não consegui ler a lista do VS Code agora.',
+  paradaComAba: 'Parada, com a aba aberta no VS Code. Responda aqui pra retomar.',
+  paradaComAbaSo: 'Parada, com a aba aberta no VS Code.',
   // T16 (PLANO-TELEGRAM.md, contrato 5): toque numa opcao da situacao com a aba trabalhando (nada vai pra aba)
   toqueTrabalhando: 'A aba está trabalhando agora; não passei essa opção.',
   // T28 (PLANO-TELEGRAM.md, "T28", contratos 2-4): o toque em "🔄 Tentar novamente" do OK que expirou (no topo) e a 2a
@@ -1441,7 +1461,7 @@ function mudarModo(m, ligado, motivo, agoraMs, porComando = false) {
 // T17b: `falar(texto)` -> Promise<Buffer> (Ogg/Opus; CLI: o falar do lib/voz.mjs; null = sem voz) e `vozTg` (CLI:
 // telegram.voz !== false do config.json) = a resposta a uma fala de AUDIO pelo Telegram tambem sai em voz (pedirVoz/passoVozTg).
 // T29a: o vozTg e o valor da subida (CLI: o voz.ligada do vozLigadaDoConfig e o telegram.voz da T17b); o /voz do menu do
-// bot troca na hora e grava voz.ligada no config.json (alternarVozTg). Desligada = o pedirVoz nao pede voz nova; a que ja
+// bot troca na hora e grava voz.ligada no config.json (definirVozTg, desde a T39 pelo botao da mensagem de ajustes). Desligada = o pedirVoz nao pede voz nova; a que ja
 // esta na fila sai.
 // T21b: `abrirNoOrca(pasta, nome, {retomar})` -> promessa (rejeita = falhou; CLI: abrirNoOrcaReal) e `orcaAberto()` ->
 // promessa de true | false (CLI: orcaAbertoReal): a fechada com origem Orca (e.origens) e o Orca aberto volta numa aba
@@ -1452,7 +1472,7 @@ function mudarModo(m, ligado, motivo, agoraMs, porComando = false) {
 // config.json pelo lerConfigTelegram) = o modo das mensagens resolvidas: vai pro canal (criarCanalTelegram `resolvidas`;
 // outro valor = o TypeError dele, com o Telegram) e, no 'manter', o pedido de OK fecha sempre editado (nunca sai do chat).
 // T29a: e o valor da subida; o /modo do menu do bot troca na hora (o canal pelo definirResolvidas e o fecho do OK) e grava
-// telegram.resolvidas no config.json (alternarModoTg).
+// telegram.resolvidas no config.json (definirResolvidasTg, desde a T39 pelo botao da mensagem de ajustes).
 // A5a (PLANO-ABERTO.md, "A5a — os botões de funcionamento"): `modoRua` = {automatico, ociosoMin} (CLI: o modoRuaDoConfig
 // do config.json), normalizado aqui pelo modoRuaDoConfig (ausente = o padrao: liga sozinho com o PC parado 30 min); com
 // automatico false o PC parado nunca liga o modo rua (so o "to na rua" e o /rua).
@@ -1461,6 +1481,11 @@ function mudarModo(m, ligado, motivo, agoraMs, porComando = false) {
 // hora em que o porteiro subiu.
 // T34 (PLANO-TELEGRAM.md, "T34"): `guardiao` = {vivo() -> true|false|null, religar()} (CLI: o guardiaoReal, so no Windows)
 // = o porteiro religa o guardiao morto (null = nao confere: o Mac, o teste e o ensaio).
+// T38 (PLANO-TELEGRAM.md, "T38"): `lerAbasVsCode()` -> Map<raizNormal, Set<sessionId>> | null, SINCRONO (CLI: o
+// lerAbasVsCode da lib ja ligado a pasta dos bancos das janelas e as raizes) = as abas abertas no VS Code agora; sem ele,
+// retorno torto ou erro = "nao sei" (a marca "fechada" fica so pelo processo, como antes). Guardado ABAS_TTL_MS.
+// T38: `modoPainel` = 'vscode' (o painel espelho da lista do VS Code, dadosPainelVsCode) | qualquer outra coisa = 'padrao'
+// (o painel de antes). E o valor da subida (CLI: o modoPainelDoConfig do config.json); fica em modoPainelAtual.
 export function criarPorteiro({
   wpp, numeroDono = null, mensageiro, ocioso, agora = Date.now, env = process.env, ensaio, abrirCentral, avisarTelegram, processos,
   tg = null, canalPrincipal = 'whatsapp', dormir: dormirMs = dormir, rand, transcrever = null,
@@ -1472,6 +1497,8 @@ export function criarPorteiro({
   modoRua = null,
   focoPainel = null,
   guardiao = null,
+  lerAbasVsCode: lerAbas = null,
+  modoPainel = 'padrao',
 } = {}) {
   const emEnsaio = ensaio ?? env.SESSOES_WPP_ENSAIO === '1';
   const rua = modoRuaDoConfig({ modoRua }); // A5a: o PC parado que liga o modo rua (ausente ou torto = o padrao)
@@ -1532,6 +1559,10 @@ export function criarPorteiro({
   const cacheConversas = new Map();
   let listaErroLogEm = -Infinity;
   let focoErroLogEm = -Infinity; // T33: o ultimo log do painel sem o foco (lista ilegivel ou grupo sem ninguem)
+  // T38 (so em memoria): o modo do painel (o D2b troca pelo botao) e as abas abertas no VS Code lidas por ultimo
+  // ({em, abas: Set | null}; null = nada guardado)
+  let modoPainelAtual = modoPainel === 'vscode' ? 'vscode' : 'padrao';
+  let abasCache = null;
   let guardiaoReligadoEm = -Infinity; // T34: a ultima vez que o porteiro rodou o .vbs pro guardiao morto
   // T7a1b (so em memoria): `${pid}|${sessionId}` da central travada que falhou na identidade (ou no encerrar) ->
   // {ate, motivo, reusado}; reusado = o pid e de outro processo (o sessoesVivas pula ate `ate`)
@@ -5248,8 +5279,36 @@ export function criarPorteiro({
     };
   }
 
+  // T38 (PLANO-TELEGRAM.md, "T38"): as abas abertas no VS Code agora (a uniao das janelas) -> Set<sessionId> | null (sem o
+  // lerAbasVsCode, retorno que nao e Map ou erro). Guardado ABAS_TTL_MS; o limparCacheAbas (o Sincronizar) zera.
+  function abasAbertasAgora(agoraMs) {
+    if (abasCache && agoraMs >= abasCache.em && agoraMs - abasCache.em < ABAS_TTL_MS) return abasCache.abas;
+    let abas = null;
+    if (typeof lerAbas === 'function') {
+      try {
+        const m = lerAbas();
+        if (m instanceof Map) {
+          abas = new Set();
+          for (const s of m.values()) if (s instanceof Set) for (const sid of s) abas.add(sid);
+        }
+      } catch { abas = null; }
+    }
+    abasCache = { em: agoraMs, abas };
+    return abas;
+  }
+
+  function limparCacheAbas() {
+    abasCache = null;
+  }
+
+  // T38: a aba esta aberta no VS Code (abas null = nao sei = nao)
+  const abaAberta = (sid, abas) => abas !== null && abas.has(sid);
+
+  // T38 (PLANO-TELEGRAM.md, "T38"): a marca "fechada" do painel padrao = sem processo E sem aba aberta no VS Code (abas
+  // ilegiveis = so sem processo, como antes). O `fechada` do itensPendencias nao muda (T25, situacao e WhatsApp).
   function dadosPainelCru(e, vivas, agoraMs) {
     const todos = itensPendencias(e, vivas, agoraMs);
+    const abas = abasAbertasAgora(agoraMs); // T38
     const comEle = new Set(todos.map((x) => x.sid));
     const nome = (s) => ({ titulo: s.titulo || s.nome || 'sem nome', sid: s.sessionId });
     const desde = agoraMs - PARADA_JANELA_MS;
@@ -5301,7 +5360,7 @@ export function criarPorteiro({
     for (const x of doVs?.lista ?? []) {
       if (!passa(x.sid, { ms: x.ms, titulo: x.titulo })) continue; // T33
       if (agoraMs - x.ms <= PARADA_JANELA_MS) {
-        paradas.push({ ms: x.ms, item: { titulo: x.titulo, sid: x.sid, fechada: true } });
+        paradas.push({ ms: x.ms, item: { titulo: x.titulo, sid: x.sid, ...(abaAberta(x.sid, abas) ? {} : { fechada: true }) } }); // T38
         continue;
       }
       fechadas.push({ ms: x.ms, item: { titulo: x.titulo, sid: x.sid, grupo: x.grupo } });
@@ -5309,7 +5368,9 @@ export function criarPorteiro({
     paradas.sort((a, b) => b.ms - a.ms || a.item.titulo.localeCompare(b.item.titulo, 'pt-BR'));
     const posicao = (x) => (x.item.grupo === null ? Infinity : doVs?.ordem?.get(x.item.grupo) ?? Infinity);
     fechadas.sort((a, b) => posicao(a) - posicao(b) || b.ms - a.ms || a.item.titulo.localeCompare(b.item.titulo, 'pt-BR'));
-    const comPergunta = (x) => ({ titulo: x.titulo, hora: x.horaIso ?? null, texto: x.resto, sid: x.sid, ...(x.fechada ? { fechada: true } : {}) });
+    const comPergunta = (x) => ({
+      titulo: x.titulo, hora: x.horaIso ?? null, texto: x.resto, sid: x.sid, ...(x.fechada && !abaAberta(x.sid, abas) ? { fechada: true } : {}), // T38
+    });
     const d = {
       hora: iso(agoraMs),
       modoRua: e.modoRua.ligado === true,
@@ -5349,7 +5410,7 @@ export function criarPorteiro({
     por(d.aguardando, 'Aguardando');
     por(d.trabalhando, 'Trabalhando');
     por(d.paradas, 'Paradas');
-    por(d.fechadas, 'Fechadas');
+    por(d.fechadas, 'Paradas há mais de 2 dias'); // T38: o nome do grupo no painel (era "Fechadas")
     const ordem = (x) => (x.ms === null ? -Infinity : x.ms);
     const fora = foraInfo.map((x) => ({ ...x, titulo: comNome(x) })).sort((a, b) => Number(b.aberta) - Number(a.aberta) || ordem(b) - ordem(a)
       || a.titulo.localeCompare(b.titulo, 'pt-BR'));
@@ -5406,9 +5467,142 @@ export function criarPorteiro({
     return semTocadas(e, dadosPainelCru(e, vivas, agoraMs));
   }
 
+  // T38 (PLANO-TELEGRAM.md, "T38"; pedido do dono: o painel com os grupos da lista do VS Code): os dados do espelho
+  // (o contrato do montarPainelVsCode) | null (sem o lerListaVsCode ou lista ilegivel). Por raiz, na ordem: os <uuid>.jsonl
+  // de cima da pasta de projeto dela, de QUALQUER entrypoint (a regra do VS Code); os grupos da janela na ordem, com o
+  // nome como veio, cada um com os ids que tem arquivo e nao estao arquivados (id em 2 grupos fica no 1o; grupo vazio
+  // aparece); as arquivadas so contadas; o resto no "Sem grupo", sempre o ultimo. A central (a viva pelo ehCentral, a
+  // fechada `cli` pelo titulo) sai e e contada em centralFora. Dentro do grupo, a mais recente primeiro (mtime do arquivo;
+  // empate pelo titulo), as MAX_POR_GRUPO primeiras mais as com marca; o titulo so das que aparecem. Marcas: 'fechada'
+  // (sem processo e sem aba aberta; abas ilegiveis = so sem processo), 'esperando' (no itensPendencias fora do Aguardando;
+  // o pedido de OK conta) e 'trabalhando' (viva busy). `fora` = a pendencia e a viva (nao central) que nao entraram em
+  // grupo nenhum (outra pasta, Orca, arquivada), so com total > 0. Sem foco, escolhas e tocadas; nao grava e.painelLista.
+  function dadosPainelVsCode(e, vivas, agoraMs) {
+    if (typeof lerLista !== 'function') return null;
+    let l = null;
+    try { l = lerLista(); } catch { l = null; }
+    if (!l || !(l.arquivadas instanceof Set) || !(l.grupos instanceof Map)) return null;
+    const viva = new Map(vivas.map((s) => [s.sessionId, s]));
+    const centrais = new Set(vivas.filter((s) => ehCentral(s)).map((s) => s.sessionId));
+    const pend = itensPendencias(e, vivas, agoraMs);
+    const esperando = new Set(pend.filter((x) => !x.aguardando).map((x) => x.sid));
+    const abas = abasAbertasAgora(agoraMs);
+    const marcasDe = (sid) => {
+      const s = viva.get(sid);
+      const m = [];
+      if (!s && !abaAberta(sid, abas)) m.push('fechada');
+      if (esperando.has(sid)) m.push('esperando');
+      if (s?.status === 'busy') m.push('trabalhando');
+      return m;
+    };
+    const titulos = new Map(); // sid -> titulo (lido uma vez, so das que aparecem)
+    const tituloDe = (sid, arq) => {
+      if (titulos.has(sid)) return titulos.get(sid);
+      const s = viva.get(sid);
+      const t = (s && (s.titulo || s.nome)) || (arq ? conversaFechada(arq)?.titulo : null) || 'sem nome';
+      titulos.set(sid, t);
+      return t;
+    };
+    const vistos = new Set(); // os sids que entraram num grupo (ou na central fora) de alguma janela
+    const janelas = [];
+    for (const raiz of raizes) {
+      const naPasta = new Map(); // sid -> {arq, ms}
+      const dir = pastaDeProjeto(raiz);
+      let arquivos = [];
+      if (dir) try { arquivos = fs.readdirSync(dir, { withFileTypes: true }); } catch { arquivos = []; }
+      for (const a of arquivos) {
+        if (!a.isFile() || !a.name.endsWith('.jsonl')) continue;
+        const sid = a.name.slice(0, -'.jsonl'.length);
+        if (!UUID_RE.test(sid)) continue;
+        const arq = path.join(dir, a.name);
+        let st;
+        try { st = fs.statSync(arq); } catch { continue; }
+        naPasta.set(sid, { arq, ms: st.mtimeMs });
+      }
+      let arquivadas = 0;
+      let centralFora = 0;
+      const livres = new Set(); // na pasta, fora das arquivadas e da central
+      for (const [sid, { arq }] of naPasta) {
+        if (l.arquivadas.has(sid)) { arquivadas += 1; continue; }
+        let central = centrais.has(sid);
+        if (!central && !viva.has(sid)) { // a fechada: o titulo so das `cli`
+          const cab = conversaFechada(arq, { comTitulo: false });
+          if (cab?.cab?.entrypoint === 'cli') {
+            const c = conversaFechada(arq);
+            central = typeof c?.titulo === 'string' && normalizar(c.titulo) === centralTitulo;
+          }
+        }
+        if (central) {
+          centralFora += 1;
+          vistos.add(sid);
+          continue;
+        }
+        livres.add(sid);
+      }
+      const grupo = (nome, ids, extra = {}) => {
+        const ord = ids.map((sid) => ({ sid, ...naPasta.get(sid), marcas: marcasDe(sid) }));
+        ord.sort((a, b) => b.ms - a.ms || tituloDe(a.sid, a.arq).localeCompare(tituloDe(b.sid, b.arq), 'pt-BR'));
+        for (const x of ord) vistos.add(x.sid);
+        // D2b: so 'esperando' e 'trabalhando' furam o teto; 'fechada' sozinha nao (quase toda parada e fechada)
+        const itens = ord.filter((x, i) => i < MAX_POR_GRUPO || x.marcas.some((m) => m !== 'fechada'))
+          .map((x) => ({ titulo: tituloDe(x.sid, x.arq), sid: x.sid, marcas: x.marcas }));
+        return { nome, ...extra, total: ord.length, itens };
+      };
+      const usados = new Set();
+      const grupos = [];
+      const daJanela = l.grupos.get(raizNormal(raiz));
+      for (const g of Array.isArray(daJanela) ? daJanela : []) {
+        if (!g || typeof g.nome !== 'string' || !Array.isArray(g.ids)) continue;
+        const ids = [];
+        for (const id of g.ids) {
+          if (typeof id !== 'string' || usados.has(id) || !livres.has(id)) continue;
+          usados.add(id);
+          ids.push(id);
+        }
+        grupos.push(grupo(g.nome, ids));
+      }
+      grupos.push(grupo('Sem grupo', [...livres].filter((sid) => !usados.has(sid)), { semGrupo: true }));
+      janelas.push({ nome: path.basename(String(raiz).replace(/[\\/]+$/, '')), arquivadas, centralFora, grupos });
+    }
+    const foraItens = [];
+    const noFora = new Set();
+    const porFora = (sid, titulo) => {
+      if (vistos.has(sid) || noFora.has(sid)) return;
+      noFora.add(sid);
+      foraItens.push({ titulo, sid, marcas: marcasDe(sid) });
+    };
+    for (const x of pend) porFora(x.sid, x.titulo);
+    for (const s of vivas) if (!centrais.has(s.sessionId)) porFora(s.sessionId, s.titulo || s.nome || 'sem nome');
+    const d = {
+      modo: 'vscode',
+      hora: iso(agoraMs),
+      modoRua: e.modoRua.ligado === true,
+      bot: typeof tg?.usuarioBot === 'string' && tg.usuarioBot ? tg.usuarioBot : null,
+      esperandoN: esperando.size,
+      trabalhandoN: vivas.filter((s) => s.status === 'busy' && !centrais.has(s.sessionId)).length,
+      janelas,
+    };
+    if (foraItens.length) d.fora = { total: foraItens.length, itens: foraItens };
+    return d;
+  }
+
+  // T38 (PLANO-TELEGRAM.md, "T38"): os dados do painel no modo dele, sempre com `modo` (o D2b escolhe os botoes por ele).
+  // Padrao = o dadosPainel; VS Code = o espelho; VS Code com a lista ilegivel = o padrao (com a linha do erro) e
+  // `modoBotao: 'vscode'` (o botao segue dizendo que o escolhido e o VS Code).
+  function dadosDoModo(e, vivas, agoraMs) {
+    if (modoPainelAtual === 'vscode') {
+      const d = dadosPainelVsCode(e, vivas, agoraMs);
+      if (d) return d;
+      return { ...dadosPainel(e, vivas, agoraMs), modo: 'padrao', modoBotao: 'vscode' };
+    }
+    return { ...dadosPainel(e, vivas, agoraMs), modo: 'padrao' };
+  }
+
   // T12 (contrato 2): a aba tocada sai do painel na tela (edicao em silencio), guardando o lugar dela. Sem painel na tela
   // ou aba fora do painel = nada.
+  // T38: no espelho (modo VS Code) a aba tocada nao sai: nada.
   function tirarDoPainel(e, sid, vivas, agoraMs) {
+    if (modoPainelAtual === 'vscode') return;
     if (canal.painelNaTela(e) === null) return;
     const cru = dadosPainelCru(e, vivas, agoraMs);
     const lugar = lugaresDoPainel(cru).get(sid);
@@ -5419,7 +5613,7 @@ export function criarPorteiro({
     const ks = Object.keys(pt.tocadas);
     for (const k of ks.slice(0, Math.max(0, ks.length - PAINEL_TOCADAS_MAX))) delete pt.tocadas[k];
     pt.conferidoEm = iso(agoraMs);
-    canal.atualizarPainel(e, semTocadas(e, cru));
+    canal.atualizarPainel(e, { ...semTocadas(e, cru), modo: 'padrao' }); // T38: todo painel leva o modo
     log(`Telegram: a aba ${sid} saiu do painel (tocada; ${lugar.split(':')[0]})`);
   }
 
@@ -5435,7 +5629,7 @@ export function criarPorteiro({
       const ultima = msDeIso(pt.conferidoEm);
       if (Number.isFinite(ultima) && agoraMs >= ultima && agoraMs - ultima < PAINEL_VIVO_MS) return;
       pt.conferidoEm = iso(agoraMs);
-      const d = dadosPainel(e, sessoesVivas(), agoraMs);
+      const d = dadosDoModo(e, sessoesVivas(), agoraMs); // T38
       if (JSON.stringify({ ...d, hora: null }) === JSON.stringify({ ...naTela, hora: null })) return;
       canal.atualizarPainel(e, d);
     } catch (err) {
@@ -6164,18 +6358,14 @@ export function criarPorteiro({
       const pt = painelTgDe(e); // T12: o painel novo traz todas as abas de volta
       pt.tocadas = {};
       pt.conferidoEm = iso(agoraMs);
-      canal.painel(e, dadosPainel(e, vivas, agoraMs), citar);
+      canal.painel(e, dadosDoModo(e, vivas, agoraMs), citar); // T38
     } else if (cmd === 'rua') {
       ligarRuaPeloDono(e, agoraMs, 'to na rua, pelo Telegram');
       canal.sistema(e, FRASES_TG.ruaLigado, citar);
     } else if (cmd === 'pc') {
       voltarProPc(e, agoraMs, 'voltei, pelo Telegram');
       canal.sistema(e, FRASES_TG.ruaDesligado, citar);
-    } else if (cmd === 'voz') {
-      alternarVozTg(e, citar);
-    } else if (cmd === 'modo') {
-      alternarModoTg(e, citar);
-    } else if (cmd === 'trava') {
+    } else if (cmd === 'trava') { // T39: o voz e o modo sairam daqui (o menu abre a mensagem de ajustes: abrirAjustesTg)
       travarTg(e, u, agoraMs);
     } else if (cmd === 'central') {
       const frase = await pedirCentral(e, vivas, agoraMs, 'telegram', u.messageId); // T7d1b: a vigia cita o comando
@@ -6204,30 +6394,137 @@ export function criarPorteiro({
     }
   }
 
-  // T29a: o /voz alterna a resposta em voz (ligada <-> desligada): grava voz.ligada e so entao troca em memoria.
-  function alternarVozTg(e, citar) {
-    const nova = !vozTg;
-    if (!gravarAjusteTg('/voz', 'voz', 'ligada', nova)) {
-      canal.sistema(e, FRASES_TG.ajusteNaoGravou, citar);
-      return;
-    }
+  // T29a: a resposta em voz (ligada | desligada): grava voz.ligada e so entao troca em memoria. T39: era o alternarVozTg do
+  // /voz; agora o botao da mensagem de ajustes leva o valor ALVO. Nao gravou = false, sem frase (quem chama escolhe).
+  function definirVozTg(nova) {
+    if (!gravarAjusteTg('voz', 'voz', 'ligada', nova)) return false;
     vozTg = nova;
-    log(`Telegram: /voz: resposta por voz ${nova ? 'ligada' : 'desligada'} (config.json gravado)`);
-    canal.sistema(e, nova ? FRASES_TG.vozLigada : FRASES_TG.vozDesligada, citar);
+    log(`Telegram: voz pelo botão: ${nova ? 'ligada' : 'desligada'} (config.json gravado)`);
+    return true;
   }
 
-  // T29a: o /modo alterna o modo das resolvidas (limpo = 'apagar' <-> 'manter'): grava telegram.resolvidas e so entao troca
-  // o canal (definirResolvidas) e o fecho do OK (resolvidasTg).
-  function alternarModoTg(e, citar) {
-    const novo = resolvidasTg === 'manter' ? 'apagar' : 'manter';
-    if (!gravarAjusteTg('/modo', 'telegram', 'resolvidas', novo)) {
-      canal.sistema(e, FRASES_TG.ajusteNaoGravou, citar);
-      return;
-    }
+  // T29a: o modo das resolvidas (limpo = 'apagar' | 'manter'): grava telegram.resolvidas e so entao troca o canal
+  // (definirResolvidas) e o fecho do OK (resolvidasTg). T39: era o alternarModoTg do /modo; agora leva o valor ALVO. Nao
+  // gravou = false, sem frase.
+  function definirResolvidasTg(e, novo) {
+    if (!gravarAjusteTg('mensagens', 'telegram', 'resolvidas', novo)) return false;
     canal.definirResolvidas(e, novo);
     resolvidasTg = novo;
-    log(`Telegram: /modo: ${novo === 'manter' ? 'manter tudo' : 'limpo'} (config.json gravado)`);
-    canal.sistema(e, novo === 'manter' ? FRASES_TG.modoManter : FRASES_TG.modoLimpo, citar);
+    log(`Telegram: mensagens pelo botão: ${novo === 'manter' ? 'manter tudo' : 'limpo'} (config.json gravado)`);
+    return true;
+  }
+
+  // T39 (PLANO-TELEGRAM.md, "T39"): os dados da mensagem de ajustes = o estado de hoje (qual = 'rua' | 'modo' | 'voz').
+  function dadosAjustes(e, qual) {
+    return { qual, rua: e.modoRua?.ligado === true, voz: vozTg === true, painel: modoPainelAtual, mensagens: resolvidasTg };
+  }
+
+  // T39: o /rua, o /modo e o /voz do menu (ou digitados) = a mensagem de ajustes com o estado e o botao, em cima do comando.
+  function abrirAjustesTg(e, qual, u) {
+    canal.ajustes(e, dadosAjustes(e, qual), { citar: u.messageId });
+    log(`Telegram: /${qual}: ajustes na tela`);
+  }
+
+  // T39: a mensagem de ajustes na tela com dados diferentes do estado de hoje = edicao no lugar (o modo rua que liga
+  // sozinho, o "voltei" escrito, o botao do painel). Sem ela = nada. Nunca lanca.
+  function atualizarAjustesNaTela(e) {
+    try {
+      const naTela = canal.ajustesNaTela(e);
+      if (naTela === null) return;
+      const d = dadosAjustes(e, naTela.qual);
+      if (JSON.stringify(d) !== JSON.stringify(naTela)) canal.atualizarAjustes(e, d);
+    } catch (err) {
+      log(`Telegram: ajustes na tela falhou (${String(err?.message || err).slice(0, 160)})`);
+    }
+  }
+
+  // T39: o toque num botao da mensagem de ajustes (`alvo` = {alvo, valor} do lerDadosAjuste: o estado ALVO, nunca
+  // "alternar"). Ja no alvo (botao velho) = o balao "Já está assim." e a mensagem com o estado de hoje. Senao troca (rua
+  // pelo ligarRuaPeloDono/voltarProPc; voz, mensagens e painel gravam o config.json antes: nao gravou = o balao do
+  // ajusteNaoGravou e nada muda), o balao com a frase de hoje e a mensagem com o estado novo.
+  async function tocarAjuste(e, u, { alvo, valor }, vivas, agoraMs) {
+    const atual = { rua: e.modoRua?.ligado === true, voz: vozTg === true, painel: modoPainelAtual, mensagens: resolvidasTg }[alvo];
+    if (atual === valor) {
+      await responderToqueTg(u.toqueId, FRASES_TG.ajusteJaEsta);
+      atualizarAjustesNaTela(e);
+      return;
+    }
+    if (alvo === 'rua') {
+      if (valor === true) ligarRuaPeloDono(e, agoraMs, 'to na rua, pelo botão do Telegram');
+      else voltarProPc(e, agoraMs, 'voltei, pelo botão do Telegram');
+      await responderToqueTg(u.toqueId, valor === true ? FRASES_TG.ruaLigado : FRASES_TG.ruaDesligado);
+    } else if (alvo === 'voz') {
+      if (!definirVozTg(valor)) {
+        await responderToqueTg(u.toqueId, FRASES_TG.ajusteNaoGravou);
+        return;
+      }
+      await responderToqueTg(u.toqueId, valor === true ? FRASES_TG.vozLigada : FRASES_TG.vozDesligada);
+    } else if (alvo === 'mensagens') {
+      if (!definirResolvidasTg(e, valor)) {
+        await responderToqueTg(u.toqueId, FRASES_TG.ajusteNaoGravou);
+        return;
+      }
+      await responderToqueTg(u.toqueId, valor === 'manter' ? FRASES_TG.modoManter : FRASES_TG.modoLimpo);
+    } else if (alvo === 'painel') {
+      if (!definirModoPainelTg(valor)) {
+        await responderToqueTg(u.toqueId, FRASES_TG.ajusteNaoGravou);
+        return;
+      }
+      await responderToqueTg(u.toqueId, valor === 'vscode' ? FRASES_TG.painelNoVsCode : FRASES_TG.painelNoPadrao);
+      if (canal.painelNaTela(e) !== null) canal.atualizarPainel(e, dadosRemontados(e, vivas, agoraMs)); // sem painel = nada
+    }
+    atualizarAjustesNaTela(e);
+  }
+
+  // T38 (PLANO-TELEGRAM.md, "T38"): os dados do painel remontado (como o /painel: as tocadas voltam todas) -> d do modo.
+  function dadosRemontados(e, vivas, agoraMs) {
+    const pt = painelTgDe(e);
+    pt.tocadas = {};
+    pt.conferidoEm = iso(agoraMs);
+    return dadosDoModo(e, vivas, agoraMs);
+  }
+
+  // T38: o painel remontado na tela: com painel na tela = edicao (fura os 30 s do painel vivo); sem = mensagem nova.
+  // `d` ja montado (o Sincronizar escolhe o balao por ele antes) ou null (monta aqui). Devolve os dados.
+  function remontarPainel(e, vivas, agoraMs, d = null) {
+    const dados = d ?? dadosRemontados(e, vivas, agoraMs);
+    if (canal.painelNaTela(e) !== null) canal.atualizarPainel(e, dados);
+    else canal.painel(e, dados, {});
+    return dados;
+  }
+
+  // T38: o toque em "Modo VS Code" / "Modo padrão" (grava painel.modo pelo gravarAjusteTg, como o /voz; nao gravou = o
+  // balao do ajusteNaoGravou e nada muda; o modo que ja esta = o balao "ja esta" e remonta) ou em "Sincronizar" (limpa o
+  // cache das abas e remonta; o balao diz a hora ou que a lista do VS Code nao se leu). O balao sai antes do painel.
+  async function tocarBotaoDoPainel(e, u, acao, vivas, agoraMs) {
+    if (acao === 'sincronizar') {
+      limparCacheAbas();
+      const d = dadosRemontados(e, vivas, agoraMs);
+      await responderToqueTg(u.toqueId, d.listaErro === true ? FRASES_TG.sincronizarErro : FRASES_TG.sincronizado(horaBRT(iso(agoraMs))));
+      remontarPainel(e, vivas, agoraMs, d);
+      return;
+    }
+    const novo = acao === 'modoVsCode' ? 'vscode' : 'padrao';
+    if (novo === modoPainelAtual) {
+      await responderToqueTg(u.toqueId, novo === 'vscode' ? FRASES_TG.painelJaVsCode : FRASES_TG.painelJaPadrao);
+      remontarPainel(e, vivas, agoraMs);
+      return;
+    }
+    if (!definirModoPainelTg(novo)) {
+      await responderToqueTg(u.toqueId, FRASES_TG.ajusteNaoGravou);
+      return;
+    }
+    await responderToqueTg(u.toqueId, novo === 'vscode' ? FRASES_TG.painelNoVsCode : FRASES_TG.painelNoPadrao);
+    remontarPainel(e, vivas, agoraMs);
+  }
+
+  // T38: grava painel.modo ('vscode' | 'padrao') pelo gravarAjusteTg e so entao troca em memoria. T39: o miolo comum do
+  // botao do painel e do botao da mensagem de ajustes. Nao gravou = false, sem frase.
+  function definirModoPainelTg(novo) {
+    if (!gravarAjusteTg('painel', 'painel', 'modo', novo)) return false;
+    modoPainelAtual = novo;
+    log(`Telegram: painel no modo ${novo === 'vscode' ? 'VS Code' : 'padrao'} (config.json gravado)`);
+    return true;
   }
 
   // T16 (contrato 2): a frase da aba trabalhando: "Trabalhando agora, desde HH:MM." (o comeco da vez, com o dia se nao for
@@ -6292,8 +6589,12 @@ export function criarPorteiro({
       situacao = `Aguardando desde ${dia === diaBRT(iso(agoraMs)) ? '' : `${dia} `}${horaBRT(item.em)}.`;
     }
     // T11: fechada que a resposta reabre (o abridor escondido existe, fora do ensaio, e a T8 reabre ela)
-    if (rotulo === 'fechada' && typeof abrirSessaoEscondida === 'function' && !emEnsaio && reabrivel(e, seguirCadeia(e, sid), vivas).ok) {
-      situacao = FRASES_TG.fechadaReabre;
+    // T38: sem processo e com a aba aberta no VS Code = "Parada, com a aba aberta no VS Code." (e "Responda aqui pra
+    // retomar." quando a resposta reabre, pela mesma regra); sem a aba = o de antes
+    if (rotulo === 'fechada') {
+      const reabre = typeof abrirSessaoEscondida === 'function' && !emEnsaio && reabrivel(e, seguirCadeia(e, sid), vivas).ok;
+      if (abaAberta(sid, abasAbertasAgora(agoraMs))) situacao = reabre ? FRASES_TG.paradaComAba : FRASES_TG.paradaComAbaSo;
+      else if (reabre) situacao = FRASES_TG.fechadaReabre;
     }
     const arq = acharTranscript(sid);
     const cauda = arq ? lib.lerCauda(arq) : [];
@@ -6370,7 +6671,7 @@ export function criarPorteiro({
         const pt = painelTgDe(e);
         pt.tocadas = {};
         pt.conferidoEm = iso(agoraMs);
-        dados = dadosPainel(e, lote.vivas(), agoraMs);
+        dados = dadosDoModo(e, lote.vivas(), agoraMs); // T38
       }
       canal.buscar(e, palavra, { dados });
       return;
@@ -6427,10 +6728,11 @@ export function criarPorteiro({
       else await comandoTg(e, 'status', u, vivas, agoraMs);
       return;
     }
-    // 4c. T29a: /voz e /modo (o menu ou digitados) sao so do Telegram: direto pro comandoTg, em cima do que for
+    // 4c. T29a: /voz e /modo (o menu ou digitados) sao so do Telegram, em cima do que for. T39: com o /rua, abrem a
+    //     mensagem de ajustes (o estado e o botao de troca); o "to na rua"/"voltei" escritos seguem pelo passo 6.
     const soTg = comandoDoMenu(texto);
     if (SO_TG.has(soTg)) {
-      await comandoTg(e, soTg, u, [], agoraMs);
+      abrirAjustesTg(e, soTg, u);
       return;
     }
     // 5. em cima do chamado de uma aba = repasse pra ela ("to na rua" junto liga o modo rua, como a citacao no grupo)
@@ -6501,6 +6803,19 @@ export function criarPorteiro({
       await responderToqueTg(u.toqueId);
       if (doPainel.acao === 'buscar') canal.pedirBusca(e);
       else canal.limparBusca(e);
+      return;
+    }
+    // T38 (PLANO-TELEGRAM.md, "T38"): o "Modo VS Code" (p:mv) e o "Modo padrão" (p:mp) gravam painel.modo (como o /voz:
+    // so se gravou troca em memoria) e remontam o painel; o "Sincronizar" (p:s) limpa o cache das abas e remonta na hora
+    // (fura os 30 s do painel vivo). Sem ida ate a aba; o balao sai antes do painel.
+    if (doPainel && (doPainel.acao === 'modoVsCode' || doPainel.acao === 'modoPadrao' || doPainel.acao === 'sincronizar')) {
+      await tocarBotaoDoPainel(e, u, doPainel.acao, lote.vivas(), agora());
+      return;
+    }
+    // T39 (PLANO-TELEGRAM.md, "T39"): o botao da mensagem de ajustes (a:) leva o estado alvo; sem ida ate a aba.
+    const ajuste = lerDadosAjuste(u.dados);
+    if (ajuste) {
+      await tocarAjuste(e, u, ajuste, lote.vivas(), agora());
       return;
     }
     const r = canal.lerToque(e, u.dados, u.messageId);
@@ -7747,6 +8062,7 @@ export function criarPorteiro({
       if (emEnsaio) {
         const e = carregar();
         painelVivo(e, agora()); // T12
+        atualizarAjustesNaTela(e); // T39: a mensagem de ajustes sempre com o estado de hoje
         await drenarTg(e);
         salvar(e);
         await esperar(resta());
@@ -7758,6 +8074,7 @@ export function criarPorteiro({
         if (primeira) {
           primeira = false;
           painelVivo(e, agora()); // T12: o painel na tela se atualiza (no maximo a cada 30 s)
+          atualizarAjustesNaTela(e); // T39: a mensagem de ajustes sempre com o estado de hoje (com a trava tambem: so texto)
           await drenarTg(e); // o que os passos puseram na fila do canal sai na hora, antes da 1a leitura
           await passoVozTg(e); // T17b: a voz sai depois do texto
           salvar(e);
@@ -9513,6 +9830,13 @@ export function lerListaVsCodeReal({ env = process.env, banco = null } = {}) {
   return () => lerListaVsCode(caminhoBancoVsCode(env, banco));
 }
 
+// T38 (PLANO-TELEGRAM.md, "T38"): o leitor das abas abertas no VS Code que o rodar passa ao criarPorteiro: os bancos das
+// janelas no workspaceStorage irmao do banco global (o mesmo caminho do lerListaVsCodeReal), so as `raizes` do config;
+// so leitura. Caminho null (sem banco) = null.
+export function lerAbasVsCodeReal({ env = process.env, banco = null, raizes = [] } = {}) {
+  return () => lerAbasVsCode(caminhoAbasVsCode(caminhoBancoVsCode(env, banco)), raizes);
+}
+
 // T34 (PLANO-TELEGRAM.md, "T34"): o guardiao do Windows que o rodar passa ao criarPorteiro (o sessoes-wpp-porteiro.vbs no
 // modo /guardiao segura o guardiao.lock aberto pra escrita enquanto vive). vivo(): abrir o lock com r+ (nao cria nem
 // trunca) da EBUSY, EPERM ou EACCES com ele vivo = true (medido 21/10/2026); abriu (fecha na hora) ou nao existe =
@@ -9645,6 +9969,9 @@ async function rodar(ensaio) {
     // T11: as fechadas da lista do VS Code no painel do Telegram. A3b: sem o vscode no apps = a lista vazia (nunca null:
     // null tira as fechadas inteiras, e quem nao usa o VS Code perderia as do terminal e do Orca)
     lerListaVsCode: apps.includes('vscode') ? lerListaVsCodeReal({ env, banco: bancoVsCodeDoConfig(cfg) }) : listaVsCodeVazia,
+    // T38: o modo do painel (painel.modo; padrao = o de antes) e as abas abertas no VS Code (sem o vscode no apps = null)
+    modoPainel: modoPainelDoConfig(cfg).modo,
+    lerAbasVsCode: apps.includes('vscode') ? lerAbasVsCodeReal({ env, banco: bancoVsCodeDoConfig(cfg), raizes: sessoes.raizes }) : null,
   });
   // A3a: 1 linha com o que veio do config (so contagem e a pasta da central; o religar.mjs nao olha)
   log(sessoes.raizes.length ? `sessoes: ${sessoes.raizes.length} pasta(s) de projeto, central em ${central.pasta}` : 'sessoes: nenhuma pasta de projeto no config (nao abre nem reabre conversa)');
@@ -9657,6 +9984,7 @@ async function rodar(ensaio) {
     log('Telegram: telegram.resolvidas fora de "apagar"/"manter" no config.json; fica no modo manter (nada se apaga)');
   }
   log(`transcricao: ${transcricao.ligada ? 'ligada' : 'desligada'}`); // A5b: so o estado (o religar.mjs nao olha)
+  log(`painel: modo ${modoPainelDoConfig(cfg).modo === 'vscode' ? 'VS Code' : 'padrao'}`); // T38 (o religar.mjs nao olha)
   // T19: o tools/integrar/religar.mjs confere a subida por esta linha e pela "Telegram: ligado (bot ...)" do ligarTelegram
   // entre o "ambiente:" de cima e ela; mudou o texto ou a ordem = mudar la (o teste de contrato em tests/religar.test.mjs
   // fica vermelho)

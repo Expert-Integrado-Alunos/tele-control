@@ -41,13 +41,12 @@ const VOZ_LIGADA = 'Resposta por voz ligada.';
 const MODO_LIMPO = 'Modo limpo: o que já foi resolvido sai do chat.';
 const MODO_MANTER = 'Modo manter tudo: nada sai do chat; o resolvido só perde os botões.';
 const FALHA = 'Não consegui gravar o ajuste; nada mudou.';
-const MENU_6 = [
+const MENU_5 = [ // T39: a ordem do dono (o voltei saiu do menu)
   { command: 'painel', description: 'Painel das abas' },
-  { command: 'rua', description: 'Tô na rua' },
-  { command: 'voltei', description: 'Voltei pro PC' },
-  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
-  { command: 'modo', description: 'Mensagens: limpo ou manter tudo' },
   { command: 'central', description: 'Reabrir a central (atende o que não é de uma aba)' },
+  { command: 'rua', description: 'Modo rua: ligar ou desligar' },
+  { command: 'modo', description: 'Modo do painel e das mensagens' },
+  { command: 'voz', description: 'Resposta por voz: ligar ou desligar' },
 ];
 // config.json como o instalador grava (2 espacos e a quebra de linha no fim)
 const FORMATO = (cfg) => `${JSON.stringify(cfg, null, 2)}\n`;
@@ -337,9 +336,7 @@ async function comando(h, texto) {
   await h.p.esperarTelegram(15000);
   return u;
 }
-// A linha do sistema com `frase`, em cima do comando `u`
-const linha = (h, frase, u) => h.tg.de('enviar').some((c) => String(c.args[0].html).includes(frase) && c.args[0].responderA === mid(u));
-const linhas = (h) => JSON.stringify(h.tg.de('enviar').map((c) => [c.args[0].responderA, c.args[0].html]));
+const linhas =(h) => JSON.stringify(h.tg.de('enviar').map((c) => [c.args[0].responderA, c.args[0].html]));
 
 // ---------- T29b ----------
 
@@ -355,6 +352,22 @@ async function lerCurto(h, updates) {
 }
 const toqueVelho = (h, messageId = 1) => toqueTg(h, 'o:ZZZZZZZZ:0', messageId); // botao que nao vale mais (de um chamado que nao existe)
 const enviadaEm = (h, id) => Date.parse(estado(h).tg.mensagens[id].at);
+
+// T39 (D3): o /modo (tocado no menu ou digitado) abre a mensagem de ajustes em cima do comando; a troca e o toque no
+// botao do estado ALVO (a:mm/a:ml) e a frase sai no balao do toque (responderToque). `ler` = como cada lote e lido (o
+// lerCurto prende o relogio); `antesDoToque` roda entre o comando e o toque (com as chamadas do comando). Devolve {u, id}.
+async function ajustar(h, qual, dados, { ler = lerTg, antesDoToque = () => {} } = {}) {
+  const u = msgTg(h, `/${qual}`);
+  h.tg.zerar();
+  await ler(h, [u]);
+  const env = h.tg.de('enviar').filter((c) => c.args[0].responderA === mid(u) && JSON.stringify(c.args[0].botoes ?? null).includes('"a:'));
+  assert.equal(env.length, 1, `/${qual}: 1 mensagem de ajustes em cima do comando: ${linhas(h)}`);
+  await antesDoToque();
+  h.tg.zerar();
+  await ler(h, [toqueTg(h, dados, env[0].id)]);
+  return { u, id: env[0].id };
+}
+const baloes = (h) => h.tg.de('responderToque').map((c) => c.args[1]);
 
 // Audio X dele -> a aba responde com `final` em cima de X. Devolve {x, tela, voz}.
 async function respostaCom(h, tr, final, marcas, { sid = 'S1', titulo = 'Faro' } = {}) {
@@ -444,16 +457,22 @@ test('T29b P3. toque no "Mais informações" da propria mensagem aos 61 s = ela 
   assert.ok(apagadas(h).includes(r.tela), 'sai na interacao seguinte');
 });
 
-test('T29b P4. /modo pro manter aos 61 s = nada mais sai (a resposta sem pergunta fica)', async () => {
+// T39 (D3): o /modo abre a mensagem de ajustes antes dos 60 s (nada sai) e o toque em "Mensagens: usar manter tudo" chega
+// aos 61 s (a hora em que o /modo digitado chegava).
+test('T29b P4. o toque em Mensagens: usar manter tudo aos 61 s = nada mais sai (a resposta sem pergunta fica)', async () => {
   const tr = dubleTranscrever();
   const h = montar({ canalPrincipal: 'telegram', transcrever: tr.fn });
   const r = await respostaCom(h, tr, SEM, NADA);
   const t0 = enviadaEm(h, r.tela);
-  h.t = t0 + 61 * 1000;
-  h.tg.zerar();
-  const u = msgTg(h, '/modo');
-  await lerCurto(h, [u]);
-  assert.ok(linha(h, MODO_MANTER, u), linhas(h));
+  await ajustar(h, 'modo', 'a:mm', {
+    ler: lerCurto,
+    antesDoToque: () => {
+      assert.ok(h.t < t0 + 60 * 1000, `o /modo antes dos 60 s (${h.t - t0} ms)`);
+      assert.deepEqual(apagadas(h), [], 'o /modo antes dos 60 s: nada sai');
+      h.t = t0 + 61 * 1000;
+    },
+  });
+  assert.deepEqual(baloes(h), [MODO_MANTER]);
   assert.deepEqual(apagadas(h), [], 'nada sai');
   h.t += 2 * MIN;
   await lerCurto(h, [toqueVelho(h)]);
