@@ -99,6 +99,9 @@
 // escondido) a sessao nova nasce sem VS Code: item `escondida: true`, sem foto de janela e sem link; a nova = registro `cli`
 // na pasta com o nome pedido (NFC), fora das `antes`, sem transcript, firme em 10 s; entrega e nome como na F4b; 180 s sem
 // ela = frase propria. A trava de pergunta nega o AskUserQuestion dela sempre (SESSOES_WPP_ESCONDIDA=1).
+// T41 (PLANO-TELEGRAM.md "T41", caso real: a sessao nova ficava viva escondida pra sempre e a conversa aberta depois no
+// VS Code mostrava «This conversation is still open somewhere else»): a sessao nova escondida que firma fica gravada em
+// e.retomadas e o devolverRetomadas fecha ela pelas regras da T18b/T18c; a fala seguinte retoma a mesma conversa (T18).
 // T6 (PLANO-TELEGRAM.md "T6"): o `abrir-sessao` de id `tg-u...` com o Telegram ligado faz o caminho do `encaminhar` (T3c):
 // a fala vem de e.tg.recebidas (sem ler o grupo), o item e o pedido saem com `canal: 'telegram'` (a resposta da sessao
 // nova volta pelo Telegram, em cima da fala dele) e as frases vao pra linha do sistema do Telegram, nada no grupo. O
@@ -258,7 +261,7 @@ const PERGUNTA_TTL_MS = 30 * 24 * 60 * MIN;
 const REABERTAS_TTL_MS = 30 * 24 * 60 * MIN;
 // T18b (PLANO-TELEGRAM.md, "T18", contrato 4): a escondida que o porteiro retomou fecha parada (idle) e sem fala esperando
 // ha RETOMADA_FIRME_MS com a mesma conversa viva no VS Code, ou ha RETOMADA_PARADA_MS sem ela; e.retomadas guarda no
-// maximo RETOMADAS_MAX
+// maximo RETOMADAS_MAX. T41: vale igual pra sessao nova escondida (gravada em e.retomadas quando firma)
 const RETOMADA_FIRME_MS = MIN;
 const RETOMADA_PARADA_MS = 30 * MIN;
 const RETOMADAS_MAX = 50;
@@ -3039,7 +3042,8 @@ export function criarPorteiro({
     return ents.some((x) => x?.sessionId === sid && msDeIso(x.at) >= mexeu);
   }
 
-  // A escondida que o porteiro retomou (e.retomadas, gravada quando a retomada firmou) devolve a conversa pro VS Code:
+  // A escondida que o porteiro retomou (e.retomadas, gravada quando a retomada firmou) ou abriu como sessao nova (T41:
+  // gravada quando a sessao nova escondida firmou, esperarAbasNovas) devolve a conversa pro VS Code:
   // fecha parada (idle) e sem fala esperando ha RETOMADA_FIRME_MS com a mesma conversa viva no VS Code (o dono abriu la)
   // ou, sem ela, com o dono no PC (T18c: ocioso finito, >= 0 e abaixo de ATIVO_MS; `idle` = o valor ou a funcao que
   // devolve a promessa dele, lida so quando uma escondida chega nesse motivo e no maximo 1 vez por chamada; falha = o
@@ -3051,8 +3055,8 @@ export function criarPorteiro({
   // e o `comandoEm` na 1a vez; o `comandoVistoEm` a cada conferencia, que so se repete depois de COMANDO_CONFERE_MS;
   // fecha na conferencia seguinte ao fim dele), e a consulta que falta, falha ou vem sem a propria escondida = tenta de
   // novo em 10 min; a morte conferida pelo pidVivo em ate ~2 s (viva = tenta de novo em 10 min). Esquecer ou fechar = 1 linha de
-  // log. Quem chama confere a trava. Nunca toca registro sem entrada aqui (aba do VS Code, central, sessao nova) nem
-  // apaga nada em ~/.claude/sessions.
+  // log. Quem chama confere a trava. Nunca toca registro sem entrada aqui (aba do VS Code, central, sessao do terminal
+  // que o dono abriu) nem apaga nada em ~/.claude/sessions.
   async function devolverRetomadas(e, agoraMs, { idle = null } = {}) {
     const r = e.retomadas;
     if (!r || typeof r !== 'object' || Array.isArray(r)) return;
@@ -4129,6 +4133,14 @@ export function criarPorteiro({
         if (typeof f.parte === 'string' && f.parte) pedido.parte = f.parte; // T36
         log(`abrir-sessao: ${escondida ? 'sessao escondida' : 'aba nova'} ${cand.sessionId} em ${x.pasta.slice(0, 160)}; passando a fala (${pedido.providerMsgId})`);
         enfileirar(e, pedido); // o passoEntrega chama o mensageiro
+        // T41 (PLANO-TELEGRAM.md, "T41"): a sessao nova escondida que firmou fica gravada como a escondida que o porteiro
+        // retomou (T18b; o registro `cli` vivo na pasta, lido cru): o devolverRetomadas fecha ela pelas mesmas regras e a
+        // fala seguinte retoma a mesma conversa (T18). A aba nova do VS Code e do dono: nunca gravada. sessionId que nao
+        // e UUID sai na faxina do salvar (podar).
+        if (escondida) {
+          const esc = registroEscondido(cand.sessionId, x.pasta);
+          if (esc) e.retomadas[cand.sessionId] = { pid: Number(esc.pid), desde: iso(agoraMs) };
+        }
         continue;
       }
       if (escondida) {
