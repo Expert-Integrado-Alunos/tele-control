@@ -127,7 +127,7 @@
 // `encaminhar`/`abrir-sessao` so gravam 1 evento).
 // T18c: passoRetomadas = o devolver da T18b a cada volta do laco (so com retomada gravada), o ocioso lido na hora.
 import { createRequire } from 'node:module';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -832,6 +832,11 @@ function estadoNovo(agoraMs, eventosFile) {
     // T21 ("T21", contrato 2): o app da conversa, pelo `parou` que veio com `app: 'orca'`: sessionId -> {app: 'orca', em}
     // (30 dias, no maximo 200, as mais novas). Estado velho sem a chave = {}.
     origens: {},
+    // T43 (PLANO-TELEGRAM.md, "T43"): os lembretes de uma vez pedidos pelo Telegram, por conversa que ja recebeu uma fala
+    // por la: sessionId -> {bytes (ate onde o transcript dela foi lido), tg, usos, unicos, toques (o toquesVazios), vistoEm
+    // (a entrega que criou a entrada ou o ultimo parou lido)}. 30 dias sem parou = sai; no maximo LEMBRETES_TG_MAX (as
+    // vistas por ultimo). Estado velho sem a chave = {}.
+    lembretesTg: {},
     // T24 (PLANO-TELEGRAM.md, "T24"): as abas que o dono tirou do "Esperando você" pelo `aguardar` da central: sessionId
     // -> {em (a hora do mover), finalTs (o da pergunta movida)}. Vale so pra MESMA pergunta (aguardandoDe): pergunta nova
     // volta sozinha pro Esperando e o podar tira o registro. Estado velho sem a chave = {}.
@@ -1067,6 +1072,14 @@ function podar(e, agoraMs) {
     boas.sort((a, b) => msDeIso(b[1].em) - msDeIso(a[1].em));
     e.origens = Object.fromEntries(boas.slice(0, REABERTAS_MAX));
   }
+  // T43: conversa acompanhada torta sai (chave fora do formato, entrada que nao e objeto, hora ilegivel), 30 dias sem
+  // parou, no maximo LEMBRETES_TG_MAX (as vistas por ultimo). O conteudo da entrada e conferido na leitura (toquesDoDisco).
+  if (objetoDoDisco(e.lembretesTg)) {
+    const boas = Object.entries(e.lembretesTg).filter(([k, l]) => sidDeLembrete(k) && objetoDoDisco(l)
+      && Number.isFinite(msDeIso(l.vistoEm)) && agoraMs - msDeIso(l.vistoEm) <= LEMBRETE_TG_TTL_MS);
+    boas.sort((a, b) => msDeIso(b[1].vistoEm) - msDeIso(a[1].vistoEm));
+    e.lembretesTg = Object.fromEntries(boas.slice(0, LEMBRETES_TG_MAX));
+  }
   // T24: fica so o registro que vale (aguardandoDe: chave UUID, a mesma pergunta no ultimosParou, hora legivel); no maximo
   // AGUARDANDO_MAX, os movidos por ultimo
   if (e.aguardando && typeof e.aguardando === 'object' && !Array.isArray(e.aguardando)) {
@@ -1213,6 +1226,296 @@ export function processoBate(reg, info) {
   const folga = ps !== null ? CENTRAL_PROC_FOLGA_MS : CENTRAL_INICIO_FOLGA_MS;
   if (!/^claude(\.exe)?$/i.test(nome) || !Number.isFinite(criado) || Math.abs(criado - base) > folga) return 'outro';
   return 'ok';
+}
+
+// ---------- T42: o lembrete agendado na escondida (PLANO-TELEGRAM.md, "T42") ----------
+
+// A escondida com lembrete agendado nela (CronCreate ou ScheduleWakeup) nao fecha ate ele tocar: o agendamento so vive
+// no processo dela (morre junto, calado) e o registro fica `idle` enquanto ela espera. LEMBRETE_FOLGA_MS = quanto o
+// porteiro espera depois da hora marcada; LEMBRETE_TETO_MS = o maximo que um pedido segura (o cron recorrente da sessao
+// expira sozinho em 7 dias); LEMBRETE_ATRASO_MS = o atraso maximo do toque do recorrente; o ScheduleWakeup acorda em
+// DESPERTADOR_MIN_S a DESPERTADOR_MAX_S (fora disso o Claude Code ajusta o valor).
+const LEMBRETE_FOLGA_MS = 3 * MIN;
+const LEMBRETE_TETO_MS = 7 * 24 * 60 * MIN;
+const LEMBRETE_ATRASO_MS = 30 * MIN;
+const DESPERTADOR_MIN_S = 60;
+const DESPERTADOR_MAX_S = 3600;
+const LEMBRETE_NOMES = new Set(['CronCreate', 'CronDelete', 'ScheduleWakeup']);
+const CRON_CAMPOS = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 6]]; // minuto, hora, dia do mes, mes, dia da semana
+
+// Um campo do cron -> o conjunto dos valores que batem | null (forma que o Claude Code recusa). A gramatica dele (CLI
+// 2.1.322): `*`, `*/n`, `a`, `a-b`, `a-b/n` e listas com virgula; no dia da semana o 7 vale (domingo: vira 0).
+function campoDoCron(txt, min, max) {
+  const semana = min === 0 && max === 6;
+  const vals = new Set();
+  for (const parte of txt.split(',')) {
+    let m = /^\*(?:\/(\d+))?$/.exec(parte);
+    if (m) {
+      const passo = m[1] ? Number(m[1]) : 1;
+      if (passo < 1) return null;
+      for (let v = min; v <= max; v += passo) vals.add(v);
+      continue;
+    }
+    m = /^(\d+)(?:-(\d+)(?:\/(\d+))?)?$/.exec(parte);
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = m[2] === undefined ? a : Number(m[2]);
+    const passo = m[3] ? Number(m[3]) : 1;
+    if (a > b || passo < 1 || a < min || b > (semana ? 7 : max)) return null;
+    for (let v = a; v <= b; v += passo) vals.add(semana && v === 7 ? 0 : v);
+  }
+  return vals;
+}
+
+/**
+ * T42: a proxima vez (ms) em que o cron de 5 campos bate DEPOIS do minuto de `desdeMs`, em hora local, em ate
+ * `horizonteMs` | null (cron que o Claude Code recusa, ou nenhuma vez no horizonte). A mesma conta dele (CLI 2.1.322):
+ * campo com todos os valores = livre; dia do mes e dia da semana os dois restritos = vale um OU o outro. Pura.
+ */
+export function proximoDoCron(cron, desdeMs, horizonteMs = LEMBRETE_TETO_MS) {
+  if (typeof cron !== 'string' || typeof desdeMs !== 'number' || !Number.isFinite(desdeMs)) return null;
+  const partes = cron.trim().split(/\s+/);
+  if (partes.length !== 5) return null;
+  const campos = partes.map((p, i) => campoDoCron(p, CRON_CAMPOS[i][0], CRON_CAMPOS[i][1]));
+  if (campos.includes(null)) return null;
+  const [minutos, horas, dias, meses, semana] = campos;
+  const diaLivre = dias.size === 31;
+  const semanaLivre = semana.size === 7;
+  const diaBate = (d) => {
+    if (diaLivre && semanaLivre) return true;
+    if (diaLivre) return semana.has(d.getDay());
+    if (semanaLivre) return dias.has(d.getDate());
+    return dias.has(d.getDate()) || semana.has(d.getDay());
+  };
+  for (let t = Math.floor(desdeMs / MIN) * MIN + MIN; t <= desdeMs + horizonteMs; t += MIN) {
+    const d = new Date(t);
+    if (minutos.has(d.getMinutes()) && horas.has(d.getHours()) && meses.has(d.getMonth() + 1) && diaBate(d)) return t;
+  }
+  return null;
+}
+
+/**
+ * T42: o que o porteiro sabe dos lembretes de uma conversa (lido do transcript): os pedidos esperando o resultado
+ * (`usos`: id do tool_use -> {nome, input, ts}), os crons valendo (`jobs`: {id, ts, ate}) e o ultimo ScheduleWakeup
+ * (`despertador`: {ts, ate} | null). ts = a hora do pedido; ate = ate quando ele segura a escondida.
+ */
+export function lembretesVazios() {
+  return { usos: new Map(), jobs: [], despertador: null };
+}
+
+// O texto de um tool_result: texto puro ou blocos de texto.
+function textoDoResultado(c) {
+  if (typeof c === 'string') return c;
+  return Array.isArray(c) ? c.map((b) => (typeof b?.text === 'string' ? b.text : '')).join('\n') : '';
+}
+
+/**
+ * T42: aplica uma entrada do transcript (ja em objeto) em `st` (lembretesVazios). Conta so o pedido da conversa
+ * principal (isSidechain = ajudante: fora) com resultado sem erro: CronCreate (one-shot = a proxima vez do cron, no
+ * maximo LEMBRETE_TETO_MS depois, + LEMBRETE_FOLGA_MS; recorrente, o padrao = LEMBRETE_TETO_MS + LEMBRETE_ATRASO_MS; o id
+ * vem do texto do resultado), CronDelete (tira o cron do id) e ScheduleWakeup (o atraso pedido, ajustado como o Claude
+ * Code ajusta, + LEMBRETE_FOLGA_MS; so o ultimo vale; `stop` cancela). A conta parte da hora do resultado (sem ela, da
+ * hora do pedido).
+ */
+export function lerLembrete(st, x) {
+  if (!x || typeof x !== 'object' || x.isSidechain === true) return;
+  const blocos = x.message?.content;
+  if (!Array.isArray(blocos)) return;
+  const ts = msDeIso(x.timestamp);
+  if (x.type === 'assistant') {
+    for (const b of blocos) {
+      if (b?.type !== 'tool_use' || typeof b.id !== 'string' || !LEMBRETE_NOMES.has(b.name)) continue;
+      st.usos.set(b.id, { nome: b.name, input: b.input && typeof b.input === 'object' ? b.input : {}, ts });
+    }
+    return;
+  }
+  if (x.type !== 'user') return;
+  for (const b of blocos) {
+    const u = b?.type === 'tool_result' ? st.usos.get(b.tool_use_id) : undefined;
+    if (!u) continue;
+    st.usos.delete(b.tool_use_id);
+    if (b.is_error === true) continue;
+    const quando = Number.isFinite(ts) ? ts : u.ts;
+    if (u.nome === 'CronCreate') {
+      const id = /Scheduled (?:one-shot task|recurring job) (\S+)/.exec(textoDoResultado(b.content))?.[1] ?? null;
+      const ate = u.input.recurring === false
+        ? (proximoDoCron(u.input.cron, quando) ?? quando + LEMBRETE_TETO_MS) + LEMBRETE_FOLGA_MS
+        : quando + LEMBRETE_TETO_MS + LEMBRETE_ATRASO_MS;
+      st.jobs.push({ id, ts: u.ts, ate });
+    } else if (u.nome === 'CronDelete') {
+      st.jobs = st.jobs.filter((j) => j.id === null || j.id !== u.input.id);
+    } else if (u.input.stop === true) {
+      st.despertador = null;
+    } else {
+      const s = Number(u.input.delaySeconds);
+      const atraso = Number.isFinite(s) ? Math.min(DESPERTADOR_MAX_S, Math.max(DESPERTADOR_MIN_S, s)) : DESPERTADOR_MAX_S;
+      st.despertador = { ts: u.ts, ate: quando + atraso * 1000 + LEMBRETE_FOLGA_MS };
+    }
+  }
+}
+
+/**
+ * T42: ate quando (ms) a conversa tem lembrete por tocar | null. Vale o pedido feito de `corteMs` em diante (a hora em
+ * que o processo nasceu: o agendamento morre com ele) com prazo depois de `agoraMs`; de varios, o prazo mais distante.
+ * Pura.
+ */
+export function lembreteAte(st, corteMs, agoraMs) {
+  let ate = null;
+  for (const l of [...st.jobs, st.despertador]) {
+    if (l && l.ts >= corteMs && l.ate > agoraMs && (ate === null || l.ate > ate)) ate = l.ate;
+  }
+  return ate;
+}
+
+// ---------- T43: a volta do lembrete unico pedido pelo Telegram (PLANO-TELEGRAM.md, "T43") ----------
+// LEMBRETE_TG_TTL_MS = quanto o lembrete de uma vez espera o toque (ele nao tem expiracao declarada) e quanto a conversa
+// fica acompanhada sem parou; por conversa, no maximo UNICOS_MAX lembretes por tocar e USOS_TG_MAX pedidos esperando o
+// resultado; no maximo LEMBRETES_TG_MAX conversas acompanhadas.
+const LEMBRETE_TG_TTL_MS = 30 * 24 * 60 * MIN;
+const UNICOS_MAX = 50;
+const USOS_TG_MAX = 20;
+const LEMBRETES_TG_MAX = 200;
+// A chave de e.lembretesTg (o sessionId): so letra, numero, _ e -, nunca `__proto__` (o estado vem do disco).
+const sidDeLembrete = (k) => typeof k === 'string' && k !== '__proto__' && /^[A-Za-z0-9_-]+$/.test(k);
+// A 1a linha do recado do porteiro (o montarRecado do mensageiro.mjs) no comeco de uma linha (ele chega dentro do
+// embrulho de recado de outra sessao): o canal, o dono e, entre parenteses, a hora e o `id <providerMsgId>`.
+const RE_RECADO_DO_PORTEIRO = /^(WhatsApp|Telegram) d[aeo] \p{L}[^\n()«»]{0,39}? \([^\n()]{0,60}\bid [A-Za-z0-9_-]+\)\. /mu;
+
+/**
+ * T43: o que o porteiro sabe dos lembretes de uma vez de uma conversa (lido do transcript; vai pro estado, entao so
+ * dado simples). `tg` = a ultima fala do dono nela veio pelo Telegram; `usos` = os pedidos esperando o resultado ({id,
+ * prompt, em} = CronCreate de uma vez pedido pelo Telegram; {id, apagar} = CronDelete); `unicos` = os lembretes de uma
+ * vez pedidos pelo Telegram que ainda nao tocaram ({id | null, prompt: a marca do texto | null, em: ms do resultado});
+ * `toques` = os que tocaram e ainda nao foram conferidos com um parou ({ts: ms do toque, fim: ms em que a vez seguinte
+ * abriu | null}).
+ */
+export function toquesVazios() {
+  return { tg: false, usos: [], unicos: [], toques: [] };
+}
+
+// T43: a marca de um texto (16 hex do sha256, os espacos juntados) | null (sem texto). O estado guarda a marca, nunca o
+// texto do lembrete.
+function marcaDoTexto(t) {
+  const s = typeof t === 'string' ? t.replace(/\s+/g, ' ').trim() : '';
+  return s ? createHash('sha256').update(s).digest('hex').slice(0, 16) : null;
+}
+
+// T43: o canal do recado do porteiro em `texto` (true = Telegram, false = WhatsApp) | null (nao e recado dele).
+function canalDoRecado(texto) {
+  const m = typeof texto === 'string' ? RE_RECADO_DO_PORTEIRO.exec(texto) : null;
+  return m ? m[1] === 'Telegram' : null;
+}
+
+/**
+ * T43: aplica uma entrada do transcript (ja em objeto) em `st` (toquesVazios). So a conversa principal (isSidechain =
+ * ajudante: fora).
+ * - De onde veio a ultima fala do dono: a vez aberta pelo teclado (`turnOrigin` human ou sdk) e a fala do teclado no
+ *   meio da vez (anexo queued_command de origem human) = nao e Telegram; o recado do porteiro (a vez `peer` ou o anexo
+ *   queued_command de origem peer com a 1a linha do montarRecado) = o canal do rotulo; o resto nao muda.
+ * - O lembrete de uma vez: CronCreate com `recurring: false`, pedido com o `st.tg` ligado e com resultado sem erro,
+ *   entra em `unicos` (o id do toolUseResult; sem ele, o do texto; a hora do resultado ou, sem ela, a do pedido; sem
+ *   nenhuma, fica fora). O CronDelete com resultado sem erro tira o do id.
+ * - A entrada que abre uma vez (`type: "user"` com `turnOrigin` e hora legivel; o resumo de compactacao nao abre)
+ *   fecha os toques abertos e tira os lembretes com mais de LEMBRETE_TG_TTL_MS. A do toque (`scheduled`) casa com um
+ *   lembrete pelo `scheduledTaskId`; faltando o id de um dos lados, pela marca do texto (o mais antigo). Casou = sai de
+ *   `unicos` (toca 1 vez) e entra em `toques`.
+ */
+export function lerToque(st, x) {
+  if (x === null || typeof x !== 'object' || x.isSidechain === true) return; // lixo e ajudante: fora
+  if (x.type === 'attachment') {
+    const a = x.attachment;
+    if (!a || typeof a !== 'object' || a.type !== 'queued_command') return;
+    const origem = a.origin?.kind;
+    if (origem === 'human') st.tg = false;
+    else if (origem === 'peer') st.tg = canalDoRecado(textoDoConteudo(a.prompt)) ?? st.tg;
+    return;
+  }
+  const ts = msDeIso(x.timestamp);
+  const conteudo = x.message?.content;
+  if (x.type === 'assistant') {
+    if (!Array.isArray(conteudo)) return;
+    for (const b of conteudo) {
+      if (b?.type !== 'tool_use' || typeof b.id !== 'string') continue;
+      const input = b.input && typeof b.input === 'object' ? b.input : {};
+      if (b.name === 'CronCreate') {
+        if (input.recurring !== false || !st.tg) continue;
+        st.usos.push({ id: b.id, prompt: marcaDoTexto(input.prompt), em: Number.isFinite(ts) ? ts : null });
+      } else if (b.name === 'CronDelete') {
+        st.usos.push({ id: b.id, apagar: typeof input.id === 'string' ? input.id : null });
+      } else {
+        continue;
+      }
+      if (st.usos.length > USOS_TG_MAX) st.usos.shift();
+    }
+    return;
+  }
+  if (x.type !== 'user') return;
+  if (Array.isArray(conteudo)) {
+    for (const b of conteudo) {
+      const i = b?.type === 'tool_result' ? st.usos.findIndex((u) => u.id === b.tool_use_id) : -1;
+      if (i === -1) continue;
+      const [u] = st.usos.splice(i, 1);
+      if (b.is_error === true) continue; // o pedido deu erro: nao agendou nem cancelou
+      if (Object.hasOwn(u, 'apagar')) {
+        st.unicos = st.unicos.filter((j) => j.id === null || j.id !== u.apagar);
+        continue;
+      }
+      const em = Number.isFinite(ts) ? ts : u.em;
+      if (em === null) continue;
+      const doCampo = x.toolUseResult && typeof x.toolUseResult === 'object' ? x.toolUseResult.id : null;
+      const noTexto = /Scheduled (?:one-shot task|recurring job) (\S+)/.exec(textoDoResultado(b.content));
+      const id = typeof doCampo === 'string' && doCampo ? doCampo : noTexto ? noTexto[1] : null;
+      st.unicos.push({ id, prompt: u.prompt, em });
+      if (st.unicos.length > UNICOS_MAX) st.unicos.shift();
+    }
+  }
+  if (typeof x.turnOrigin !== 'string' || x.isCompactSummary === true || !Number.isFinite(ts)) return;
+  for (const t of st.toques) if (t.fim === null) t.fim = ts;
+  st.unicos = st.unicos.filter((j) => ts - j.em <= LEMBRETE_TG_TTL_MS);
+  if (x.turnOrigin === 'human' || x.turnOrigin === 'sdk') {
+    st.tg = false;
+  } else if (x.turnOrigin === 'peer') {
+    st.tg = canalDoRecado(textoDoConteudo(conteudo)) ?? st.tg;
+  } else if (x.turnOrigin === 'scheduled') {
+    const taskId = typeof x.scheduledTaskId === 'string' && x.scheduledTaskId ? x.scheduledTaskId : null;
+    const marca = marcaDoTexto(textoDoConteudo(conteudo));
+    let i = taskId === null ? -1 : st.unicos.findIndex((j) => j.id === taskId);
+    if (i === -1 && marca !== null) i = st.unicos.findIndex((j) => (taskId === null || j.id === null) && j.prompt === marca);
+    if (i === -1) return;
+    st.unicos.splice(i, 1);
+    st.toques.push({ ts, fim: null });
+  }
+}
+
+/**
+ * T43: o final de um parou (`fimMs` = o finalTs dele) e da vez de um toque? E quando fica entre a hora do toque e a
+ * hora em que a vez seguinte abriu (ou nenhuma abriu). Gasta os toques ate `fimMs` (o de depois fica pro proximo
+ * parou). -> {tocou, velhos (os toques cuja vez ja tinha acabado antes desse final)}. `fimMs` ilegivel = nada muda.
+ */
+export function toqueDoFinal(st, fimMs) {
+  const r = { tocou: false, velhos: 0 };
+  if (typeof fimMs !== 'number' || !Number.isFinite(fimMs)) return r;
+  st.toques = st.toques.filter((t) => {
+    if (t.ts > fimMs) return true;
+    if (t.fim === null || t.fim > fimMs) r.tocou = true;
+    else r.velhos += 1;
+    return false;
+  });
+  return r;
+}
+
+// T43: a entrada de e.lembretesTg como veio do disco (o mesmo objeto) | null (campo torto: quem chama zera e rele o
+// transcript do comeco).
+function toquesDoDisco(l) {
+  const ms = (v) => typeof v === 'number' && Number.isFinite(v);
+  const texto = (v) => v === null || typeof v === 'string';
+  if (!objetoDoDisco(l) || !Number.isSafeInteger(l.bytes) || l.bytes < 0 || typeof l.tg !== 'boolean') return null;
+  if (!Array.isArray(l.usos) || !Array.isArray(l.unicos) || !Array.isArray(l.toques)) return null;
+  const usoOk = (u) => objetoDoDisco(u) && typeof u.id === 'string'
+    && (Object.hasOwn(u, 'apagar') ? texto(u.apagar) : texto(u.prompt) && (u.em === null || ms(u.em)));
+  const unicoOk = (j) => objetoDoDisco(j) && texto(j.id) && texto(j.prompt) && ms(j.em);
+  const toqueOk = (t) => objetoDoDisco(t) && ms(t.ts) && (t.fim === null || ms(t.fim));
+  return l.usos.every(usoOk) && l.unicos.every(unicoOk) && l.toques.every(toqueOk) ? l : null;
 }
 
 // T7d2 (F2, caso real: "somente o que tá pendente de resposta minha"): tetos do "pendências", em code points.
@@ -1557,6 +1860,9 @@ export function criarPorteiro({
   // So em memoria: campo novo no e.tg.saude some no proximo carregar (o completarSaude do canal so guarda os que existem).
   let leituraTg409 = false;
   const cacheTitulos = new Map();
+  // T42 (so em memoria): sessionId da escondida -> {caminho (o transcript), bytes (ate onde ja leu), st (os lembretes
+  // lidos: lembretesVazios)}
+  const cacheLembretes = new Map();
   // T11 (so em memoria): arquivo do transcript -> {cab (a cabeca nunca muda), bytes, mtimeMs, titulo (do fim)}; e a hora
   // do ultimo log da lista do VS Code ilegivel
   const cacheConversas = new Map();
@@ -1574,6 +1880,9 @@ export function criarPorteiro({
   // T7k (so em memoria, 1 por aba): sessionId -> {em (ms da proxima leitura), n (leituras feitas), ev (do parou repetido:
   // finalTs, pid, nome, titulo, cwd, entrypoint)}
   const releituras = new Map();
+  // T43 (so em memoria, 1 por conversa): sessionId -> {em (ms da proxima conferencia), n (conferencias feitas), finalTs
+  // (o do parou que espera o toque chegar no transcript)}
+  const esperasDoToque = new Map();
   let envios = []; // ms de cada envio ao grupo (janela de 60 s)
   let pausaAte = 0; // depois de "rate_limit"
   let seqEnsaio = 0;
@@ -1855,6 +2164,8 @@ export function criarPorteiro({
       conferido: false,
       avisadoFila: false,
     };
+    // T43: a conversa que recebeu uma fala pelo Telegram passa a ser acompanhada (o lembrete de uma vez pedido por la)
+    if (peloTelegram(pedido)) acompanharLembretes(e, pedido.sessionId, atMs);
   }
 
   // Encaminhado pela central (F3.9): a mensagem ja foi reagida quando entrou na central; sem ✅ novo.
@@ -3042,6 +3353,39 @@ export function criarPorteiro({
     return ents.some((x) => x?.sessionId === sid && msDeIso(x.at) >= mexeu);
   }
 
+  // T42 (PLANO-TELEGRAM.md, "T42"): ate quando (ms) a escondida `sid` tem lembrete agendado por tocar | null (nenhum, ou
+  // conversa sem transcript: nao achou ou nao abriu). Le so os bytes novos do transcript (cacheLembretes; arquivo que
+  // encolheu = do comeco) e so as linhas que podem ser pedido de lembrete ou resultado de pedido esperando (o transcript
+  // chega a centenas de MB). O corte e o `startedAt` do registro (a hora em que o processo dela nasceu: o agendamento
+  // morre com o processo e a conversa retomada nao herda o da vida anterior); ilegivel = 0 (tudo conta).
+  function lembreteDaConversa(sid, reg, agoraMs) {
+    let c = cacheLembretes.get(sid);
+    if (!c) {
+      c = { caminho: null, bytes: 0, st: lembretesVazios() };
+      cacheLembretes.set(sid, c);
+    }
+    if (!c.caminho) c.caminho = acharTranscript(sid);
+    if (!c.caminho) return null;
+    const r = lerLinhasNovas(
+      c.caminho,
+      c.bytes,
+      (linha) => {
+        const pedido = linha.includes('CronCreate') || linha.includes('CronDelete') || linha.includes('ScheduleWakeup');
+        if (!pedido && !(c.st.usos.size > 0 && linha.includes('tool_result'))) return;
+        let x;
+        try { x = JSON.parse(linha); } catch { return; }
+        lerLembrete(c.st, x);
+      },
+      () => { c.st = lembretesVazios(); },
+    );
+    if (!r) {
+      cacheLembretes.delete(sid); // sumiu: procura de novo depois
+      return null;
+    }
+    c.bytes = r.ate;
+    return lembreteAte(c.st, Number.isFinite(reg.startedAt) ? reg.startedAt : 0, agoraMs);
+  }
+
   // A escondida que o porteiro retomou (e.retomadas, gravada quando a retomada firmou) ou abriu como sessao nova (T41:
   // gravada quando a sessao nova escondida firmou, esperarAbasNovas) devolve a conversa pro VS Code:
   // fecha parada (idle) e sem fala esperando ha RETOMADA_FIRME_MS com a mesma conversa viva no VS Code (o dono abriu la)
@@ -3057,6 +3401,13 @@ export function criarPorteiro({
   // novo em 10 min; a morte conferida pelo pidVivo em ate ~2 s (viva = tenta de novo em 10 min). Esquecer ou fechar = 1 linha de
   // log. Quem chama confere a trava. Nunca toca registro sem entrada aqui (aba do VS Code, central, sessao do terminal
   // que o dono abriu) nem apaga nada em ~/.claude/sessions.
+  // T42 (PLANO-TELEGRAM.md, "T42"): com motivo pra fechar (qualquer dos 3) e fora do ensaio, lembrete agendado nela por
+  // T43 (PLANO-TELEGRAM.md, "T43", contrato 9): depois do encerrar, com erro ou sem, quem decide e o pid, conferido pelas
+  // esperas de sempre: morreu = fechada; vivo = `nao fecha` com `encerrar falhou` (o encerrar devolveu erro) ou `pid vivo
+  // depois de 2 s`, e tenta de novo em 10 min.
+  // tocar (lembreteDaConversa) = espera: grava o `lembreteAte` (ate quando) e o `lembreteDe` (a hora do status em que
+  // conferiu) na entrada e loga 1 linha na 1a vez e quando o prazo muda. Enquanto o prazo nao passa e ela nao mexe, nem
+  // le o ocioso, nem o transcript, nem consulta o processo. Sem lembrete = tira os 2 campos e segue.
   async function devolverRetomadas(e, agoraMs, { idle = null } = {}) {
     const r = e.retomadas;
     if (!r || typeof r !== 'object' || Array.isArray(r)) return;
@@ -3104,6 +3455,9 @@ export function criarPorteiro({
       if (reg.status !== 'idle') continue; // ocupada (ou status desconhecido): espera
       const mexeu = mexeuDe({ registro: reg });
       if (mexeu === null || falaEsperando(e, sid, mexeu)) continue; // sem hora nunca fecha
+      // T42: lembrete agendado nela, ja conferido, e ela nao mexeu desde entao = espera sem conferir de novo
+      const lembrete = msDeIso(x.lembreteAte);
+      if (Number.isFinite(lembrete) && agoraMs < lembrete && x.lembreteDe === mexeu) continue;
       // T18c: comando rodando nela = confere de novo so depois de COMANDO_CONFERE_MS (nem le o ocioso nem consulta)
       const visto = msDeIso(x.comandoVistoEm);
       if (Number.isFinite(visto) && agoraMs - visto < COMANDO_CONFERE_MS) continue;
@@ -3119,6 +3473,16 @@ export function criarPorteiro({
         log(`retomada ${sid}: ensaio nao fecha`);
         continue;
       }
+      // T42: lembrete agendado nela por tocar = nao fecha (o agendamento so vive no processo dela)
+      const ate = lembreteDaConversa(sid, reg, agoraMs);
+      if (ate !== null) {
+        if (x.lembreteAte !== iso(ate)) log(`retomada ${sid}: lembrete agendado nela ate ${iso(ate)}; espera`);
+        x.lembreteAte = iso(ate);
+        x.lembreteDe = mexeu;
+        continue;
+      }
+      delete x.lembreteAte;
+      delete x.lembreteDe;
       const falhou = msDeIso(x.falhouEm);
       if (Number.isFinite(falhou) && agoraMs - falhou < CENTRAL_FALHA_CACHE_MS) continue;
       const naoFecha = (porque) => {
@@ -3173,17 +3537,14 @@ export function criarPorteiro({
       delete x.comandoVistoEm;
       let ok = false;
       try { ok = processos.matarArvore(pid) === true; } catch { ok = false; }
-      if (!ok) {
-        naoFecha('encerrar falhou');
-        continue;
-      }
+      // T43: o encerrar que devolve erro pode ter matado a arvore mesmo assim (4 casos reais): quem decide e o pid
       let viva = vivoDe(pid);
       for (let i = 0; viva && i < CENTRAL_MORTE_ESPERAS; i++) {
         await dormirMs(CENTRAL_MORTE_PASSO_MS);
         viva = vivoDe(pid);
       }
       if (viva) {
-        naoFecha('pid vivo depois de 2 s');
+        naoFecha(ok ? 'pid vivo depois de 2 s' : 'encerrar falhou');
         continue;
       }
       esquecer(`a escondida (pid ${pid}) fechada: ${motivo}`);
@@ -4912,6 +5273,109 @@ export function criarPorteiro({
     }
   }
 
+  // ---------- T43: a volta do lembrete unico pedido pelo Telegram (PLANO-TELEGRAM.md, "T43") ----------
+
+  // A conversa passa a ser acompanhada quando recebe uma fala pelo Telegram: a entrada nasce vazia, nada lido.
+  function acompanharLembretes(e, sid, atMs) {
+    if (!sidDeLembrete(sid)) return;
+    if (!objetoDoDisco(e.lembretesTg)) e.lembretesTg = {};
+    if (!Object.hasOwn(e.lembretesTg, sid)) e.lembretesTg[sid] = { ...toquesVazios(), bytes: 0, vistoEm: iso(atMs) };
+  }
+
+  // Le os bytes novos do transcript da conversa acompanhada (a 1a vez, do comeco; o arquivo que encolheu e a entrada
+  // torta = zera e rele) e so as linhas que mudam a conta: a que abre uma vez, a fala no meio da vez, o pedido de
+  // lembrete e, com pedido esperando, o resultado (o transcript chega a centenas de MB). Linha que nao e JSON e pulada.
+  // -> {st (a entrada do estado), primeira (leu do comeco)} | null (conversa nao acompanhada; sem transcript ou erro de
+  // leitura = a entrada zera, pra reler do comeco).
+  function lerToques(e, sid, agoraMs) {
+    const todas = e.lembretesTg;
+    if (!sidDeLembrete(sid) || !objetoDoDisco(todas) || !Object.hasOwn(todas, sid)) return null;
+    let st = toquesDoDisco(todas[sid]);
+    if (!st) {
+      st = { ...toquesVazios(), bytes: 0 };
+      todas[sid] = st;
+    }
+    st.vistoEm = iso(agoraMs);
+    let primeira = st.bytes === 0;
+    const arq = caminhoDoTranscript(sid);
+    const r = arq ? lerLinhasNovas(
+      arq,
+      st.bytes,
+      (linha) => {
+        const conta = linha.includes('"turnOrigin"') || linha.includes('"queued_command"') || linha.includes('CronCreate')
+          || linha.includes('CronDelete') || (st.usos.length > 0 && linha.includes('tool_result'));
+        if (!conta) return;
+        let x;
+        try { x = JSON.parse(linha); } catch { return; }
+        lerToque(st, x);
+      },
+      () => {
+        Object.assign(st, toquesVazios());
+        primeira = true;
+      },
+    ) : null;
+    if (!r) {
+      Object.assign(st, toquesVazios(), { bytes: 0 });
+      return null;
+    }
+    st.bytes = r.ate;
+    return { st, primeira };
+  }
+
+  // O final de um parou (`finalTs`) e da vez de um toque? Le o que falta do transcript e gasta os toques ate ele. O toque
+  // cuja vez ja tinha acabado = 1 linha de log (fora da leitura do comeco: o historico de antes nao conta).
+  // -> {tocou, porTocar (ainda ha lembrete de uma vez por tocar)}
+  function toqueDaVez(e, sid, finalTs, agoraMs) {
+    const l = canal ? lerToques(e, sid, agoraMs) : null;
+    if (!l) return { tocou: false, porTocar: false };
+    const { tocou, velhos } = toqueDoFinal(l.st, msDeIso(finalTs));
+    if (velhos > 0 && !l.primeira) log(`parou ${sid}: ${velhos} toque(s) de lembrete de uma vez que ja tinha acabado; nada no Telegram`);
+    return { tocou, porTocar: l.st.unicos.length > 0 };
+  }
+
+  // O parou e da vez de um lembrete de uma vez pedido pelo Telegram que tocou? Nao tocou e ha lembrete por tocar = o
+  // transcript pode estar atrasado (o gancho grava o parou com o texto do proprio Stop antes de a entrada do toque
+  // chegar no arquivo): marca a conferencia de novo em 5 s (1 por conversa; o parou mais novo fica no lugar).
+  function lembreteTocou(e, ev, agoraMs) {
+    const { tocou, porTocar } = toqueDaVez(e, ev.sessionId, ev.finalTs, agoraMs);
+    if (!tocou && porTocar && Number.isFinite(msDeIso(ev.finalTs))) {
+      esperasDoToque.set(ev.sessionId, { em: agoraMs + RELEITURA_MS[0], n: 0, finalTs: ev.finalTs });
+    }
+    return tocou;
+  }
+
+  // A volta do lembrete: o final da vez dele como resposta no Telegram (mensagem nova, com notificacao, sem citar: a
+  // mensagem em que ele pediu pode ja ter saido da tela), com o dono no PC ou na rua. `guardado` = o parou guardado dela.
+  function voltaDoLembrete(e, ev, guardado, atraso = '') {
+    guardado.noTelegram = true;
+    const evR = { ...ev, titulo: tituloDoEvento(ev) };
+    log(`Telegram: o lembrete pedido pelo Telegram tocou na aba ${ev.sessionId}${atraso}; a volta dele vai pro Telegram`);
+    eventoTg('resposta', () => canal.resposta(e, evR, evR.titulo));
+  }
+
+  // As conferencias vencidas do toque atrasado (no comeco do passoEventos): achou o toque = a volta sai atrasada; senao
+  // tenta de novo 15 s e 45 s depois e, na 3a, desiste. Desiste na hora com a trava, com um parou mais novo dela (o
+  // guardado ja e outro) ou com esse parou ja no Telegram (resposta ou aviso por outro caminho).
+  function toquesAtrasados(e, agoraMs) {
+    for (const [sid, r] of [...esperasDoToque]) {
+      if (agoraMs < r.em) continue;
+      const g = objetoDoDisco(e.parouGuardado) && Object.hasOwn(e.parouGuardado, sid) ? e.parouGuardado[sid] : null;
+      if (e.trava || !objetoDoDisco(g) || !objetoDoDisco(g.ev) || g.ev.finalTs !== r.finalTs || g.noTelegram === true) {
+        esperasDoToque.delete(sid);
+        continue;
+      }
+      r.n += 1;
+      if (toqueDaVez(e, sid, r.finalTs, agoraMs).tocou) {
+        esperasDoToque.delete(sid);
+        voltaDoLembrete(e, g.ev, g, ` (transcript atrasado, tentativa ${r.n})`);
+      } else if (r.n >= RELEITURA_MS.length) {
+        esperasDoToque.delete(sid);
+      } else {
+        r.em = agoraMs + RELEITURA_MS[r.n];
+      }
+    }
+  }
+
   // 1 evento do eventos.jsonl. Nao salva: quem chama grava o estado (fila, vistos, avisos) junto com o offset (F3.8).
   async function tratarEvento(e, ev, efetivo, agoraMs) {
     if (ev.tipo === 'encaminhar') {
@@ -4977,6 +5441,9 @@ export function criarPorteiro({
     // resposta a repasse: vai pro canal de cada entrega respondida, com modo rua ou sem (senao a central nunca responde);
     // nao vira aviso. WhatsApp = no grupo; Telegram = chamado "resposta"; os dois = os dois.
     const respondeu = respondeuEntrega(e, ev, agoraMs);
+    // T43: o final e da vez de um lembrete de uma vez pedido pelo Telegram que tocou (le o transcript dela e gasta o
+    // toque, com trava ou sem). A resposta a uma fala do Telegram ja leva esse final: segue o caminho de sempre.
+    const tocou = lembreteTocou(e, ev, agoraMs);
     if (respondeu.whatsapp || respondeu.telegram) {
       if (e.trava) return;
       const evR = { ...ev, titulo: tituloDoEvento(ev) };
@@ -5002,9 +5469,15 @@ export function criarPorteiro({
           }));
           if (respondeu.audioTg) pedirVoz(e, evR, respondeu.citarTg); // T17b: ele falou por audio = a resposta tambem em voz
         }
+      } else if (tocou) {
+        voltaDoLembrete(e, ev, guardado); // T43: respondeu so a fala do WhatsApp na vez do toque: a volta vai pro Telegram
       } else {
         encerrarNoTg(e, ev, 'whatsapp'); // T3b: respondeu so a fala do WhatsApp: o chamado com botoes (se houver) encerra
       }
+      return;
+    }
+    if (tocou) { // T43: a volta do lembrete sempre chega no Telegram, mesmo sem pedir nada dele e com ele no PC
+      if (!e.trava) voltaDoLembrete(e, ev, guardado);
       return;
     }
     if (!efetivo) { // dono no PC (ou travado): nada vai pro grupo nem pro Telegram
@@ -5035,6 +5508,7 @@ export function criarPorteiro({
     const e = carregar();
     await drenar(e);
     releiturasVencidas(e, agoraMs); // T7k: antes da leitura abaixo, pra o parou gravado entrar neste passo
+    toquesAtrasados(e, agoraMs); // T43: o toque do lembrete que chegou no transcript depois do parou
     // F3.8: cada linha traz o byte logo depois dela; o offset salvo anda evento a evento (inclusive linha ruim e evento
     // pulado), no MESMO salvar da fila/vistos/avisos daquele evento. O passo morreu no meio do lote = o porteiro seguinte
     // continua do evento depois do ultimo salvo; vistosEventos e a fila de saida seguem barrando mensagem em dobro.

@@ -606,11 +606,12 @@ test('T18c 3. comando rodando na escondida (bash, sh, powershell ou pwsh na arvo
     h.arvores.set(ESC, ['node.exe']);
     h.matarFalha = true;
     h.t += MIN;
+    const t = h.t; // T43: o encerrar que falha espera o pid (o dormir do duble avanca o relogio); o falhouEm e o do passo
     await h.p.passoMinuto();
     assert.deepEqual(h.mortes, [ESC], nome);
     const x = estado(h).retomadas[S1];
     assert.equal(x.comandoEm, undefined, nome);
-    assert.equal(x.falhouEm, iso(h.t), nome);
+    assert.equal(x.falhouEm, iso(t), nome);
   }
 });
 
