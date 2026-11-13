@@ -207,6 +207,21 @@ const CENTRAL_ESPERA_MS = 3 * MIN;
 // D6 (achado 8): criacao do processo x hora gravada pelo mensageiro no registro do filho (pid reusado fica fora)
 const FILHO_FOLGA_MS = 2 * MIN;
 const NA_FILA_MS = 10 * MIN; // sem o recado no transcript da aba ate aqui = "ainda nao pegou"
+// T44 (PLANO-TELEGRAM.md, "T44"; caso real 13/11/2026: 12 entregas recusadas em novembro): duas abas com o mesmo nome
+// interno (a copia de uma conversa; o nome automatico `workspace-XX`) nao barram mais a entrega. O endereco de uma aba
+// e a linha `nome [ref]` da lista de sessoes (o mensageiro devolve as linhas do nome no "duplicado"); o porteiro descobre
+// qual linha e de qual conversa pela conferencia de endereco: um recado fixo pra UMA linha, e ele ve em qual transcript
+// o recado caiu.
+const RE_REF = /^[0-9a-f]{6}$/; // o ref de uma linha da lista (o mesmo formato que o mensageiro aceita)
+const RE_COD_SONDAGEM = /^cf-[0-9a-f]{10}$/; // o codigo de uma conferencia de endereco (o `id <codigo>` do recado dela)
+const NOMES_ESPERA_MS = 90 * 1000; // a lista e as sessoes vivas nao batem (a janela recarregando): espera e tenta 1 vez
+const CONFERENCIA_PRAZO_MS = 60 * 1000; // a conferencia enviada que nao aparece em conversa nenhuma ate aqui = recusa
+const SONDAGEM_TTL_MS = 10 * MIN; // a conferencia achada fica isso no estado (cala o fim da vez dela); a fala que espera, no maximo isso
+const NOMES_MAX = 3; // voltas da MESMA fala pelo nome repetido (a lista mudando no meio); passou = recusa
+const ENDERECOS_MAX = 200; // e.enderecos: no maximo isso, os mais novos
+const ENDERECO_TTL_MS = 30 * 24 * 60 * MIN;
+const SONDAGENS_MAX = 20; // e.sondagens: no maximo isso, as mais novas
+const ESPERA_PAROU_MAX = 10; // parous esperando a mesma conferencia aparecer (transcript atrasado); o que passar segue na hora
 const JANELA_MS = 60 * 1000;
 const MAX_POR_JANELA = 4; // o whatsapp-agent recusa a 6a mensagem no minuto na mesma conversa (medido 27/09 17:37)
 const RATE_PAUSA_MS = 15 * 1000; // depois de um "rate_limit": nada sai ate o proximo ciclo
@@ -488,6 +503,15 @@ export const FRASES = {
   naoAchei: (titulo) => `${CABECALHO}\nNão achei a sessão ${titulo} aberta no PC. "status" lista as que estão abertas.`,
   duplicado: (nome) =>
     `${CABECALHO}\nTem duas abas com o nome interno ${nome}. Dá um nome pra uma delas no PC (Rename) e manda de novo.`,
+  // T44: o nome repetido que o porteiro nao conseguiu resolver sozinho (a conferencia de endereco nao apareceu, a lista
+  // nao bate, a central no meio): com os titulos das abas como ele ve no VS Code (o nome interno ele nunca ve). A
+  // `duplicado` de cima fica pro caso sem os titulos (o mensageiro nao leu as linhas, ou so 1 aba viva com o nome).
+  duplicadoSemEndereco: (titulos) => {
+    const quantas = titulos.length === 2 ? 'duas' : titulos.length === 3 ? 'três' : String(titulos.length);
+    const iguais = new Set(titulos).size === 1;
+    const quais = iguais ? `Tem ${quantas} abas chamadas ${titulos[0]}` : `Tem ${quantas} abas com o mesmo nome interno (${emFrase(titulos)})`;
+    return `${CABECALHO}\n${quais} e não consegui confirmar qual é qual. Dá um nome novo pra uma delas no PC (Rename) e manda de novo.`;
+  },
   naoEntregue: (hora, titulo) =>
     `${CABECALHO}\nNão consegui entregar a sua mensagem das ${hora} pra ${titulo}. Tento de novo quando você mandar outra, ou abre a aba no PC.`,
   naoMostrou: (titulo, hora) =>
@@ -801,6 +825,8 @@ function estadoNovo(agoraMs, eventosFile) {
     centralSozinho: 0, // aberturas sozinho seguidas sem a central aparecer (limite CENTRAL_MAX_SOZINHO)
     // F3.7: pedidos pro mensageiro, na ordem, 1 em voo por vez (passoEntrega). Item: {id, tipo:'repasse'|'reforco',
     // pedido, entregaId? (reforco), segunda? (nova tentativa: confere o transcript antes), primeiraEm?, emVooDesde?}.
+    // T44: + o item {id, tipo:'sondagem', codigo, pedido: {sessionId, nome, ref, conferencia}} = a conferencia de endereco
+    // (nunca e fala do dono: nao vira nova tentativa nem entrega registrada).
     filaEntrega: [],
     lidoAte: null, // F3.7: hora da mensagem mais nova da ultima leitura do grupo que deu certo
     buraco: null, // F3.7: ultimo buraco avisado {de, ate, avisadoEm}
@@ -837,6 +863,17 @@ function estadoNovo(agoraMs, eventosFile) {
     // (a entrega que criou a entrada ou o ultimo parou lido)}. 30 dias sem parou = sai; no maximo LEMBRETES_TG_MAX (as
     // vistas por ultimo). Estado velho sem a chave = {}.
     lembretesTg: {},
+    // T44 (PLANO-TELEGRAM.md, "T44"): o endereco das abas de nome repetido: sessionId -> {pid, procStart (o processo da
+    // aba quando o endereco foi visto), ref (a linha `nome [ref]` dela na lista de sessoes), em}. Vale enquanto o
+    // processo da aba e o mesmo (limparEnderecos); 30 dias, no maximo ENDERECOS_MAX. sondagens = as conferencias de
+    // endereco: codigo -> {nome, ref (a linha conferida), linhas [{ref, estado}], titulos (os das abas, pra recusa), abas
+    // {sessionId -> {pid, procStart, bytes (ate onde o transcript dela foi lido), conf: {ts, meio} | null (a conferencia
+    // nessa conversa), depois: ISO | null (a 1a entrada depois dela que abre outra vez ou entra no meio)}}, criadaEm,
+    // enviadaEm, estado ('aberta' | 'achada' | 'vencida'), sessao (onde caiu), achadaEm, espera [parous guardados ate a
+    // conferencia aparecer]}. A fala que espera a conferencia fica em e.repassar com `sondagem: codigo`. Estado velho sem
+    // as chaves = {}.
+    enderecos: {},
+    sondagens: {},
     // T24 (PLANO-TELEGRAM.md, "T24"): as abas que o dono tirou do "Esperando você" pelo `aguardar` da central: sessionId
     // -> {em (a hora do mover), finalTs (o da pergunta movida)}. Vale so pra MESMA pergunta (aguardandoDe): pergunta nova
     // volta sozinha pro Esperando e o podar tira o registro. Estado velho sem a chave = {}.
@@ -1012,6 +1049,29 @@ function completarEstado(bruto, agoraMs, eventosFile) {
   return e;
 }
 
+// ---------- T44: nome repetido (PLANO-TELEGRAM.md, "T44") ----------
+
+const mesmoNome = (a, b) => typeof a === 'string' && typeof b === 'string' && a.normalize('NFC') === b.normalize('NFC');
+// O endereco guardado e do processo deste registro? (a aba que reiniciou tem outro pid e outra linha na lista)
+const mesmoProcesso = (end, reg) => objetoDoDisco(end) && objetoDoDisco(reg) && Number.isInteger(end.pid) && end.pid === reg.pid
+  && String(end.procStart ?? '') === String(reg.procStart ?? '');
+const semRef = ({ ref, ...resto }) => resto;
+// O pedido sem as marcas que a T44 poe nele (o endereco e as contas das voltas pelo nome): como chegou.
+const semMarcasDeNome = ({ ref, nomesVez, nomesEsperou, conferidas, refCaiu, ...resto }) => resto;
+
+// A entrada de e.sondagens como veio do disco serve? (o codigo no formato e os campos que o porteiro le)
+function sondagemBoa(cod, s) {
+  if (typeof cod !== 'string' || !RE_COD_SONDAGEM.test(cod) || !objetoDoDisco(s)) return false;
+  if (typeof s.nome !== 'string' || !s.nome || typeof s.ref !== 'string' || !RE_REF.test(s.ref)) return false;
+  if (!['aberta', 'achada', 'vencida'].includes(s.estado) || !Number.isFinite(msDeIso(s.criadaEm))) return false;
+  if (!Array.isArray(s.linhas) || !Array.isArray(s.titulos) || !Array.isArray(s.espera) || !objetoDoDisco(s.abas)) return false;
+  if (!s.linhas.every((l) => objetoDoDisco(l) && typeof l.ref === 'string' && RE_REF.test(l.ref))) return false;
+  if (!s.titulos.every((t) => typeof t === 'string') || !s.espera.every((x) => objetoDoDisco(x) && typeof x.sessionId === 'string')) return false;
+  if (s.estado === 'achada' && (typeof s.sessao !== 'string' || !Object.hasOwn(s.abas, s.sessao))) return false;
+  return Object.entries(s.abas).every(([sid, a]) => sidDeLembrete(sid) && objetoDoDisco(a) && Number.isSafeInteger(a.bytes) && a.bytes >= 0
+    && (a.conf === null || objetoDoDisco(a.conf)) && (a.depois === null || typeof a.depois === 'string'));
+}
+
 function podar(e, agoraMs) {
   for (const [id, a] of Object.entries(e.avisos)) {
     const t = Date.parse(a?.at);
@@ -1079,6 +1139,25 @@ function podar(e, agoraMs) {
       && Number.isFinite(msDeIso(l.vistoEm)) && agoraMs - msDeIso(l.vistoEm) <= LEMBRETE_TG_TTL_MS);
     boas.sort((a, b) => msDeIso(b[1].vistoEm) - msDeIso(a[1].vistoEm));
     e.lembretesTg = Object.fromEntries(boas.slice(0, LEMBRETES_TG_MAX));
+  }
+  // T44: endereco torto sai (chave ou ref fora do formato, hora ilegivel), 30 dias, no maximo ENDERECOS_MAX (os mais
+  // novos); o do processo que morreu sai no limparEnderecos (quem tem as sessoes vivas na mao). Conferencia torta sai; a
+  // achada sai SONDAGEM_TTL_MS depois de achada; a aberta e a vencida ficam o TTL das entregas (2 h: a conferencia que
+  // aparece atrasada ainda ensina o endereco e o fim da vez dela segue calado); no maximo SONDAGENS_MAX (as mais novas).
+  if (objetoDoDisco(e.enderecos)) {
+    const boas = Object.entries(e.enderecos).filter(([k, x]) => sidDeLembrete(k) && objetoDoDisco(x) && typeof x.ref === 'string'
+      && RE_REF.test(x.ref) && Number.isFinite(msDeIso(x.em)) && agoraMs - msDeIso(x.em) <= ENDERECO_TTL_MS);
+    boas.sort((a, b) => msDeIso(b[1].em) - msDeIso(a[1].em));
+    e.enderecos = Object.fromEntries(boas.slice(0, ENDERECOS_MAX));
+  }
+  if (objetoDoDisco(e.sondagens)) {
+    const boas = Object.entries(e.sondagens).filter(([k, s]) => {
+      if (!sondagemBoa(k, s)) return false;
+      if (s.estado === 'achada') return agoraMs - msDeIso(s.achadaEm) <= SONDAGEM_TTL_MS; // hora ilegivel = sai
+      return agoraMs - msDeIso(s.criadaEm) <= ENTREGA_TTL_MS;
+    });
+    boas.sort((a, b) => msDeIso(b[1].criadaEm) - msDeIso(a[1].criadaEm));
+    e.sondagens = Object.fromEntries(boas.slice(0, SONDAGENS_MAX));
   }
   // T24: fica so o registro que vale (aguardandoDe: chave UUID, a mesma pergunta no ultimosParou, hora legivel); no maximo
   // AGUARDANDO_MAX, os movidos por ultimo
@@ -1149,6 +1228,23 @@ function textoDoConteudo(content) {
   if (!Array.isArray(content)) return null;
   const partes = content.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text);
   return partes.length ? partes.join('\n') : null;
+}
+
+// O recado de outra sessao numa entrada do transcript, nos 2 formatos (medido 27/09/2026): aba parada = linha user com
+// origin.kind "peer" (abre uma vez so dele); aba OCUPADA = o recado entra no meio do turno como anexo (type
+// "attachment", attachment.type "queued_command", origin.kind "peer", texto em attachment.prompt; a fila registra
+// "absorbed_mid_turn"). -> {texto (null = sem texto), ts (o timestamp da linha | null), meio (entrou no meio da vez)} |
+// null (a entrada nao e recado de outra sessao).
+function recadoDePeer(x) {
+  if (x?.type === 'user' && x.origin?.kind === 'peer') {
+    return { texto: textoDoConteudo(x.message?.content), ts: typeof x.timestamp === 'string' ? x.timestamp : null, meio: false };
+  }
+  if (x?.type === 'attachment' && x.attachment?.type === 'queued_command' && x.attachment?.origin?.kind === 'peer') {
+    const pr = x.attachment.prompt;
+    const ts = typeof x.timestamp === 'string' ? x.timestamp : typeof x.attachment.timestamp === 'string' ? x.attachment.timestamp : null;
+    return { texto: typeof pr === 'string' ? pr : textoDoConteudo(pr), ts, meio: true };
+  }
+  return null;
 }
 
 const escaparRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2133,6 +2229,8 @@ export function criarPorteiro({
   // ---------- repasse pra aba (mensageiro) ----------
 
   // Nunca lanca: {status:'enviado'|'nao_achei'|'duplicado'|'erro'|'ensaio', detalhe}.
+  // T44: no "duplicado" leva tambem `linhas` = as linhas da lista com o nome ([{ref, estado}]; so as de ref no formato;
+  // o mensageiro nao leu a lista = []). O log diz quando a entrega foi dirigida (`[ref]`) e quando e a conferencia.
   async function entregar(payload) {
     if (emEnsaio) {
       registrarEnsaio({ acao: 'entregar', ...payload });
@@ -2146,8 +2244,15 @@ export function criarPorteiro({
     }
     const status = ['enviado', 'nao_achei', 'duplicado', 'erro'].includes(r?.status) ? r.status : 'erro';
     const detalhe = String(r?.detalhe ?? (status === r?.status ? '' : 'retorno sem status')).slice(0, 160);
-    log(`entregar ${payload.sessionId}: ${status}${detalhe ? ` (${detalhe})` : ''}`);
-    return { status, detalhe };
+    const naLinha = typeof payload.ref === 'string' && RE_REF.test(payload.ref) ? payload.ref : '?';
+    const como = payload.conferencia !== undefined
+      ? ` (conferencia ${RE_COD_SONDAGEM.test(String(payload.conferencia)) ? payload.conferencia : '?'} na linha [${naLinha}])`
+      : payload.ref !== undefined ? ` [${naLinha}]` : '';
+    log(`entregar ${payload.sessionId}${como}: ${status}${detalhe ? ` (${detalhe})` : ''}`);
+    if (status !== 'duplicado') return { status, detalhe };
+    const linhas = (Array.isArray(r?.linhas) ? r.linhas : []).filter((l) => objetoDoDisco(l) && typeof l.ref === 'string' && RE_REF.test(l.ref))
+      .map((l) => ({ ref: l.ref, estado: typeof l.estado === 'string' ? l.estado.slice(0, 20) : null }));
+    return { status, detalhe, linhas };
   }
 
   const tituloDoPedido = (p) => p?.titulo || p?.nome || 'sem nome';
@@ -2333,7 +2438,7 @@ export function criarPorteiro({
     e.centralPendentes.push({ pedido: { ...pedido, deNovo: true, centralVelha: sid }, desde, porque: 'nao_achei' });
     log('fala pra central estacionada (nao_achei): espera a central que recebe');
     const daAba = (x) => x && typeof x === 'object' && x.pedido && typeof x.pedido === 'object' && x.pedido.sessionId === sid &&
-      x.tipo !== 'reforco' && !x.entregaId && !x.emVooDesde && !recadoDeBotao(x.pedido);
+      x.tipo !== 'sondagem' && x.tipo !== 'reforco' && !x.entregaId && !x.emVooDesde && !recadoDeBotao(x.pedido); // T44: a conferencia nunca e fala
     for (const k of ['filaEntrega', 'repassar']) {
       const ficam = [];
       for (const x of e[k]) {
@@ -2378,6 +2483,10 @@ export function criarPorteiro({
   // saiu pro mensageiro (a aba pode responder antes dele devolver "enviado"). "erro" na 1a = nova tentativa no proximo
   // passoGrupo; na 2a = frase. Reforco (F3.6): enviado = tentativa 2; senao = "não mostrou na tela".
   async function aplicarResultado(e, item, r, agoraMs) {
+    if (item.tipo === 'sondagem') { // T44: o resultado da conferencia de endereco (nunca e fala do dono)
+      resultadoDaSondagem(e, item, r, agoraMs);
+      return;
+    }
     const pedido = item.pedido;
     if (item.tipo === 'reforco') {
       const x = e.entregas[item.entregaId];
@@ -2417,6 +2526,13 @@ export function criarPorteiro({
       return;
     }
     if (r.status === 'nao_achei') {
+      // T44: a entrega dirigida nao achou a linha `nome [ref]` (a aba reiniciou ou fechou com a fala em voo): o endereco
+      // sai e o resto e do linhaSaiu (1 tentativa pelo nome so se nenhuma outra aba viva tem o nome; senao o "nao achei"
+      // de sempre, com o pedido sem as marcas: a retomada da aba fechada nunca recebe o endereco velho).
+      if (typeof pedido.ref === 'string') {
+        await linhaSaiu(e, item, r, agoraMs);
+        return;
+      }
       // Revisao da T7b2a (item 1): o recado do toque num pedido de OK (`ok`) e so da sessionId EXATA do pedido, tambem
       // quando ela e a central: nao recebeu = a mensagem do pedido fecha com "não consegui entregar" (problemaNoOk). Nunca
       // estaciona, nunca passa pra outra central e nunca vira falaRecebida no chamado dela.
@@ -2441,7 +2557,7 @@ export function criarPorteiro({
       return;
     }
     if (r.status === 'duplicado') {
-      await avisarProblema(e, pedido, pedido.sessionId, FRASES.duplicado(pedido.nome || tituloDoPedido(pedido)));
+      await resolverDuplicado(e, item, r, agoraMs); // T44: o nome repetido nao barra mais a entrega
       return;
     }
     if (!item.segunda) {
@@ -2449,6 +2565,386 @@ export function criarPorteiro({
       return;
     }
     await avisarProblema(e, pedido, pedido.sessionId, FRASES.naoEntregue(pedido.hora, tituloDoPedido(pedido)));
+  }
+
+  // ---------- T44: nome repetido nao barra a entrega (PLANO-TELEGRAM.md, "T44") ----------
+  // O mensageiro acha a aba pelo nome; com 2 abas de mesmo nome ele devolve "duplicado" com as linhas do nome na lista de
+  // sessoes ({ref, estado}). O endereco de uma aba e `nome [ref]`; o ref nao sai de campo nenhum do registro dela, entao
+  // o porteiro descobre qual linha e de qual conversa: (1) o endereco guardado da aba (e.enderecos, vale enquanto o
+  // processo dela e o mesmo); (2) todas as outras com endereco = a linha que sobra; (3) a conferencia de endereco: um
+  // recado fixo pra UMA linha (e.sondagens), e o lerSondagens ve em qual transcript ele caiu. Com N abas, no maximo N-1
+  // conferencias. A fala que espera fica em e.repassar (`sondagem: codigo`), fora da fila; resolvida, volta pra FRENTE da
+  // fila com o `ref` da aba dela. O que nao da pra resolver vira a recusa com os titulos das abas.
+
+  const tituloDaViva = (v) => nomeNaFrase(v.titulo || v.nome || 'sem nome');
+  // A recusa do nome repetido: com 2+ abas vivas, os titulos delas; senao a frase de sempre, com o nome interno.
+  const fraseDoNomeRepetido = (nome, titulos) => (titulos.length >= 2 ? FRASES.duplicadoSemEndereco(titulos) : FRASES.duplicado(nome));
+  // A fala de volta pra fila: com `ref` = dirigida pra linha da aba dela; sem = pelo nome, como chegou.
+  const itemDaFala = (f, ref) => ({
+    id: `q-${randomUUID()}`, tipo: 'repasse', pedido: ref ? { ...f.pedido, ref } : semRef(f.pedido),
+    segunda: f.segunda === true, primeiraEm: f.primeiraEm ?? null,
+  });
+
+  function tamanhoDoTranscript(sid) {
+    const arq = caminhoDoTranscript(sid);
+    try { return arq ? fs.statSync(arq).size : 0; } catch { return 0; }
+  }
+
+  // O endereco da aba: a linha `ref` e do processo `proc` ({pid, procStart}) dela. A linha e de 1 conversa so: o mesmo
+  // ref guardado em outra sai.
+  function guardarEndereco(e, sid, ref, proc, agoraMs) {
+    if (!sidDeLembrete(sid) || typeof ref !== 'string' || !RE_REF.test(ref)) return;
+    if (!objetoDoDisco(e.enderecos)) e.enderecos = {};
+    for (const [k, x] of Object.entries(e.enderecos)) if (k !== sid && x?.ref === ref) delete e.enderecos[k];
+    e.enderecos[sid] = { pid: proc?.pid ?? null, procStart: proc?.procStart ?? null, ref, em: iso(agoraMs) };
+  }
+
+  // O endereco so vale enquanto o processo da aba e o mesmo (a aba que reiniciou ou fechou tem outra linha, ou nenhuma).
+  // Lista de vivas vazia (a pasta dos registros nao leu) = nada sai.
+  function limparEnderecos(e, vivas) {
+    if (!objetoDoDisco(e.enderecos) || !vivas.length) return;
+    const regDe = new Map(vivas.map((v) => [v.sessionId, v.registro]));
+    for (const [sid, end] of Object.entries(e.enderecos)) {
+      if (!mesmoProcesso(end, regDe.get(sid))) delete e.enderecos[sid];
+    }
+  }
+
+  // Antes de a fala sair pro mensageiro: o `ref` do pedido passa a ser o endereco guardado da aba dela, se ainda vale (o
+  // mesmo processo vivo, com o nome do pedido) = a entrega ja sai dirigida, sem a rodada pelo nome. Sem endereco valido o
+  // pedido sai SEM ref: o que veio de antes (a copia de um pedido, a aba que reiniciou) nunca vale sozinho. Sem nenhum
+  // endereco guardado e sem ref no pedido (nenhum nome repetido) nada muda e as sessoes vivas nem sao lidas.
+  function aplicarEndereco(e, pedido) {
+    const guardados = objetoDoDisco(e.enderecos) ? e.enderecos : {};
+    if (!Object.hasOwn(pedido, 'ref') && !Object.keys(guardados).length) return;
+    delete pedido.ref;
+    const vivas = sessoesVivas();
+    limparEnderecos(e, vivas);
+    const sid = pedido.sessionId;
+    const end = typeof sid === 'string' && Object.hasOwn(guardados, sid) ? guardados[sid] : null;
+    const viva = end ? vivas.find((v) => v.sessionId === sid) : null;
+    if (viva && mesmoNome(viva.nome, pedido.nome)) pedido.ref = end.ref;
+  }
+
+  // A entrega dirigida voltou "nao achei": a linha `nome [ref]` saiu da lista. O endereco e esquecido. Com outra aba viva
+  // de mesmo nome a fala NUNCA vai pelo nome (cairia na aba errada, ou voltaria duplicado): segue o "nao achei" de sempre.
+  // Nome unico = 1 tentativa pelo nome (`refCaiu`); a 2a queda da mesma fala tambem segue o "nao achei" de sempre.
+  async function linhaSaiu(e, item, r, agoraMs) {
+    const { ref, ...resto } = item.pedido;
+    const sid = resto.sessionId;
+    if (objetoDoDisco(e.enderecos) && Object.hasOwn(e.enderecos, sid) && e.enderecos[sid]?.ref === ref) delete e.enderecos[sid];
+    log(`nome repetido: a linha [${RE_REF.test(ref) ? ref : '?'}] da aba ${sid} saiu da lista; endereco esquecido`);
+    const outraComONome = sessoesVivas().some((v) => v.sessionId !== sid && mesmoNome(v.nome, resto.nome));
+    if (!outraComONome && resto.refCaiu !== true) {
+      e.filaEntrega.unshift(itemDaFala({ pedido: { ...resto, refCaiu: true }, segunda: item.segunda, primeiraEm: item.primeiraEm }, null));
+      return;
+    }
+    await aplicarResultado(e, { ...item, pedido: semMarcasDeNome(resto) }, r, agoraMs);
+  }
+
+  // "duplicado" de uma fala que foi pelo nome. Sem as linhas do nome (o mensageiro nao leu a lista) = a recusa de
+  // sempre, na hora. A lista e as sessoes vivas nao batem (a janela do VS Code recarregando mostra cada aba dobrada por
+  // 1 min; processo sobrando) = a fala espera NOMES_ESPERA_MS e vai pelo nome de novo, 1 vez; continua = recusa.
+  async function resolverDuplicado(e, item, r, agoraMs) {
+    const pedido = item.pedido;
+    const sid = pedido.sessionId;
+    const nome = typeof pedido.nome === 'string' ? pedido.nome : '';
+    const linhas = Array.isArray(r.linhas) ? r.linhas : [];
+    if (!nome || linhas.length < 2) {
+      await avisarProblema(e, pedido, sid, FRASES.duplicado(pedido.nome || tituloDoPedido(pedido)));
+      return;
+    }
+    const rot = nomeNaFrase(nome);
+    const vivas = sessoesVivas();
+    limparEnderecos(e, vivas);
+    const cands = vivas.filter((v) => mesmoNome(v.nome, nome));
+    const titulos = cands.map(tituloDaViva);
+    const vez = (Number.isInteger(pedido.nomesVez) ? pedido.nomesVez : 0) + 1;
+    if (vez > NOMES_MAX) {
+      log(`nome repetido ${rot}: a fala pra aba ${sid} ja voltou ${NOMES_MAX} vezes pelo nome; recusando`);
+      await avisarProblema(e, pedido, sid, fraseDoNomeRepetido(nome, titulos));
+      return;
+    }
+    const fala = { pedido: { ...semRef(pedido), nomesVez: vez }, segunda: item.segunda === true, primeiraEm: item.primeiraEm ?? null };
+    const semRepetir = new Set(linhas.map((l) => l.ref)).size === linhas.length;
+    const bate = semRepetir && linhas.length === cands.length && cands.every((v) => sidDeLembrete(v.sessionId)) && cands.some((v) => v.sessionId === sid);
+    if (bate) {
+      await decidirNomes(e, nome, linhas, cands, [fala], agoraMs);
+      return;
+    }
+    if (pedido.nomesEsperou === true) {
+      log(`nome repetido ${rot}: a lista (${linhas.length} linha(s)) e as sessoes vivas (${cands.length}) continuam diferentes; recusando`);
+      await avisarProblema(e, pedido, sid, fraseDoNomeRepetido(nome, titulos));
+      return;
+    }
+    log(`nome repetido ${rot}: a lista (${linhas.length} linha(s)) e as sessoes vivas (${cands.length}) nao batem; a fala pra aba ${sid} espera 90 s e vai de novo`);
+    e.repassar.push({ ...fala, pedido: { ...fala.pedido, nomesEsperou: true }, naoAntesDe: iso(agoraMs + NOMES_ESPERA_MS) });
+  }
+
+  // Quem e quem entre as abas `cands` (as vivas com o nome) e as `linhas` da lista, pra cada fala de `falas` ({pedido,
+  // segunda, primeiraEm}; o alvo e o pedido.sessionId). Na ordem: o endereco guardado do alvo; todas as outras com
+  // endereco e 1 linha livre = a linha que sobra e a dele (fica guardada); senao a conferencia. Nunca confere com a
+  // central ou uma aba que nao recebe recado entre as sem endereco (a conferencia cairia nela): recusa com os titulos.
+  // Conferencia do mesmo nome ja no ar = a fala so espera junto. A linha conferida e a 1a livre parada (a conferencia
+  // abre uma vez curta); so linha ocupada = a 1a livre (o recado entra no meio da vez, sem parar o trabalho).
+  async function decidirNomes(e, nome, linhas, cands, falas, agoraMs) {
+    const rot = nomeNaFrase(nome);
+    const refs = linhas.map((l) => l.ref);
+    const enderecoDe = (v) => {
+      const end = Object.hasOwn(e.enderecos, v.sessionId) ? e.enderecos[v.sessionId] : null;
+      return mesmoProcesso(end, v.registro) && refs.includes(end.ref) ? end.ref : null;
+    };
+    const titulos = cands.map(tituloDaViva);
+    const recusar = (f) => avisarProblema(e, f.pedido, f.pedido.sessionId, fraseDoNomeRepetido(nome, titulos));
+    const frente = [];
+    const precisam = [];
+    for (const f of falas) {
+      const sid = f.pedido.sessionId;
+      const alvo = cands.find((v) => v.sessionId === sid);
+      if (!alvo) {
+        await recusar(f);
+        continue;
+      }
+      const guardado = enderecoDe(alvo);
+      if (guardado) {
+        log(`nome repetido ${rot}: a fala pra aba ${sid} vai pela linha [${guardado}] (endereco guardado)`);
+        frente.push(itemDaFala(f, guardado));
+        continue;
+      }
+      const dasOutras = cands.filter((v) => v !== alvo).map(enderecoDe);
+      const sobram = refs.filter((x) => !dasOutras.includes(x));
+      if (dasOutras.every(Boolean) && sobram.length === 1) {
+        guardarEndereco(e, sid, sobram[0], alvo.registro, agoraMs);
+        log(`nome repetido ${rot}: a fala pra aba ${sid} vai pela linha [${sobram[0]}] (a linha que sobrou)`);
+        frente.push(itemDaFala(f, sobram[0]));
+        continue;
+      }
+      precisam.push(f);
+    }
+    if (precisam.length) {
+      const cfgId = centralDoConfig();
+      const semEndereco = cands.filter((v) => enderecoDe(v) === null);
+      const naoConfere = semEndereco.find((v) => ehCentral(v, cfgId) || !recebe(v, e));
+      const noAr = Object.entries(e.sondagens).find(([cod, s]) => sondagemBoa(cod, s) && s.estado === 'aberta' && mesmoNome(s.nome, nome));
+      if (naoConfere) {
+        log(`nome repetido ${rot}: a aba ${naoConfere.sessionId} nao recebe conferencia (a central, ou sem canal de recado); recusando ${precisam.length} fala(s)`);
+        for (const f of precisam) await recusar(f);
+      } else if (noAr) {
+        for (const f of precisam) e.repassar.push({ ...f, naoAntesDe: iso(agoraMs + SONDAGEM_TTL_MS), sondagem: noAr[0] });
+        log(`nome repetido ${rot}: ${precisam.length} fala(s) esperam a conferencia de endereco ${noAr[0]}, que ja esta no ar`);
+      } else {
+        const podem = [];
+        for (const f of precisam) {
+          const ja = Number.isInteger(f.pedido.conferidas) ? f.pedido.conferidas : 0;
+          if (ja >= linhas.length) {
+            log(`nome repetido ${rot}: a fala pra aba ${f.pedido.sessionId} ja esperou ${ja} conferencia(s); recusando`);
+            await recusar(f);
+            continue;
+          }
+          podem.push({ ...f, pedido: { ...f.pedido, conferidas: ja + 1 } });
+        }
+        const comEndereco = cands.map(enderecoDe).filter(Boolean);
+        const livres = linhas.filter((l) => !comEndereco.includes(l.ref));
+        const linha = livres.find((l) => l.estado === 'idle') ?? livres[0];
+        if (podem.length && !linha) {
+          for (const f of podem) await recusar(f);
+        } else if (podem.length) {
+          const cod = `cf-${randomUUID().replace(/-/g, '').slice(0, 10)}`;
+          const abas = {};
+          for (const v of cands) {
+            abas[v.sessionId] = { pid: v.registro.pid ?? null, procStart: v.registro.procStart ?? null, bytes: tamanhoDoTranscript(v.sessionId), conf: null, depois: null };
+          }
+          e.sondagens[cod] = {
+            nome, ref: linha.ref, linhas: linhas.map((l) => ({ ref: l.ref, estado: l.estado })), titulos, abas, criadaEm: iso(agoraMs),
+            enviadaEm: null, estado: 'aberta', sessao: null, achadaEm: null, espera: [],
+          };
+          for (const f of podem) e.repassar.push({ ...f, naoAntesDe: iso(agoraMs + SONDAGEM_TTL_MS), sondagem: cod });
+          frente.push({ id: `q-${randomUUID()}`, tipo: 'sondagem', codigo: cod, pedido: { sessionId: podem[0].pedido.sessionId, nome, ref: linha.ref, conferencia: cod } });
+          log(`nome repetido ${rot}: conferencia de endereco ${cod} pra linha [${linha.ref}] (${podem.length} fala(s) esperando)`);
+        }
+      }
+    }
+    if (frente.length) e.filaEntrega.unshift(...frente); // na frente: a ordem das falas da mesma aba nao muda
+  }
+
+  // As falas que esperavam a conferencia `cod` saem de e.repassar. -> [{pedido, segunda, primeiraEm}], na ordem.
+  function tirarEstacionadas(e, cod) {
+    const dela = (x) => objetoDoDisco(x) && x.sondagem === cod;
+    const falas = e.repassar.filter((x) => dela(x) && objetoDoDisco(x.pedido));
+    e.repassar = e.repassar.filter((x) => !dela(x));
+    return falas.map((x) => ({ pedido: x.pedido, segunda: x.segunda === true, primeiraEm: x.primeiraEm ?? null }));
+  }
+
+  // O resultado do mensageiro pra conferencia de endereco. "enviado" e "erro" = o prazo de CONFERENCIA_PRAZO_MS conta
+  // daqui (o claude -p pode estourar o tempo depois de mandar: quem decide e o transcript). A linha nao existe mais
+  // ("nao achei", ou "duplicado") = a lista mudou: a conferencia vence e as falas voltam pelo nome, na frente da fila.
+  function resultadoDaSondagem(e, item, r, agoraMs) {
+    const cod = item.codigo;
+    const s = objetoDoDisco(e.sondagens) && typeof cod === 'string' && Object.hasOwn(e.sondagens, cod) ? e.sondagens[cod] : null;
+    if (!sondagemBoa(cod, s) || s.estado !== 'aberta') return; // ja achada, vencida ou fora do estado: nada muda
+    if (r.status === 'nao_achei' || r.status === 'duplicado') {
+      s.estado = 'vencida';
+      const falas = tirarEstacionadas(e, cod);
+      log(`conferencia ${cod}: a linha [${s.ref}] saiu da lista (${r.status}); ${falas.length} fala(s) voltam pelo nome`);
+      e.filaEntrega.unshift(...falas.map((f) => itemDaFala(f, null)));
+      return;
+    }
+    s.enviadaEm = iso(agoraMs);
+  }
+
+  // Le os bytes novos da conversa `sid` atras da conferencia `cod`: o recado de outra sessao com o `id <cod>` (a.conf:
+  // a hora dele e se entrou no meio da vez). Depois de achar, so a 1a entrada que abre OUTRA vez (`type: "user"` com
+  // `turnOrigin`; o resumo de compactacao nao abre) ou a fala que entra no meio da vez (anexo queued_command): a.depois,
+  // o que diz se um final ainda e so da vez da conferencia. O ajudante (isSidechain) fica fora. Arquivo que encolheu =
+  // procura de novo do comeco.
+  function lerAba(a, sid, cod) {
+    const arq = caminhoDoTranscript(sid);
+    if (!arq) return;
+    const reCod = new RegExp(`\\bid ${escaparRe(cod)}(?![A-Za-z0-9_-])`);
+    const r = lerLinhasNovas(
+      arq,
+      a.bytes,
+      (linha) => {
+        const procura = a.conf === null && linha.includes(cod);
+        const depoisDela = a.conf !== null && a.conf.meio !== true && a.depois === null
+          && (linha.includes('"turnOrigin"') || linha.includes('"queued_command"'));
+        if (!procura && !depoisDela) return;
+        let x;
+        try { x = JSON.parse(linha); } catch { return; }
+        if (!objetoDoDisco(x) || x.isSidechain === true) return;
+        if (procura) {
+          const rec = recadoDePeer(x);
+          if (rec && rec.texto && reCod.test(rec.texto)) a.conf = { ts: rec.ts, meio: rec.meio };
+          return;
+        }
+        const abreVez = x.type === 'user' && typeof x.turnOrigin === 'string' && x.isCompactSummary !== true;
+        const noMeioDaVez = x.type === 'attachment' && x.attachment?.type === 'queued_command';
+        if (!abreVez && !noMeioDaVez) return;
+        const ts = typeof x.timestamp === 'string' ? x.timestamp : typeof x.attachment?.timestamp === 'string' ? x.attachment.timestamp : null;
+        a.depois = Number.isFinite(msDeIso(ts)) ? ts : (a.conf.ts ?? iso(0)); // hora ilegivel = logo depois dela (nunca cala)
+      },
+      () => { a.conf = null; a.depois = null; },
+    );
+    if (r) a.bytes = r.ate;
+  }
+
+  // No comeco do passoEventos (antes dos eventos: o parou da vez da conferencia e calado no mesmo passo): em que conversa
+  // cada conferencia caiu. Aberta = procura nas abas do nome; achou = guarda o endereco da linha conferida (o processo da
+  // aba na hora da conferencia). Vencida = segue procurando (a conferencia atrasada ainda ensina o endereco, calada).
+  // Achada = so a conversa dela, atras do `depois`. Com trava tambem (so le e guarda o endereco).
+  function lerSondagens(e, agoraMs) {
+    if (!objetoDoDisco(e.sondagens)) return;
+    for (const [cod, s] of Object.entries(e.sondagens)) {
+      if (!sondagemBoa(cod, s)) continue;
+      if (s.estado === 'achada') {
+        lerAba(s.abas[s.sessao], s.sessao, cod);
+        continue;
+      }
+      for (const [sid, a] of Object.entries(s.abas)) {
+        const tinha = a.conf !== null;
+        lerAba(a, sid, cod);
+        if (tinha || a.conf === null) continue;
+        const atrasada = s.estado === 'vencida';
+        Object.assign(s, { estado: 'achada', sessao: sid, achadaEm: iso(agoraMs) });
+        guardarEndereco(e, sid, s.ref, a, agoraMs);
+        log(`conferencia ${cod}: caiu na aba ${sid}; endereco [${s.ref}] guardado${atrasada ? ' (atrasada)' : ''}`);
+        break;
+      }
+    }
+  }
+
+  // A conferencia foi achada: as falas que esperavam voltam a ser decididas com a lista de quando ela saiu. As abas do
+  // nome mudaram desde entao (outra abriu, fechou ou reiniciou) = a lista nao vale mais: voltam pelo nome.
+  async function resolverEsperas(e, s, falas, agoraMs) {
+    const vivas = sessoesVivas();
+    limparEnderecos(e, vivas);
+    const cands = vivas.filter((v) => mesmoNome(v.nome, s.nome));
+    const asMesmas = cands.length === Object.keys(s.abas).length
+      && cands.every((v) => Object.hasOwn(s.abas, v.sessionId) && mesmoProcesso(s.abas[v.sessionId], v.registro));
+    if (!asMesmas) {
+      log(`nome repetido ${nomeNaFrase(s.nome)}: as abas do nome mudaram desde a conferencia; ${falas.length} fala(s) voltam pelo nome`);
+      e.filaEntrega.unshift(...falas.map((f) => itemDaFala(f, null)));
+      return;
+    }
+    await decidirNomes(e, s.nome, s.linhas, cands, falas, agoraMs);
+  }
+
+  // No passoEventos, depois dos eventos: o que cada conferencia decide. Achada com fala esperando = a fala sai dirigida
+  // (ou outra conferencia, com 3+ abas). Aberta e enviada ha CONFERENCIA_PRAZO_MS sem aparecer em conversa nenhuma, ou
+  // aberta que saiu da fila sem ser enviada (a trava no meio) = vence, e as falas que esperavam sao recusadas com os
+  // titulos das abas (travado = nenhuma frase). Fechou (achada ou vencida) = os parous que esperavam o transcript sao
+  // soltos e seguem o caminho de sempre (o da vez da conferencia e calado la, pelo conferenciaDoParou).
+  async function passoNomes(e, efetivo, agoraMs) {
+    if (!objetoDoDisco(e.sondagens)) return;
+    for (const [cod, s] of Object.entries(e.sondagens)) {
+      if (!sondagemBoa(cod, s)) continue;
+      if (s.estado === 'aberta') {
+        const enviada = msDeIso(s.enviadaEm);
+        const naFila = e.filaEntrega.some((q) => objetoDoDisco(q) && q.tipo === 'sondagem' && q.codigo === cod);
+        const venceu = Number.isFinite(enviada) ? agoraMs - enviada >= CONFERENCIA_PRAZO_MS : !naFila;
+        if (venceu) {
+          s.estado = 'vencida';
+          const falas = tirarEstacionadas(e, cod);
+          log(Number.isFinite(enviada)
+            ? `conferencia ${cod}: 60 s sem aparecer em conversa nenhuma; recusando ${falas.length} fala(s)`
+            : `conferencia ${cod}: saiu da fila sem ser enviada; recusando ${falas.length} fala(s)`);
+          if (!e.trava) for (const f of falas) await avisarProblema(e, f.pedido, f.pedido.sessionId, fraseDoNomeRepetido(s.nome, s.titulos.map(nomeNaFrase)));
+        }
+      } else if (s.estado === 'achada' && !e.trava) {
+        const falas = tirarEstacionadas(e, cod);
+        if (falas.length) await resolverEsperas(e, s, falas, agoraMs);
+      }
+      if (s.estado !== 'aberta' && s.espera.length) {
+        const soltos = s.espera;
+        s.espera = [];
+        for (const ev of soltos) await tratarEvento(e, ev, efetivo, agoraMs, true);
+      }
+    }
+  }
+
+  // O parou `ev` e o fim da vez que uma conferencia de endereco abriu? -> {acao: 'calar', codigo} = a conferencia caiu
+  // nessa conversa abrindo uma vez so dela (nao no meio de uma vez) e o final e dessa vez: chegou antes dele e nenhuma
+  // outra vez abriu nem fala entrou no meio ate ele. {acao: 'esperar', codigo} = a conferencia esta no ar, ainda nao
+  // apareceu em conversa nenhuma e o final e de depois dela: o transcript pode estar atrasado (como na T43), e mensagem
+  // enviada nao se desfaz. null = segue como hoje (sem a hora do final nao da pra saber de que vez ele e).
+  // So o 1o final da aba depois da conferencia (a.vez "calada", posta pelo tratarEvento) e a continuacao por hook dele
+  // podem ser da vez dela: o registro que abre a vez SEGUINTE chega atrasado no arquivo (a.depois ainda null quando o
+  // parou dela passa) e, pelo arquivo sozinho, a resposta da aba a fala do dono era calada. Um final de depois da
+  // conferencia que passou (a.vez "passou") = dali em diante nenhum e calado, nem a continuacao por hook.
+  function conferenciaDoParou(e, ev) {
+    const fim = msDeIso(ev.finalTs);
+    if (!objetoDoDisco(e.sondagens) || !Number.isFinite(fim)) return null;
+    let esperar = null;
+    for (const [cod, s] of Object.entries(e.sondagens)) {
+      if (!sondagemBoa(cod, s) || !Object.hasOwn(s.abas, ev.sessionId)) continue;
+      const a = s.abas[ev.sessionId];
+      if (a.conf !== null) {
+        const chegou = msDeIso(a.conf.ts);
+        const depois = a.depois === null ? Infinity : msDeIso(a.depois);
+        if (a.vez === 'passou' || (a.vez === 'calada' && ev.continuacao !== true)) {
+          if (chegou <= fim) a.vez = 'passou';
+          continue;
+        }
+        if (a.conf.meio !== true && chegou <= fim && depois > fim) return { acao: 'calar', codigo: cod };
+        continue;
+      }
+      const noAr = Number.isFinite(msDeIso(s.enviadaEm))
+        || e.filaEntrega.some((q) => objetoDoDisco(q) && q.tipo === 'sondagem' && q.codigo === cod && q.emVooDesde);
+      if (s.estado === 'aberta' && noAr && fim >= msDeIso(s.criadaEm)) esperar = { acao: 'esperar', codigo: cod };
+    }
+    return esperar;
+  }
+
+  // O parou espera a conferencia `cod` aparecer (guardado no estado, com o que o tratarEvento usa dele). -> true =
+  // esta esperando (o repetido nao entra 2 vezes); false = a espera esta cheia: segue na hora, como hoje.
+  function esperarConferencia(e, ev, cod) {
+    const s = e.sondagens[cod];
+    if (s.espera.some((x) => x.sessionId === ev.sessionId && (x.finalTs ?? '') === (ev.finalTs ?? ''))) return true;
+    if (s.espera.length >= ESPERA_PAROU_MAX) return false;
+    const guardado = parouParaGuardar(ev);
+    for (const k of ['pid', 'cwd', 'entrypoint', 'continuacao', 'app', 'releitura']) if (ev[k] !== undefined) guardado[k] = ev[k];
+    s.espera.push(guardado);
+    log(`parou ${ev.sessionId}: espera a conferencia de endereco ${cod} aparecer na conversa de uma aba (transcript atrasado)`);
+    return true;
   }
 
   // Nova tentativa pra fila de entrega (no passoGrupo, como antes). Item que morreu em voo espera ORFA_MS.
@@ -2467,7 +2963,7 @@ export function criarPorteiro({
       const reforco = typeof item.entregaId === 'string' && item.entregaId;
       enfileirar(e, item.pedido, {
         ...(reforco ? { tipo: 'reforco', entregaId: item.entregaId } : {}),
-        segunda: true,
+        segunda: item.segunda !== false, // T44: a fala que so esperou a lista bater (segunda: false) ainda e 1a tentativa
         primeiraEm: Number.isFinite(primeira) ? iso(primeira) : null,
       });
     }
@@ -2487,6 +2983,11 @@ export function criarPorteiro({
       if (!item.pedido || typeof item.pedido !== 'object') continue;
       const saiu = msDeIso(item.emVooDesde);
       const base = Number.isFinite(saiu) ? saiu : agora();
+      if (item.tipo === 'sondagem') { // T44: a conferencia em voo nunca vira nova tentativa de fala; o prazo dela conta da saida
+        const s = objetoDoDisco(e.sondagens) && typeof item.codigo === 'string' && Object.hasOwn(e.sondagens, item.codigo) ? e.sondagens[item.codigo] : null;
+        if (sondagemBoa(item.codigo, s) && s.estado === 'aberta' && !Number.isFinite(msDeIso(s.enviadaEm))) s.enviadaEm = iso(base);
+        continue;
+      }
       const primeira = msDeIso(item.primeiraEm);
       e.repassar.push({
         pedido: item.pedido,
@@ -2538,6 +3039,7 @@ export function criarPorteiro({
         salvar(e);
         continue;
       }
+      if (item.tipo !== 'sondagem') aplicarEndereco(e, item.pedido); // T44: o endereco guardado da aba (nome repetido)
       item.emVooDesde = iso(agoraMs);
       salvar(e); // o marcador vai pro disco ANTES do mensageiro: quem subir depois de uma queda sabe que estava em voo
       const { id } = item;
@@ -3912,20 +4414,14 @@ export function criarPorteiro({
         if (!talvezPeer && !(s.esperando.length && linha.includes('"assistant"'))) return;
         let x;
         try { x = JSON.parse(linha); } catch { return; }
-        // Recado em 2 formatos (medido 27/09/2026): aba parada = linha user com origin.kind "peer"; aba OCUPADA = o
-        // recado entra no meio do turno como anexo (type "attachment", attachment.type "queued_command", origin.kind
-        // "peer", texto em attachment.prompt; a fila registra "absorbed_mid_turn"). Cada recado aparece 1 vez so.
-        let recado = null;
-        if (x?.type === 'user' && x.origin?.kind === 'peer') recado = textoDoConteudo(x.message?.content);
-        else if (x?.type === 'attachment' && x.attachment?.type === 'queued_command' && x.attachment?.origin?.kind === 'peer') {
-          const pr = x.attachment.prompt;
-          recado = typeof pr === 'string' ? pr : textoDoConteudo(pr);
-        }
+        // Recado em 2 formatos (o recadoDePeer: aba parada = linha user de origem "peer"; aba OCUPADA = o anexo
+        // queued_command no meio do turno). Cada recado aparece 1 vez so.
+        const rec = recadoDePeer(x);
+        const recado = rec ? rec.texto : null;
         if (recado !== null) {
           if (recado && reId.test(recado)) {
-            const ts = typeof x.timestamp === 'string' ? x.timestamp : typeof x.attachment?.timestamp === 'string' ? x.attachment.timestamp : null;
             s.esperando.push(s.peers);
-            s.tsPeers.push(ts);
+            s.tsPeers.push(rec.ts);
             s.peers += 1;
           }
         } else if (x?.type === 'assistant' && s.esperando.length) {
@@ -5377,7 +5873,8 @@ export function criarPorteiro({
   }
 
   // 1 evento do eventos.jsonl. Nao salva: quem chama grava o estado (fila, vistos, avisos) junto com o offset (F3.8).
-  async function tratarEvento(e, ev, efetivo, agoraMs) {
+  // T44: `solto` = o parou que esperava a conferencia de endereco aparecer e o passoNomes soltou (nao espera de novo).
+  async function tratarEvento(e, ev, efetivo, agoraMs, solto = false) {
     if (ev.tipo === 'encaminhar') {
       await encaminhar(e, ev, agoraMs);
       return;
@@ -5408,6 +5905,17 @@ export function criarPorteiro({
       agendarReleitura(e, ev, agoraMs); // T7k: repetido com fala sem resposta = a resposta da vez pode ter ficado fora
       return;
     }
+    // T44: o fim da vez que a conferencia de endereco abriu nao e trabalho da aba: nada no Telegram nem no grupo, e o
+    // chamado, a pergunta de pe e o parou guardado dela ficam como estavam. Com a conferencia no ar e ainda fora de
+    // qualquer conversa, o parou espera ela aparecer (o passoNomes solta).
+    const conf = conferenciaDoParou(e, ev);
+    if (conf?.acao === 'calar') {
+      e.vistosEventos.push(chave);
+      e.sondagens[conf.codigo].abas[ev.sessionId].vez = 'calada'; // o 1o final depois da conferencia ja foi
+      log(`parou ${ev.sessionId}: fim da vez da conferencia de endereco ${conf.codigo}; nada no Telegram, o chamado fica como esta`);
+      return;
+    }
+    if (conf?.acao === 'esperar' && !solto && esperarConferencia(e, ev, conf.codigo)) return;
     e.vistosEventos.push(chave);
     const precisa = precisaDoDono(ev);
     // T27 (PLANO-TELEGRAM.md, "T27", contrato 2): a aba continuou por um hook de Stop (nao por ele) = a mesma vez da
@@ -5509,6 +6017,7 @@ export function criarPorteiro({
     await drenar(e);
     releiturasVencidas(e, agoraMs); // T7k: antes da leitura abaixo, pra o parou gravado entrar neste passo
     toquesAtrasados(e, agoraMs); // T43: o toque do lembrete que chegou no transcript depois do parou
+    lerSondagens(e, agoraMs); // T44: em que conversa a conferencia de endereco caiu (antes dos eventos: o parou dela e calado)
     // F3.8: cada linha traz o byte logo depois dela; o offset salvo anda evento a evento (inclusive linha ruim e evento
     // pulado), no MESMO salvar da fila/vistos/avisos daquele evento. O passo morreu no meio do lote = o porteiro seguinte
     // continua do evento depois do ultimo salvo; vistosEventos e a fila de saida seguem barrando mensagem em dobro.
@@ -5537,6 +6046,7 @@ export function criarPorteiro({
     // resumo pendente herdado do porteiro de antes de 29/09/2026: descarta, nunca envia
     e.resumoPendente = [];
     e.resumoDesde = null;
+    await passoNomes(e, efetivo, agoraMs); // T44: a conferencia de endereco achada ou vencida, e os parous que esperavam
     await conferirEntregas(e, agoraMs);
     salvar(e);
   }
@@ -10415,7 +10925,8 @@ async function rodar(ensaio) {
   const voz = vozDoConfig(cfg).nome;
   fs.mkdirSync(C.estadoDir, { recursive: true }); // cwd do `claude -p` e pasta da trava do mensageiro
   // A4b: o recado sai com o nome do dono (as frasesDoDono do mesmo dono)
-  const mensageiro = criarMensageiro({ estadoDir: C.estadoDir, claudeBin: claude, dono, modelo }); // ensaio nunca chama (porteiro so registra)
+  // T44: projectsDir = de onde o mensageiro le as linhas do nome no "duplicado" (o registro da propria rodada)
+  const mensageiro = criarMensageiro({ estadoDir: C.estadoDir, claudeBin: claude, dono, modelo, projectsDir: C.projectsDir }); // ensaio nunca chama (porteiro so registra)
   // A5d2: a central e a sessao escondida montadas a cada abertura (gravarCentral na pasta de estado): o bloco dono cru
   // (sem nome valido = sem a linha do dono) e as pastas de projeto do mesmo config
   const montagem = { estadoDir: C.estadoDir, dono: cfg.dono, raizes: sessoes.raizes };

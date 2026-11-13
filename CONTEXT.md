@@ -20,6 +20,8 @@
 | Trava (do OK) | A palavra "trava" do dono no chat ou no grupo: invalida os OKs abertos |
 | Recado | A mensagem que o porteiro ou outra sessão manda para dentro de uma aba pelo canal entre sessões |
 | Mensageiro | O programa que entrega o recado na aba, um por vez |
+| Endereço (da aba) | O nome da aba mais o código curto que a lista de sessões mostra ao lado dele (`nome [ref]`). É o que separa duas abas com o mesmo nome; vale enquanto o processo da aba vive |
+| Conferência de endereço | O recado automático, sem nada do dono, que o porteiro manda pra uma de duas abas de mesmo nome pra ver em qual conversa ele cai. A aba parada responde só "ok" e nada vai pro celular |
 | Painel | A mensagem única do Telegram com as abas por grupo, em 2 modos: o padrão (Esperando você, Aguardando, Trabalhando, Paradas e Paradas há mais de 2 dias) e o modo VS Code |
 | Modo VS Code | O painel igual à lista de sessões do VS Code: uma seção por janela, os grupos com o nome, a ordem e o número da tela, e as arquivadas só contadas (`painel.modo: "vscode"` no `config.json`) |
 | Sincronizar | O botão do painel que relê a lista e as abas abertas do VS Code na hora e refaz o painel |

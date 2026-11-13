@@ -440,7 +440,7 @@ test('A5a 15. pelo fonte: o rodar tira o modo rua, o modelo e a voz do mesmo con
   const modeloEm = r.indexOf('const modelo = mensageiroDoConfig(cfg).modelo;');
   const vozEm = r.indexOf('const voz = vozDoConfig(cfg).nome;');
   assert.ok(cfgEm > 0 && ruaEm > cfgEm && modeloEm > cfgEm && vozEm > cfgEm, 'do mesmo cfg');
-  const mensEm = r.indexOf('criarMensageiro({ estadoDir: C.estadoDir, claudeBin: claude, dono, modelo })');
+  const mensEm = r.indexOf('criarMensageiro({ estadoDir: C.estadoDir, claudeBin: claude, dono, modelo'); // T44: depois vem o projectsDir
   assert.ok(mensEm > modeloEm, 'o modelo no criarMensageiro');
   const portEm = r.indexOf('const p = criarPorteiro({');
   const fimPort = r.indexOf('\n  });', portEm);
