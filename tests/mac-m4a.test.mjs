@@ -268,3 +268,11 @@ test('M4a 4. tools/mac/gerar-plist.mjs: com --forcar imprime o plist (ProgramArg
     assert.match(fora.stderr, /macOS|darwin/);
   }
 });
+
+test('M4a 1b. plistDoPorteiro: node do Cellar vira o link estavel opt/<formula> (o brew upgrade apaga a pasta versionada e o launchd sai com 78)', () => {
+  const base = { repo: `${HOME}/repos/sessoes-wpp`, home: HOME, logFile: `${HOME}/.claude/logs/sessoes-wpp.log` };
+  const node = (n) => lerPlist(plistDoPorteiro({ ...base, node: n })).ProgramArguments[0];
+  assert.equal(node('/opt/homebrew/Cellar/node@24/24.22.1/bin/node'), '/opt/homebrew/opt/node@24/bin/node');
+  assert.equal(node('/usr/local/Cellar/node/25.1.0/bin/node'), '/usr/local/opt/node/bin/node');
+  assert.equal(node('/opt/homebrew/bin/node'), '/opt/homebrew/bin/node', 'fora do Cellar fica como veio');
+});
