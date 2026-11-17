@@ -16,4 +16,9 @@
 # Contexto de agente e harness da Expert: internos, não vão para a cópia aberta (citam a org, que a guarda proíbe)
 AGENTS.md    export-ignore
 CLAUDE.md    export-ignore
-/.claude     export-ignore
+/.claude/**  export-ignore
+# exceção: a skill /instalar é do projeto e o README manda o aluno digitar /instalar (sem ela a instalação trava no passo 3).
+# Pasta com export-ignore some inteira no git archive: cada pasta do caminho até a skill precisa do -export-ignore.
+/.claude/skills              -export-ignore
+/.claude/skills/instalar     -export-ignore
+/.claude/skills/instalar/**  -export-ignore

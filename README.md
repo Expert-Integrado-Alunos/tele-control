@@ -1,4 +1,4 @@
-> **Publicado pela Expert Integrado — versão 2026-11-16-030ca2c.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
+> **Publicado pela Expert Integrado — versão 2026-11-17-b380aba.** Cópia pública de `tele-control`, gerada automaticamente a partir da fonte interna (sem histórico) pelo robô publicador. Issues e pull requests aqui não são acompanhados; contato em expertintegrado.com.br.
 
 # Tele Control — as abas do Claude Code do seu PC, controladas pelo celular
 
@@ -34,7 +34,7 @@ escondida do Claude Code que descobre de qual conversa é o assunto e entrega l�
 
 ## Requisitos
 
-- Windows 10 ou 11. Mac e Linux: ainda não.
+- Windows 10 ou 11. Mac: em preparação, ainda não validado. Linux: ainda não.
 - Node.js 22.16 ou mais novo.
 - Claude Code 2.1.295 ou mais novo.
 - Windows Terminal e PowerShell.
@@ -68,7 +68,8 @@ A instalação confere o PC (`node instalar.mjs checar`) e faz estas perguntas, 
    não, eu faço. A regra ensina o Claude a fechar a resposta com "DECISÃO:", com "Fica com você:" ou com a pergunta
    na última linha; sem isso, quase nada chega no celular.
 9. **Central:** Cuidadosa (recomendado: faz o que o Claude Code libera sozinho e te conta o que ficou de fora) ou Livre
-   (age sem pedir licença, como uma aba em modo bypass).
+   (age sem pedir licença, como uma aba em modo bypass). Atenção: no Livre, o que você mandar pelo celular vira ação no
+   PC sem nenhuma confirmação, inclusive apagar arquivo ou enviar mensagem. Escolha o Livre só se entende esse risco.
 10. **Conversa resolvida no Telegram:** apagar (recomendado) ou manter.
 
 A chave do bot nunca passa pelo chat: ela entra numa janela própria do PowerShell, com a digitação escondida, e fica
